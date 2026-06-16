@@ -1,0 +1,19 @@
+# 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go 测试 / 覆盖率
+*.test
+*.out
+coverage.txt
+
+# 本地环境 / 凭证
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/

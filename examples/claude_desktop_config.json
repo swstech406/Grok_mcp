@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "grok-mcp": {
+      "command": "D:/workspace/Grok_mcp/grok-mcp.exe",
+      "args": [],
+      "env": {
+        "CPA_BASE_URL": "http://127.0.0.1:8317",
+        "CPA_API_KEY": "replace-with-your-cpa-api-key",
+        "GROK_MODEL": "grok-4.3",
+        "GROK_HTTP_TIMEOUT": "120"
+      }
+    }
+  }
+}

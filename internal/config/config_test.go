@@ -1,0 +1,100 @@
+package config
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func setEnv(t *testing.T, key, value string) {
+	t.Helper()
+	t.Setenv(key, value)
+}
+
+func TestLoadRequiresAPIKey(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "CPA_API_KEY is required") {
+		t.Fatalf("expected CPA_API_KEY error, got %v", err)
+	}
+}
+
+func TestLoadDefaults(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "test-key")
+	setEnv(t, "CPA_BASE_URL", "")
+	setEnv(t, "GROK_MODEL", "")
+	setEnv(t, "GROK_HTTP_TIMEOUT", "")
+	setEnv(t, "GROK_MCP_DEBUG", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CPABaseURL != "http://127.0.0.1:8317" {
+		t.Fatalf("unexpected base URL: %s", cfg.CPABaseURL)
+	}
+	if cfg.Model != "grok-4.3" {
+		t.Fatalf("unexpected model: %s", cfg.Model)
+	}
+	if cfg.Timeout != 120*time.Second {
+		t.Fatalf("unexpected timeout: %v", cfg.Timeout)
+	}
+	if cfg.Debug {
+		t.Fatalf("expected debug disabled by default")
+	}
+}
+
+func TestLoadCustomTimeout(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "test-key")
+	setEnv(t, "GROK_HTTP_TIMEOUT", "45")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Timeout != 45*time.Second {
+		t.Fatalf("unexpected timeout: %v", cfg.Timeout)
+	}
+}
+
+func TestLoadInvalidTimeout(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "test-key")
+	setEnv(t, "GROK_HTTP_TIMEOUT", "abc")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GROK_HTTP_TIMEOUT must be a positive integer") {
+		t.Fatalf("expected timeout validation error, got %v", err)
+	}
+}
+
+func TestLoadDebugParsing(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "test-key")
+
+	for _, value := range []string{"1", "true", "yes"} {
+		setEnv(t, "GROK_MCP_DEBUG", value)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load failed for %q: %v", value, err)
+		}
+		if !cfg.Debug {
+			t.Fatalf("expected debug enabled for %q", value)
+		}
+	}
+
+	setEnv(t, "GROK_MCP_DEBUG", "0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Debug {
+		t.Fatalf("expected debug disabled for 0")
+	}
+}
+
+func TestParseBoolEnvUnset(t *testing.T) {
+	_ = os.Unsetenv("GROK_MCP_DEBUG")
+	if parseBoolEnv("GROK_MCP_DEBUG") {
+		t.Fatalf("expected false for unset env")
+	}
+}
