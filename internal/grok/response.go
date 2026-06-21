@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// citationCollector 对 URL 去重，同时维护扁平 citations 列表与带标题的 sources。
 type citationCollector struct {
 	citations []string
 	sources   []Source
@@ -33,6 +34,7 @@ func (c *citationCollector) add(url, title string) {
 	})
 }
 
+// addRaw 兼容 citations 字段为字符串 URL 或 {url,title} 对象两种形态。
 func (c *citationCollector) addRaw(raw json.RawMessage) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -51,6 +53,7 @@ func (c *citationCollector) addRaw(raw json.RawMessage) {
 	}
 }
 
+// buildSearchResult 从 output 文本块、注解与顶层 citations 汇总答案与引用。
 func buildSearchResult(parsed responsesResponse, rawBody []byte) (*SearchResult, error) {
 	var answer strings.Builder
 	collector := newCitationCollector()

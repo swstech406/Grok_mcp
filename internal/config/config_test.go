@@ -92,6 +92,31 @@ func TestLoadDebugParsing(t *testing.T) {
 	}
 }
 
+func TestLoadHTTPRequiresAdminToken(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "test-key")
+	setEnv(t, "GROK_TRANSPORT", "http")
+	setEnv(t, "GROK_ADMIN_TOKEN", "")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GROK_ADMIN_TOKEN is required") {
+		t.Fatalf("expected admin token error, got %v", err)
+	}
+}
+
+func TestLoadHTTPDefaults(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "test-key")
+	setEnv(t, "GROK_TRANSPORT", "http")
+	setEnv(t, "GROK_ADMIN_TOKEN", "secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.HTTPAddr != ":8080" || cfg.DBPath != "./grok-mcp.db" || cfg.DefaultRateLimit != 60 {
+		t.Fatalf("unexpected http defaults: %+v", cfg)
+	}
+}
+
 func TestParseBoolEnvUnset(t *testing.T) {
 	_ = os.Unsetenv("GROK_MCP_DEBUG")
 	if parseBoolEnv("GROK_MCP_DEBUG") {

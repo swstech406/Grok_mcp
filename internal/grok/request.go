@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// validateSearchRequest 校验查询、工具类型及域名过滤参数的互斥与数量上限。
 func validateSearchRequest(req SearchRequest) error {
 	if strings.TrimSpace(req.Query) == "" {
 		return fmt.Errorf("query must not be empty")
@@ -25,6 +26,8 @@ func validateSearchRequest(req SearchRequest) error {
 	return nil
 }
 
+// buildToolDef 将业务侧 SearchRequest 映射为上游 tools[] 中的单条工具定义。
+// 域名与图片相关选项仅对 web_search 生效。
 func (c *Client) buildToolDef(req SearchRequest) toolDef {
 	tool := toolDef{Type: string(req.ToolType)}
 
@@ -38,6 +41,7 @@ func (c *Client) buildToolDef(req SearchRequest) toolDef {
 	return tool
 }
 
+// buildSearchRequestBody 组装 /v1/responses 请求体；未指定 model 时使用客户端默认模型。
 func (c *Client) buildSearchRequestBody(req SearchRequest) (string, []byte, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" {

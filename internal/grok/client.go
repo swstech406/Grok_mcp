@@ -11,6 +11,7 @@ import (
 	"github.com/grok-mcp/internal/logx"
 )
 
+// Client 通过 HTTP 访问上游 CPA 网关的 /v1/responses 端点（SSE 流式）。
 type Client struct {
 	baseURL      string
 	apiKey       string
@@ -19,6 +20,7 @@ type Client struct {
 	log          *logx.Logger
 }
 
+// NewClient 根据全局配置构造上游客户端。
 func NewClient(cfg *config.Config) *Client {
 	return &Client{
 		baseURL:      cfg.CPABaseURL,
@@ -31,8 +33,8 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// SearchStream performs a streaming search and invokes onRound for each upstream
-// web_search_call action before returning the final parsed result.
+// SearchStream 发起流式搜索；每完成一轮 web_search_call 会调用 onRound（可为 nil），
+// 最终在 response.completed 事件到达后返回聚合后的 SearchResult。
 func (c *Client) SearchStream(ctx context.Context, req SearchRequest, onRound func(SearchRound)) (*SearchResult, error) {
 	if err := validateSearchRequest(req); err != nil {
 		return nil, err
@@ -64,6 +66,7 @@ func (c *Client) SearchStream(ctx context.Context, req SearchRequest, onRound fu
 	return result, nil
 }
 
+// post 向上游发送 JSON 请求，Accept 为 text/event-stream 以接收 SSE。
 func (c *Client) post(ctx context.Context, body []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/responses", bytes.NewReader(body))
 	if err != nil {
@@ -80,6 +83,7 @@ func (c *Client) post(ctx context.Context, body []byte) (*http.Response, error) 
 	return resp, nil
 }
 
+// httpError 在非 2xx 响应时读取响应体并包装为可读错误。
 func (c *Client) httpError(resp *http.Response) error {
 	respBody, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {

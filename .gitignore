@@ -10,6 +10,11 @@
 *.out
 coverage.txt
 
+# SQLite 数据库及 WAL 侧车文件（HTTP 模式本地存储）
+*.db
+*.db-wal
+*.db-shm
+
 # 本地环境 / 凭证
 .env
 .env.local

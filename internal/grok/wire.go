@@ -2,6 +2,9 @@ package grok
 
 import "encoding/json"
 
+// 以下类型与上游 OpenAI Responses 风格 JSON 字段一一对应，仅用于编解码，不暴露给 MCP 层。
+
+// responsesRequest 为 POST /v1/responses 的请求体。
 type responsesRequest struct {
 	Model  string         `json:"model"`
 	Input  []inputMessage `json:"input"`
@@ -14,7 +17,7 @@ type inputMessage struct {
 	Content string `json:"content"`
 }
 
-// toolDef describes a single upstream built-in tool.
+// toolDef 描述上游内置工具（web_search / x_search）及其可选参数。
 type toolDef struct {
 	Type                     string   `json:"type"`
 	AllowedDomains           []string `json:"allowed_domains,omitempty"`
@@ -23,6 +26,7 @@ type toolDef struct {
 	EnableImageSearch        *bool    `json:"enable_image_search,omitempty"`
 }
 
+// responsesResponse 出现在流式 response.completed 事件中的完整响应快照。
 type responsesResponse struct {
 	Output    []outputItem    `json:"output"`
 	Usage     json.RawMessage `json:"usage"`
@@ -52,6 +56,7 @@ type citationItem struct {
 	Title string `json:"title"`
 }
 
+// streamEvent 为 SSE data 行解析后的单条事件。
 type streamEvent struct {
 	Type     string            `json:"type"`
 	Item     streamOutputItem  `json:"item"`

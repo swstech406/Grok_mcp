@@ -9,6 +9,8 @@ import (
 	"github.com/grok-mcp/internal/logx"
 )
 
+// parseSearchStream 消费上游 SSE，在 web_search_call 完成时回调 onRound，
+// 并在收到 response.completed 后从该事件的 response 字段构建 SearchResult。
 func parseSearchStream(body io.Reader, onRound func(SearchRound), log *logx.Logger) (*SearchResult, error) {
 	round := 0
 	var completedBody []byte
