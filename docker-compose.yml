@@ -1,0 +1,42 @@
+# grok-mcp HTTP 服务一键编排。
+# 使用：
+#   1. cp .env.example .env 并填入真实值（至少 CPA_API_KEY、GROK_ADMIN_TOKEN）
+#   2. docker compose up -d --build
+#   3. 用 GROK_ADMIN_TOKEN 调 /admin/v1/keys 创建客户端 Key，再带该 Key 调 /mcp
+services:
+  grok-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 注入到内部 version.Version（grok-mcp -version 可见）；按需改成你的发版号。
+        VERSION: "${VERSION:-1.0.0}"
+        # 基础镜像；默认走 Docker Hub 官方。国内拉取失败时设置 shell 环境变量改走加速源：
+        #   PowerShell:  $env:GO_IMG="docker.1ms.run/library/golang:1.25-alpine"; $env:RUNTIME_IMG="docker.1ms.run/library/alpine:3.20"
+        #   Bash:        export GO_IMG=docker.1ms.run/library/golang:1.25-alpine RUNTIME_IMG=docker.1ms.run/library/alpine:3.20
+        # 然后 docker compose up -d --build。
+        GO_IMG: "${GO_IMG:-golang:1.25-alpine}"
+        RUNTIME_IMG: "${RUNTIME_IMG:-alpine:3.20}"
+        # Go module 代理；国内默认走 goproxy.cn，避免 proxy.golang.org 超时。
+        GOPROXY: "${GOPROXY:-https://goproxy.cn,direct}"
+    image: grok-mcp:latest
+    container_name: grok-mcp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # 此处覆盖优先级高于 env_file；保持与 Dockerfile 默认一致。
+      GROK_HTTP_ADDR: ":8080"
+      GROK_DB_PATH: "/app/data/grok-mcp.db"
+    volumes:
+      # SQLite 持久化到命名卷，容器重建后 Key 与用量数据不丢。
+      - grok-mcp-data:/app/data
+    # Linux 主机上解析 host.docker.internal，便于容器访问宿主机的 CPA。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # healthcheck 继承自 Dockerfile（收到 HTTP 响应行即视为健康）。
+
+volumes:
+  grok-mcp-data:

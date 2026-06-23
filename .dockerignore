@@ -1,0 +1,28 @@
+# 版本控制元数据
+.git
+.gitignore
+
+# 本地构建产物
+*.exe
+*.test
+*.out
+coverage.txt
+
+# 本地 SQLite 数据库（绝不打入镜像）
+*.db
+*.db-wal
+*.db-shm
+
+# 本地环境与凭证（.env.example 是模板，可保留以供参考，真实 .env 必须排除）
+.env
+.env.local
+.mcp.json
+
+# IDE
+.vscode
+.idea
+
+# Docker 自身文件，无需进入构建上下文
+Dockerfile
+.dockerignore
+docker-compose*.yml
