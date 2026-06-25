@@ -1172,10 +1172,23 @@ tbody tr:last-child td {
   padding-right: 46px;
 }
 
+.copy-shell.manual input {
+  border-color: var(--warning);
+  background: #fffaf7;
+}
+
 .copy-shell .mini-icon {
   position: absolute;
   top: 4px;
   right: 6px;
+}
+
+.manual-copy-note {
+  color: var(--warning);
+}
+
+.auto-copy-note {
+  color: var(--success);
 }
 
 .toast {

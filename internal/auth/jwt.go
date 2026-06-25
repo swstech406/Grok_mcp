@@ -78,14 +78,12 @@ func JWTMiddleware(secret string, st store.Store, skip map[string]struct{}) func
 	}
 }
 
-// AdminRoleMiddleware 要求当前用户为 admin（仅 /panel/v1/admin/* 路径）。
-func AdminRoleMiddleware() func(http.Handler) http.Handler {
+// RequireAdmin 要求当前用户为 admin，无论路径如何。用于显式包裹 admin 子路由器，
+// 替代基于路径前缀的判断：新增 admin 路由时必须挂到该子路由器才会被放行，
+// 避免因前缀不匹配而静默绕过鉴权。
+func RequireAdmin() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/panel/v1/admin/") {
-				next.ServeHTTP(w, r)
-				return
-			}
 			user, ok := UserFromContext(r.Context())
 			if !ok {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)

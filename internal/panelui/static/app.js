@@ -681,6 +681,13 @@
   }
 
   function renderKeyCreatedModal(modal) {
+    const copyFailed = Boolean(modal.copyFailed);
+    const copySucceeded = Boolean(modal.copySucceeded);
+    const copyNote = copyFailed
+      ? "浏览器拒绝自动复制。密钥已选中，请按 Ctrl+C 手动复制。"
+      : copySucceeded
+        ? "密钥已复制到剪贴板。此密钥只显示一次，请立即保存。"
+        : "此密钥只显示一次，可以点击复制按钮或直接选中文本复制。";
     return `
       <div class="modal-backdrop">
         <section class="modal" role="dialog" aria-modal="true" aria-label="New API Key Created" data-modal>
@@ -697,10 +704,11 @@
             </div>
             <div class="key-copy">
               <label class="field-label" for="created-api-key">Secret Key</label>
-              <div class="copy-shell">
+              <div class="copy-shell ${copyFailed ? "manual" : ""}">
                 <input id="created-api-key" class="input mono subtle" value="${escapeAttr(modal.apiKey)}" readonly>
                 <button class="mini-icon" data-action="copy-created-key" title="Copy" type="button"><span class="material-symbols-outlined">content_copy</span></button>
               </div>
+              <p class="hint ${copyFailed ? "manual-copy-note" : copySucceeded ? "auto-copy-note" : ""}">${copyNote}</p>
             </div>
             <div class="modal-actions">
               <button class="button secondary" data-action="close-modal" type="button">I've Saved It</button>
@@ -914,8 +922,10 @@
       });
       await loadKeys();
       state.modal = { type: "key-created", key: resp.key, apiKey: resp.api_key };
-      notify("Key 已创建。", "success");
+      window.clearTimeout(notify.timer);
+      state.toast = null;
       render();
+      await copyCreatedKey({ automatic: true });
     } catch (err) {
       notify(errorText(err), "error");
       render();
@@ -1089,21 +1099,76 @@
     }
   }
 
-  async function copyCreatedKey() {
+  async function copyCreatedKey(options = {}) {
     const input = document.getElementById("created-api-key");
     const value = input ? input.value : state.modal && state.modal.apiKey;
     if (!value) return;
-    try {
-      await navigator.clipboard.writeText(value);
-      notify("已复制到剪贴板。", "success");
-    } catch {
-      if (input) {
-        input.focus();
-        input.select();
+    let copied = copyTextWithSelection(value, input);
+    if (!copied) {
+      try {
+        if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+          throw new Error("clipboard unavailable");
+        }
+        await navigator.clipboard.writeText(value);
+        copied = true;
+      } catch {
+        copied = false;
       }
-      notify("浏览器拒绝自动复制，请手动复制。", "error");
     }
+
+    if (state.modal && state.modal.type === "key-created") {
+      state.modal.copyFailed = !copied;
+      state.modal.copySucceeded = copied;
+    }
+
+    if (copied) {
+      notify(options.automatic ? "Key 已自动复制到剪贴板。" : "已复制到剪贴板。", "success");
+    } else {
+      window.clearTimeout(notify.timer);
+      state.toast = null;
+    }
+
     render();
+    if (state.modal && state.modal.type === "key-created" && state.modal.copyFailed) {
+      selectCreatedKey();
+    }
+    return copied;
+  }
+
+  function copyTextWithSelection(value, input) {
+    const target = input || document.createElement("textarea");
+    let appended = false;
+
+    if (!input) {
+      target.value = value;
+      target.setAttribute("readonly", "");
+      target.style.position = "fixed";
+      target.style.left = "-9999px";
+      target.style.top = "0";
+      document.body.appendChild(target);
+      appended = true;
+    }
+
+    try {
+      target.focus({ preventScroll: true });
+      target.select();
+      target.setSelectionRange(0, target.value.length);
+      return typeof document.execCommand === "function" && document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      if (appended) {
+        target.remove();
+      }
+    }
+  }
+
+  function selectCreatedKey() {
+    const input = document.getElementById("created-api-key");
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    input.select();
+    input.setSelectionRange(0, input.value.length);
   }
 
   function navigate(route) {

@@ -25,3 +25,6 @@ coverage.txt
 
 # 本机 MCP 客户端配置，含 API key，不应进版本库
 .mcp.json
+
+# 管理面板原型页面设计（HTML 原型 / 设计稿）
+stitch_mcp_management_panel/

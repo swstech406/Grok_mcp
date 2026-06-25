@@ -12,10 +12,11 @@ func setEnv(t *testing.T, key, value string) {
 	t.Setenv(key, value)
 }
 
+// panelEnv 提供 Load 所需的最小环境变量，包括满足最小长度校验的 JWT 密钥。
 func panelEnv(t *testing.T) {
 	t.Helper()
 	setEnv(t, "CPA_API_KEY", "test-key")
-	setEnv(t, "GROK_JWT_SECRET", "jwt-secret")
+	setEnv(t, "GROK_JWT_SECRET", "jwt-secret-must-be-at-least-32-bytes!")
 }
 
 func TestLoadRequiresAPIKey(t *testing.T) {
@@ -106,6 +107,16 @@ func TestLoadRequiresJWTSecret(t *testing.T) {
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "GROK_JWT_SECRET is required") {
 		t.Fatalf("expected jwt secret error, got %v", err)
+	}
+}
+
+func TestLoadRejectsShortJWTSecret(t *testing.T) {
+	setEnv(t, "CPA_API_KEY", "test-key")
+	setEnv(t, "GROK_JWT_SECRET", "a")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "at least 32 bytes") {
+		t.Fatalf("expected short jwt secret error, got %v", err)
 	}
 }
 

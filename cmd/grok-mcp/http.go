@@ -39,6 +39,7 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 	var mcpChain http.Handler = mcpHandler
 	mcpChain = usage.MCPMiddleware(st, usageWriter)(mcpChain)
 	mcpChain = quota.MCPMiddleware(st)(mcpChain)
+	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
 	mcpChain = userLim.UserMiddleware()(mcpChain)
 	mcpChain = auth.APIKeyMiddleware(st)(mcpChain)
 
@@ -53,7 +54,7 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 		"/panel/v1/auth/login":    {},
 	}
 	var panelChain http.Handler = panelMux
-	panelChain = auth.AdminRoleMiddleware()(panelChain)
+	panelChain = panel.MaxBodyMiddleware()(panelChain)
 	panelChain = auth.JWTMiddleware(cfg.JWTSecret, st, jwtSkip)(panelChain)
 	rootMux.Handle("/panel/v1/", panelChain)
 	rootMux.Handle("/panel/v1", panelChain)

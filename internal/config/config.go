@@ -93,6 +93,12 @@ func Load() (*Config, error) {
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("GROK_JWT_SECRET is required")
 	}
+	// HS256 的安全性依赖密钥长度；短密钥可被离线暴力破解伪造 token。
+	// RFC 7518 推荐 HS256 使用至少 256 位（32 字节）密钥，此处据此拒绝弱密钥。
+	const minJWTSecretLen = 32
+	if len(cfg.JWTSecret) < minJWTSecretLen {
+		return nil, fmt.Errorf("GROK_JWT_SECRET must be at least %d bytes to avoid weak-key attacks on HS256", minJWTSecretLen)
+	}
 
 	return cfg, nil
 }

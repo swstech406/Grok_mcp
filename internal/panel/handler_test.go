@@ -21,7 +21,7 @@ func panelTestServer(t *testing.T) (*httptest.Server, *store.SQLiteStore, *confi
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cfg := &config.Config{
-		JWTSecret:               "jwt-secret",
+		JWTSecret:               "jwt-secret-must-be-at-least-32-bytes!",
 		DefaultUserRPM:          60,
 		DefaultUserTotalLimit:   0,
 		DefaultUserSuccessLimit: 0,
@@ -33,7 +33,6 @@ func panelTestServer(t *testing.T) (*httptest.Server, *store.SQLiteStore, *confi
 		"/panel/v1/auth/login":    {},
 	}
 	var chain http.Handler = mux
-	chain = auth.AdminRoleMiddleware()(chain)
 	chain = auth.JWTMiddleware(cfg.JWTSecret, st, skip)(chain)
 	return httptest.NewServer(chain), st, cfg
 }

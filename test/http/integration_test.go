@@ -55,6 +55,7 @@ func TestHTTPPanelAndMCPFlow(t *testing.T) {
 	var mcpChain http.Handler = mcpHandler
 	mcpChain = usage.MCPMiddleware(st, usageWriter)(mcpChain)
 	mcpChain = quota.MCPMiddleware(st)(mcpChain)
+	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
 	mcpChain = userLim.UserMiddleware()(mcpChain)
 	mcpChain = auth.APIKeyMiddleware(st)(mcpChain)
 
@@ -68,7 +69,6 @@ func TestHTTPPanelAndMCPFlow(t *testing.T) {
 		"/panel/v1/auth/login":    {},
 	}
 	var panelChain http.Handler = pm
-	panelChain = auth.AdminRoleMiddleware()(panelChain)
 	panelChain = auth.JWTMiddleware(cfg.JWTSecret, st, skip)(panelChain)
 	mux.Handle("/panel/", panelChain)
 

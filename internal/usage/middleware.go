@@ -3,6 +3,7 @@ package usage
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,7 +13,33 @@ import (
 	"github.com/grok-mcp/internal/store"
 )
 
-// PeekToolName 解析 tools/call 工具名但不消费 Body（供额度中间件在 usage 之前调用）。
+// toolNameCtxKey 为 context 中存放 tools/call 工具名的私有键类型。
+type toolNameCtxKey struct{}
+
+// WithToolName 将已解析的工具名附加到 context，供下游中间件复用，避免重复解析请求体。
+func WithToolName(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, toolNameCtxKey{}, name)
+}
+
+// ToolNameFromContext 返回链路前置中间件提取的工具名；第二个值为 false 表示未提取过。
+func ToolNameFromContext(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(toolNameCtxKey{}).(string)
+	return v, ok
+}
+
+// ExtractToolNameMiddleware 在鉴权之后、额度与用量中间件之前解析一次 tools/call 工具名并写入 context。
+// 这样后续中间件直接读取 context，无需重复读取并恢复 Body。对非 tools/call 请求写入空名后透传。
+func ExtractToolNameMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			name := extractToolName(r)
+			r = r.WithContext(WithToolName(r.Context(), name))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// PeekToolName 解析 tools/call 工具名但不消费 Body；保留供未挂载 ExtractToolNameMiddleware 的旧链路使用。
 func PeekToolName(r *http.Request) string {
 	return extractToolName(r)
 }
@@ -50,6 +77,7 @@ func (s *responseRecorder) Unwrap() http.ResponseWriter {
 // MCPMiddleware 在请求前后统计耗时；仅 tools/call 才计入用量，以保证
 // total_calls 与 usage_log 的 COUNT 口径一致，并避免握手请求（initialize/ping 等）刷新 last_used_at。
 // 成功次数在 quota 中间件中已原子预留；此处根据 MCP isError / HTTP 状态回滚失败调用。
+// 使用 defer + recover 保证即便下游 handler panic，release/usage 后处理也会执行，避免 success_calls 虚高。
 func MCPMiddleware(st store.Store, writer *store.AsyncUsageWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +87,12 @@ func MCPMiddleware(st store.Store, writer *store.AsyncUsageWriter) func(http.Han
 				return
 			}
 
-			toolName := extractToolName(r)
+			// 优先复用链路前置 ExtractToolNameMiddleware 写入的工具名；
+			// 兼容直接调用 MCPMiddleware（未挂载提取中间件）的旧用法，回退到一次解析。
+			toolName, ok := ToolNameFromContext(r.Context())
+			if !ok {
+				toolName = extractToolName(r)
+			}
 			if toolName == "" {
 				next.ServeHTTP(w, r)
 				return
@@ -68,6 +101,18 @@ func MCPMiddleware(st store.Store, writer *store.AsyncUsageWriter) func(http.Han
 			user, hasUser := auth.UserFromContext(r.Context())
 			start := time.Now()
 			rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
+
+			// recover 捕获 handler panic：将状态视为失败并执行 release 逻辑，
+			// 随后重新 panic 让 http.Server 在连接层处理（关闭连接）。
+			defer func() {
+				if rcv := recover(); rcv != nil {
+					if hasUser {
+						_ = st.ReleaseSuccessCall(r.Context(), user.ID)
+					}
+					panic(rcv)
+				}
+			}()
+
 			next.ServeHTTP(rec, r)
 			dur := time.Since(start).Milliseconds()
 

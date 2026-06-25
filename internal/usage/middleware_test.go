@@ -126,3 +126,87 @@ type flushRecorder struct {
 func (f *flushRecorder) Flush() {
 	*f.flushed = true
 }
+
+// releaseCountingStore 记录 ReleaseSuccessCall 调用次数，用于断言 panic 时的回滚行为。
+type releaseCountingStore struct {
+	store.TestStore
+	releaseSuccessCalls int
+}
+
+func (r *releaseCountingStore) ReleaseSuccessCall(context.Context, string) error {
+	r.releaseSuccessCalls++
+	return nil
+}
+
+// TestMCPMiddlewareReleasesOnPanic 验证 issue 8 的修复：当 handler panic 时，
+// usage 中间件通过 defer/recover 仍会执行 ReleaseSuccessCall，避免 success_calls 虚高，
+// 然后重新 panic 让上层处理。
+func TestMCPMiddlewareReleasesOnPanic(t *testing.T) {
+	key := &store.APIKey{ID: "k1"}
+	user := &store.User{ID: "u1"}
+	st := &releaseCountingStore{}
+	h := MCPMiddleware(st, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"grok_web_search"}}`))
+	req = req.WithContext(auth.WithAPIKey(req.Context(), key))
+	req = req.WithContext(auth.WithUser(req.Context(), user))
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic to propagate")
+		}
+		if st.releaseSuccessCalls != 1 {
+			t.Fatalf("expected release on panic, got %d", st.releaseSuccessCalls)
+		}
+	}()
+	h.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+// TestExtractToolNameMiddlewareWritesContext 验证提取中间件把工具名写入 context，
+// 后续中间件无需重复解析请求体。
+func TestExtractToolNameMiddlewareWritesContext(t *testing.T) {
+	var gotName string
+	var hasName bool
+	h := ExtractToolNameMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotName, hasName = ToolNameFromContext(r.Context())
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"grok_x_search"}}`))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !hasName {
+		t.Fatal("expected tool name in context")
+	}
+	if gotName != "grok_x_search" {
+		t.Fatalf("want grok_x_search, got %q", gotName)
+	}
+}
+
+// TestMCPMiddlewareUsesContextToolName 验证当 context 已有工具名时不再重复解析 body：
+// 提供一个一读就出错的 body，若中间件读取它会触发错误并跳过用量记录。
+type errReader struct{}
+
+func (errReader) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestMCPMiddlewareUsesContextToolName(t *testing.T) {
+	key := &store.APIKey{ID: "k1"}
+	user := &store.User{ID: "u1"}
+	st := &fakeStore{}
+	h := MCPMiddleware(st, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", errReader{})
+	req.Body = io.NopCloser(errReader{})
+	ctx := auth.WithAPIKey(req.Context(), key)
+	ctx = auth.WithUser(ctx, user)
+	ctx = WithToolName(ctx, "grok_web_search")
+	req = req.WithContext(ctx)
+
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if st.touched != 1 {
+		t.Fatalf("expected usage touched via context tool name, got %d", st.touched)
+	}
+}

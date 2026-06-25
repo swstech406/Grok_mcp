@@ -98,6 +98,58 @@ Accept: application/json, text/event-stream
 Content-Type: application/json
 ```
 
+### 4. Claude Code 客户端示例
+
+Claude Code 连接的是 MCP 端点 `/mcp`，使用的是上一步创建的客户端 `api_key`，不是面板登录返回的 JWT。
+
+```powershell
+$env:GROK_MCP_API_KEY = "grok_xxx"
+
+claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp `
+  --header "Authorization: Bearer $env:GROK_MCP_API_KEY"
+```
+
+添加后在 Claude Code 会话中执行：
+
+```text
+/mcp
+```
+
+确认 `grok-mcp` 已连接，并能看到工具：
+
+- `grok_web_search`
+- `grok_x_search`
+
+实际使用时可以直接在 Claude Code 中提出搜索需求，Claude Code 会按需调用对应 MCP 工具。例如：
+
+```text
+使用 grok-mcp 搜索今天 OpenAI API 的最新发布，并列出来源。
+```
+
+```text
+用 X 搜索最近 24 小时里关于 Grok 的主要讨论，给出摘要和链接。
+```
+
+如果需要明确指定工具，可以在提示词里写出工具名：`grok_web_search` 用于网页搜索，`grok_x_search` 用于 X / Twitter 搜索。
+
+项目级共享配置也可以写入仓库根目录的 `.mcp.json`。不要把真实 `api_key` 提交进仓库，推荐使用环境变量展开：
+
+```json
+{
+  "mcpServers": {
+    "grok-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GROK_MCP_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+如果 `grok-mcp` 部署在远程服务器，建议通过 HTTPS 反向代理暴露 `/mcp`，并把 URL 改成公网地址，例如 `https://mcp.example.com/mcp`。
+
 ## Docker Compose
 
 复制配置模板并填入真实值：

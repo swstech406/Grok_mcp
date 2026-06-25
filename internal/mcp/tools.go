@@ -86,7 +86,7 @@ func runSearch(ctx context.Context, req *mcp.CallToolRequest, client *grok.Clien
 	})
 	if err != nil {
 		log.Debugf("search failed tool=%s: %v", toolType, err)
-		return toolError(err.Error()), SearchOutput{}, nil
+		return toolError("search request failed"), SearchOutput{}, nil
 	}
 
 	log.Debugf("search done tool=%s citations=%d sources=%d", toolType, len(result.Citations), len(result.Sources))

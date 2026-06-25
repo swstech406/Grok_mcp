@@ -9,6 +9,11 @@ import (
 	"golang.org/x/time/rate"
 )
 
+type entry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 // UserLimiter 按用户 ID 共享 RPM 令牌桶（用户下所有 API Key 共用）。
 type UserLimiter struct {
 	defaultPerMin int

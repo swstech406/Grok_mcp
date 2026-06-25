@@ -248,18 +248,6 @@ func (s *SQLiteStore) ReleaseSuccessCall(ctx context.Context, userID string) err
 	return err
 }
 
-func (s *SQLiteStore) IncrementUserTotalCalls(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE users SET total_calls = total_calls + 1 WHERE id = ?`, userID)
-	return err
-}
-
-func (s *SQLiteStore) IncrementUserSuccessCalls(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE users SET success_calls = success_calls + 1 WHERE id = ?`, userID)
-	return err
-}
-
 // TryIncrementUserSuccessCalls 仅在未达 success_limit 时递增；success_limit 为 0 表示不限。
 func (s *SQLiteStore) TryIncrementUserSuccessCalls(ctx context.Context, userID string, successLimit int) error {
 	var res sql.Result
