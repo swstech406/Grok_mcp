@@ -507,7 +507,7 @@
       ? `<span class="badge off">${escapeHTML(state.user.tier_name)}</span>`
       : "";
     const editBtn = isAdmin()
-      ? `<button class="button secondary" data-action="edit-account" type="button"><span class="material-symbols-outlined">edit</span><span>Edit Quotas</span></button>`
+      ? `<button class="button secondary" data-action="edit-account" type="button"><span class="material-symbols-outlined">edit</span><span>Edit Tier</span></button>`
       : "";
     return `
       <div class="page-head">
@@ -646,8 +646,8 @@
         <section class="modal" role="dialog" aria-modal="true" aria-label="Edit Quotas" data-modal>
           <button class="icon-button modal-close" data-action="close-modal" type="button"><span class="material-symbols-outlined">close</span></button>
           <div class="modal-body">
-            <h3>Edit Quotas</h3>
-            <p>${escapeHTML(user.username)} quota controls.</p>
+            <h3>Edit Tier</h3>
+            <p>${escapeHTML(user.username)} 的限额由所属 tier 决定。</p>
             <form id="edit-account-form" class="form-stack" style="margin-top: 24px;">
               <div class="field">
                 <label for="edit-account-tier">Tier</label>
@@ -655,21 +655,7 @@
                   <option value="" ${!user.tier_id ? "selected" : ""}>None</option>
                   ${tierOptions(user.tier_id)}
                 </select>
-                <span class="hint">选择 tier 会用预设值填充下方额度，保存后两者独立存储。</span>
-              </div>
-              <div class="field">
-                <label for="edit-account-rpm">RPM</label>
-                <input id="edit-account-rpm" name="rpm" class="input mono" type="number" min="0" value="${Number(user.rpm) || 0}">
-              </div>
-              <div class="field">
-                <label for="edit-account-total">Total Limit</label>
-                <input id="edit-account-total" name="total_limit" class="input mono" type="number" min="0" value="${Number(user.total_limit) || 0}">
-                <span class="hint">0 means unlimited.</span>
-              </div>
-              <div class="field">
-                <label for="edit-account-success">Success Limit</label>
-                <input id="edit-account-success" name="success_limit" class="input mono" type="number" min="0" value="${Number(user.success_limit) || 0}">
-                <span class="hint">0 means unlimited.</span>
+                <span class="hint">限额（RPM / 总次数 / 成功次数）由所选 tier 决定；调整 tier 预设请到 Tier Management 页。</span>
               </div>
               <div class="modal-actions">
                 <button class="button secondary" data-action="close-modal" type="button">Cancel</button>

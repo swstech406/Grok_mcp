@@ -339,7 +339,11 @@ func (h *Handler) adminGetUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	var tier *store.Tier
+	if u.TierID != "" {
+		tier, _ = h.Store.GetTierByID(r.Context(), u.TierID)
+	}
+	writeJSON(w, http.StatusOK, toUserResponseWithTier(u, tier))
 }
 
 func (h *Handler) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +355,6 @@ func (h *Handler) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := h.Store.UpdateUser(r.Context(), id, store.UserUpdates{
 		Enabled: req.Enabled, Role: req.Role, TierID: req.TierID,
-		RPM: req.RPM, TotalLimit: req.TotalLimit, SuccessLimit: req.SuccessLimit,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrUserNotFound) {
@@ -362,7 +365,11 @@ func (h *Handler) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "failed to update user")
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	var tier *store.Tier
+	if u.TierID != "" {
+		tier, _ = h.Store.GetTierByID(r.Context(), u.TierID)
+	}
+	writeJSON(w, http.StatusOK, toUserResponseWithTier(u, tier))
 }
 
 func (h *Handler) adminUserUsage(w http.ResponseWriter, r *http.Request) {

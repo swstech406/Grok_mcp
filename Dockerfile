@@ -61,6 +61,6 @@ VOLUME ["/app/data"]
 # /mcp 未带凭证会返回 401；健康检查用 /panel/ 的 302 重定向判断进程存活，
 # 避免把 401 误判为健康（旧实现 grep 任意 HTTP 响应行会匹配到 401）。
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-        CMD wget -q -S -O /dev/null http://127.0.0.1:8080/panel/ 2>&1 | grep -qE 'HTTP/[0-9.]+ 302' || exit 1
+        CMD wget -q -S -O /dev/null http://127.0.0.1:8080/panel/ 2>&1 | grep -qE 'HTTP/[0-9.]+ 200' || exit 1
 
 ENTRYPOINT ["/app/grok-mcp"]

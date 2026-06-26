@@ -74,7 +74,7 @@ func JWTMiddleware(secret string, st store.Store, skip map[string]struct{}) func
 				http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 				return
 			}
-			user, err := st.GetUserByID(r.Context(), claims.UserID)
+			user, err := LoadUserWithTierLimits(r.Context(), st, claims.UserID)
 			if err != nil {
 				http.Error(w, "user not found", http.StatusUnauthorized)
 				return

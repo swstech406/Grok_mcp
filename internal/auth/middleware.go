@@ -57,7 +57,7 @@ func APIKeyMiddleware(st store.Store) func(http.Handler) http.Handler {
 				return
 			}
 
-			user, err := st.GetUserByID(r.Context(), key.UserID)
+			user, err := LoadUserWithTierLimits(r.Context(), st, key.UserID)
 			if err != nil {
 				http.Error(w, "authentication failed", http.StatusInternalServerError)
 				return

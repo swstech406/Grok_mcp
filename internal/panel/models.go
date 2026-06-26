@@ -65,13 +65,12 @@ type KeyResponse struct {
 	TotalCalls int64      `json:"total_calls"`
 }
 
+// UpdateUserRequest 仅允许调整 enabled/role/tier_id；限额（rpm/total_limit/success_limit）
+// 由所属 tier 决定，不再支持按用户单独设置。
 type UpdateUserRequest struct {
-	Enabled      *bool           `json:"enabled,omitempty"`
-	Role         *store.UserRole `json:"role,omitempty"`
-	TierID       *string         `json:"tier_id,omitempty"`
-	RPM          *int            `json:"rpm,omitempty"`
-	TotalLimit   *int            `json:"total_limit,omitempty"`
-	SuccessLimit *int            `json:"success_limit,omitempty"`
+	Enabled *bool           `json:"enabled,omitempty"`
+	Role    *store.UserRole `json:"role,omitempty"`
+	TierID  *string         `json:"tier_id,omitempty"`
 }
 
 // TierResponse 为等级预设的对外表示。
@@ -129,13 +128,17 @@ func toUserResponse(u *store.User) UserResponse {
 	}
 }
 
-// toUserResponseWithTier 填充用户关联的 tier 名称与等级；tier 不存在时仅返回基础字段。
+// toUserResponseWithTier 填充用户关联的 tier 名称、等级与限额。限额以 tier 为唯一来源，
+// 因此用 tier 的 rpm/total_limit/success_limit 覆盖用户自身字段；tier 不存在时仅返回基础字段。
 func toUserResponseWithTier(u *store.User, tier *store.Tier) UserResponse {
 	resp := toUserResponse(u)
 	if tier != nil {
 		resp.TierName = tier.Name
 		lvl := tier.Level
 		resp.TierLevel = &lvl
+		resp.RPM = tier.RPM
+		resp.TotalLimit = tier.TotalLimit
+		resp.SuccessLimit = tier.SuccessLimit
 	}
 	return resp
 }
