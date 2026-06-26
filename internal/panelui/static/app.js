@@ -538,7 +538,13 @@
             ${editBtn}
           </div>
           <div class="quota-list">
-            ${quotaProgress("RPM", state.user.rpm, 0, "per minute")}
+            <div class="quota-item">
+              <div class="field-row">
+                <span class="field-label">RPM</span>
+                <span class="mono">${formatNumber(state.user.rpm)} req/min</span>
+              </div>
+              <span class="hint">每分钟请求上限，所有 Key 共享</span>
+            </div>
             ${quotaProgress("Total Requests", state.user.total_calls, state.user.total_limit, "all keys")}
             ${quotaProgress("Success Requests", state.user.success_calls, state.user.success_limit, "successful calls")}
           </div>
