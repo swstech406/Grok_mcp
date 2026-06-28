@@ -36,8 +36,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ---- 运行阶段 ----
 FROM ${RUNTIME_IMG}
 
-# ca-certificates：调用上游 HTTPS 需要；tzdata：日志/时间戳时区；wget：容器健康检查。
-RUN apk add --no-cache ca-certificates tzdata wget \
+# Alpine 包仓库镜像；默认阿里云，国内构建稳定（与 GOPROXY=goproxy.cn 同理）。
+# 海外构建可传 --build-arg ALPINE_MIRROR= 清空，回退官方 dl-cdn.alpinelinux.org。
+ARG ALPINE_MIRROR=mirrors.aliyun.com
+RUN if [ -n "${ALPINE_MIRROR}" ]; then \
+        sed -i "s|dl-cdn.alpinelinux.org|${ALPINE_MIRROR}|g" /etc/apk/repositories; \
+    fi \
+        && apk add --no-cache ca-certificates tzdata wget \
         && addgroup -S app \
         && adduser -S app -G app
 

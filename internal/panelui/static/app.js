@@ -753,6 +753,9 @@
     const top = rows[0] || ["No Data", 0];
     const pct = total ? Math.round((top[1] / total) * 100) : 0;
     const rest = Math.max(0, 100 - pct);
+    // When only two tools exist, show the second tool's real name instead of "Other Tools".
+    const second = rows[1];
+    const secondLabel = rows.length > 2 ? "Other Tools" : (second ? second[0] : null);
     return `
       <div class="card panel donut-wrap">
         <div class="panel-head">
@@ -771,10 +774,11 @@
             <span class="legend-name"><span class="dot"></span>${escapeHTML(top[0])}</span>
             <span class="mono">${pct}%</span>
           </div>
+          ${secondLabel ? `
           <div class="legend-row">
-            <span class="legend-name"><span class="dot light"></span>Other Tools</span>
+            <span class="legend-name"><span class="dot light"></span>${escapeHTML(secondLabel)}</span>
             <span class="mono">${rest}%</span>
-          </div>
+          </div>` : ""}
         </div>
       </div>`;
   }
