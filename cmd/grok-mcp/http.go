@@ -70,6 +70,9 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 		Addr:              cfg.HTTPAddr,
 		Handler:           rootMux,
 		ReadHeaderTimeout: 10 * time.Second,
+		// MaxBytesReader only caps request size. ReadTimeout also bounds how long a
+		// client may take to send the body after headers, mitigating slow-body DoS.
+		ReadTimeout: 30 * time.Second,
 		// SSE 流式响应（/mcp tools/call）是长连接，WriteTimeout 不能短于上游超时；
 		// 设为略大于 cfg.Timeout 兜底，避免在合法的长时间搜索中被中断。
 		WriteTimeout: cfg.Timeout + 30*time.Second,
