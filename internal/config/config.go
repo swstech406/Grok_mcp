@@ -21,7 +21,7 @@ const (
 
 // Config 保存进程启动所需的全部配置项。
 //
-// 用户限额（RPM / 总次数 / 成功次数）不再可配置，统一由 tier 决定；
+// 用户限额（RPM / success limit）不再可配置，统一由 tier 决定；
 // DefaultUserRPM 仅作为内存限流器在 tier 解析异常时的兜底，不再用于新用户。
 type Config struct {
 	CPABaseURL     string

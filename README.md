@@ -31,7 +31,7 @@ xAI / Grok
 - Streamable HTTP MCP 端点：`/mcp`
 - 管理面板 API：`/panel/v1/*`（注册/登录开放；其他接口需 JWT；管理员接口需 `role=admin`）
 - 客户端 API Key 鉴权（Key 归属用户）
-- 按用户汇总的 RPM 与成功请求上限
+- 按用户汇总的 RPM 与 success limit
 - SQLite 持久化 API Key 与调用明细
 - 仅统计真实 `tools/call` 调用，握手和工具列表请求不计入用量
 - 上游 SSE 流式解析，并把搜索轮次转成 MCP progress 通知
