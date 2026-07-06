@@ -26,20 +26,24 @@ const (
 	xSearchToolDescription = "Search posts on X in real time via Grok x_search " +
 		"(through CPA /v1/responses). Use for current X/Twitter posts and " +
 		"source-backed answers. query is required; model is optional and defaults " +
-		"to GROK_MODEL. Because this tool shares the search schema with web search, " +
-		"allowed_domains and excluded_domains are mutually exclusive with a maximum " +
-		"of 5 domains each, but domain filters are not sent to upstream x_search. " +
-		"Image search and image understanding options are not applicable to this tool."
+		"to GROK_MODEL. This tool accepts only query and model; domain filters " +
+		"and image-related options belong to grok_web_search."
 )
 
-// SearchInput 为 MCP tools/call 的 JSON 入参，字段名与 jsonschema 标签供客户端生成表单。
-type SearchInput struct {
+// WebSearchInput 为 grok_web_search 的 JSON 入参，字段名与 jsonschema 标签供客户端生成表单。
+type WebSearchInput struct {
 	Query                    string   `json:"query" jsonschema:"Search query text"`
 	Model                    string   `json:"model,omitempty" jsonschema:"Optional model override. Defaults to GROK_MODEL env var."`
 	AllowedDomains           []string `json:"allowed_domains,omitempty" jsonschema:"Only search within these domains (max 5). Cannot be used with excluded_domains."`
 	ExcludedDomains          []string `json:"excluded_domains,omitempty" jsonschema:"Exclude these domains from search (max 5). Cannot be used with allowed_domains."`
 	EnableImageUnderstanding *bool    `json:"enable_image_understanding,omitempty" jsonschema:"Enable image understanding during web search (web_search only)."`
 	EnableImageSearch        *bool    `json:"enable_image_search,omitempty" jsonschema:"Enable image search results in web search answers (web_search only)."`
+}
+
+// XSearchInput 为 grok_x_search 的 JSON 入参。X 搜索不暴露 web_search 专属的域名或图片选项。
+type XSearchInput struct {
+	Query string `json:"query" jsonschema:"Search query text"`
+	Model string `json:"model,omitempty" jsonschema:"Optional model override. Defaults to GROK_MODEL env var."`
 }
 
 // SearchOutput 为工具成功时的结构化返回，会序列化为 MCP 工具结果 JSON。
@@ -54,37 +58,33 @@ type SearchOutput struct {
 // RegisterTools 在 MCP Server 上注册网页搜索与 X 搜索两个工具。
 func RegisterTools(server *mcp.Server, client *grok.Client, debug bool) {
 	log := logx.New("mcp", debug)
-	registerSearchTool(
-		server,
-		client,
-		log,
-		webSearchToolName,
-		webSearchToolTitle,
-		webSearchToolDescription,
-		grok.ToolTypeWebSearch,
-	)
-	registerSearchTool(
-		server,
-		client,
-		log,
-		xSearchToolName,
-		xSearchToolTitle,
-		xSearchToolDescription,
-		grok.ToolTypeXSearch,
-	)
+	registerWebSearchTool(server, client, log)
+	registerXSearchTool(server, client, log)
 }
 
-func registerSearchTool(
-	server *mcp.Server,
-	client *grok.Client,
-	log *logx.Logger,
-	name string,
-	title string,
-	description string,
-	toolType grok.ToolType,
-) {
-	mcp.AddTool(server, newSearchTool(name, title, description), func(ctx context.Context, req *mcp.CallToolRequest, input SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
-		return runSearch(ctx, req, client, log, toolType, input)
+func registerWebSearchTool(server *mcp.Server, client *grok.Client, log *logx.Logger) {
+	mcp.AddTool(server, newSearchTool(webSearchToolName, webSearchToolTitle, webSearchToolDescription), func(ctx context.Context, req *mcp.CallToolRequest, input WebSearchInput) (*mcp.CallToolResult, SearchOutput, error) {
+		searchReq := grok.SearchRequest{
+			Query:                    input.Query,
+			Model:                    input.Model,
+			ToolType:                 grok.ToolTypeWebSearch,
+			AllowedDomains:           input.AllowedDomains,
+			ExcludedDomains:          input.ExcludedDomains,
+			EnableImageUnderstanding: input.EnableImageUnderstanding,
+			EnableImageSearch:        input.EnableImageSearch,
+		}
+		return runSearch(ctx, req, client, log, searchReq)
+	})
+}
+
+func registerXSearchTool(server *mcp.Server, client *grok.Client, log *logx.Logger) {
+	mcp.AddTool(server, newSearchTool(xSearchToolName, xSearchToolTitle, xSearchToolDescription), func(ctx context.Context, req *mcp.CallToolRequest, input XSearchInput) (*mcp.CallToolResult, SearchOutput, error) {
+		searchReq := grok.SearchRequest{
+			Query:    input.Query,
+			Model:    input.Model,
+			ToolType: grok.ToolTypeXSearch,
+		}
+		return runSearch(ctx, req, client, log, searchReq)
 	})
 }
 
@@ -102,21 +102,14 @@ func newSearchTool(name, title, description string) *mcp.Tool {
 }
 
 // runSearch 调用上游流式搜索，并在客户端提供 progressToken 时推送每轮搜索进度通知。
-func runSearch(ctx context.Context, req *mcp.CallToolRequest, client *grok.Client, log *logx.Logger, toolType grok.ToolType, input SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
-	query := strings.TrimSpace(input.Query)
+func runSearch(ctx context.Context, req *mcp.CallToolRequest, client *grok.Client, log *logx.Logger, searchReq grok.SearchRequest) (*mcp.CallToolResult, SearchOutput, error) {
+	query := strings.TrimSpace(searchReq.Query)
 	if query == "" {
 		return toolError("query is required"), SearchOutput{}, nil
 	}
-
-	searchReq := grok.SearchRequest{
-		Query:                    query,
-		Model:                    strings.TrimSpace(input.Model),
-		ToolType:                 toolType,
-		AllowedDomains:           input.AllowedDomains,
-		ExcludedDomains:          input.ExcludedDomains,
-		EnableImageUnderstanding: input.EnableImageUnderstanding,
-		EnableImageSearch:        input.EnableImageSearch,
-	}
+	searchReq.Query = query
+	searchReq.Model = strings.TrimSpace(searchReq.Model)
+	toolType := searchReq.ToolType
 
 	var progress float64
 	var token any

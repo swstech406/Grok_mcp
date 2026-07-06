@@ -12,7 +12,7 @@ Usage:
 - model is optional. If omitted, the server uses the GROK_MODEL environment variable.
 - allowed_domains limits web results to specific domains; excluded_domains filters domains out. Do not provide allowed_domains and excluded_domains together. Each list supports at most 5 domains.
 - enable_image_understanding and enable_image_search are only applicable to grok_web_search.
-- For grok_x_search, domain filters and image-related fields are part of the shared input schema but are not sent to upstream x_search.
+- grok_x_search accepts only query and model; domain filters and image-related fields are not part of its input schema.
 
 Results:
 - Successful tool calls return structured JSON containing answer, citations, sources, and usage when upstream usage data is available.

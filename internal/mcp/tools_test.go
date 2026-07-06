@@ -62,8 +62,11 @@ func TestNewSearchToolMetadata(t *testing.T) {
 			if !strings.Contains(tool.Description, "query is required") {
 				t.Fatalf("Description must mention query requirement; description=%q", tool.Description)
 			}
-			if !strings.Contains(tool.Description, "allowed_domains and excluded_domains are mutually exclusive") {
-				t.Fatalf("Description must mention domain filter exclusivity; description=%q", tool.Description)
+			if testCase.name == webSearchToolName && !strings.Contains(tool.Description, "allowed_domains and excluded_domains are mutually exclusive") {
+				t.Fatalf("web search description must mention domain filter exclusivity; description=%q", tool.Description)
+			}
+			if testCase.name == xSearchToolName && !strings.Contains(tool.Description, "accepts only query and model") {
+				t.Fatalf("x search description must mention its smaller input schema; description=%q", tool.Description)
 			}
 			if tool.Annotations == nil {
 				t.Fatalf("Annotations must be set")
@@ -78,10 +81,10 @@ func TestNewSearchToolMetadata(t *testing.T) {
 	}
 }
 
-// TestSearchInputSchema 锁住 L1 修复：query 的 required 由 json tag（无 omitempty）自动推断，
+// TestWebSearchInputSchema 锁住 L1 修复：query 的 required 由 json tag（无 omitempty）自动推断，
 // jsonschema tag 仅作 description，不能带 "required," 前缀污染描述文本。
-func TestSearchInputSchema(t *testing.T) {
-	schema, err := jsonschema.For[SearchInput](nil)
+func TestWebSearchInputSchema(t *testing.T) {
+	schema, err := jsonschema.For[WebSearchInput](nil)
 	if err != nil {
 		t.Fatalf("generate schema: %v", err)
 	}
@@ -102,6 +105,55 @@ func TestSearchInputSchema(t *testing.T) {
 	}
 	if prop.Description != "Search query text" {
 		t.Fatalf("query description = %q, want %q", prop.Description, "Search query text")
+	}
+
+	webSearchProperties := []string{
+		"allowed_domains",
+		"excluded_domains",
+		"enable_image_understanding",
+		"enable_image_search",
+	}
+	for _, propertyName := range webSearchProperties {
+		if schema.Properties[propertyName] == nil {
+			t.Fatalf("web search schema missing %q", propertyName)
+		}
+	}
+
+}
+
+func TestXSearchInputSchemaOmitsWebOnlyFields(t *testing.T) {
+	schema, err := jsonschema.For[XSearchInput](nil)
+	if err != nil {
+		t.Fatalf("generate schema: %v", err)
+	}
+
+	required := false
+	for _, requiredPropertyName := range schema.Required {
+		if requiredPropertyName == "query" {
+			required = true
+		}
+	}
+	if !required {
+		t.Fatalf("query must be required; required=%v", schema.Required)
+	}
+
+	if schema.Properties["query"] == nil {
+		t.Fatalf("query property missing from x search schema")
+	}
+	if schema.Properties["model"] == nil {
+		t.Fatalf("model property missing from x search schema")
+	}
+
+	webOnlyProperties := []string{
+		"allowed_domains",
+		"excluded_domains",
+		"enable_image_understanding",
+		"enable_image_search",
+	}
+	for _, propertyName := range webOnlyProperties {
+		if schema.Properties[propertyName] != nil {
+			t.Fatalf("x search schema must not expose %q", propertyName)
+		}
 	}
 }
 

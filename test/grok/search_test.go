@@ -193,10 +193,15 @@ func TestSearchStreamXSearchNoWebFields(t *testing.T) {
 	defer server.Close()
 
 	client := newClientAt(t, server.URL)
+	enableImageUnderstanding := true
+	enableImageSearch := true
 	_, err := client.SearchStream(context.Background(), grok.SearchRequest{
-		Query:          "test",
-		ToolType:       grok.ToolTypeXSearch,
-		AllowedDomains: []string{"a.com"},
+		Query:                    "test",
+		ToolType:                 grok.ToolTypeXSearch,
+		AllowedDomains:           []string{"a.com", "b.com", "c.com", "d.com", "e.com", "f.com"},
+		ExcludedDomains:          []string{"excluded.example"},
+		EnableImageUnderstanding: &enableImageUnderstanding,
+		EnableImageSearch:        &enableImageSearch,
 	}, nil)
 	if err != nil {
 		t.Fatalf("SearchStream failed: %v", err)
@@ -209,8 +214,11 @@ func TestSearchStreamXSearchNoWebFields(t *testing.T) {
 	if len(req.Tools) != 1 || req.Tools[0].Type != "x_search" {
 		t.Fatalf("unexpected tools: %+v", req.Tools)
 	}
-	if len(req.Tools[0].AllowedDomains) != 0 {
+	if len(req.Tools[0].AllowedDomains) != 0 || len(req.Tools[0].ExcludedDomains) != 0 {
 		t.Fatalf("x_search must not include web-only fields, got %+v", req.Tools[0])
+	}
+	if req.Tools[0].EnableImageUnderstanding != nil || req.Tools[0].EnableImageSearch != nil {
+		t.Fatalf("x_search must not include image fields, got %+v", req.Tools[0])
 	}
 }
 

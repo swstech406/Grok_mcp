@@ -18,13 +18,16 @@ func validateModel(model string) error {
 	return nil
 }
 
-// validateSearchRequest 校验查询、工具类型及域名过滤参数的互斥与数量上限。
+// validateSearchRequest 校验查询、工具类型，以及 web_search 域名过滤参数的互斥与数量上限。
 func validateSearchRequest(req SearchRequest) error {
 	if strings.TrimSpace(req.Query) == "" {
 		return fmt.Errorf("query must not be empty")
 	}
 	if req.ToolType != ToolTypeWebSearch && req.ToolType != ToolTypeXSearch {
 		return fmt.Errorf("unsupported tool type: %q", req.ToolType)
+	}
+	if req.ToolType != ToolTypeWebSearch {
+		return nil
 	}
 	if len(req.AllowedDomains) > 0 && len(req.ExcludedDomains) > 0 {
 		return fmt.Errorf("allowed_domains and excluded_domains cannot be used together")
