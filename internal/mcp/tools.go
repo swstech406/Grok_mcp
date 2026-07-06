@@ -11,6 +11,27 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const (
+	webSearchToolName        = "grok_web_search"
+	webSearchToolTitle       = "Grok Web Search"
+	webSearchToolDescription = "Search the public web in real time via Grok web_search " +
+		"(through CPA /v1/responses). Use for fresh public web information and " +
+		"source-backed answers. query is required; model is optional and defaults " +
+		"to GROK_MODEL; allowed_domains and excluded_domains are mutually " +
+		"exclusive with a maximum of 5 domains each. enable_image_understanding " +
+		"and enable_image_search apply to this web search tool."
+
+	xSearchToolName        = "grok_x_search"
+	xSearchToolTitle       = "Grok X Search"
+	xSearchToolDescription = "Search posts on X in real time via Grok x_search " +
+		"(through CPA /v1/responses). Use for current X/Twitter posts and " +
+		"source-backed answers. query is required; model is optional and defaults " +
+		"to GROK_MODEL. Because this tool shares the search schema with web search, " +
+		"allowed_domains and excluded_domains are mutually exclusive with a maximum " +
+		"of 5 domains each, but domain filters are not sent to upstream x_search. " +
+		"Image search and image understanding options are not applicable to this tool."
+)
+
 // SearchInput 为 MCP tools/call 的 JSON 入参，字段名与 jsonschema 标签供客户端生成表单。
 type SearchInput struct {
 	Query                    string   `json:"query" jsonschema:"Search query text"`
@@ -33,21 +54,51 @@ type SearchOutput struct {
 // RegisterTools 在 MCP Server 上注册网页搜索与 X 搜索两个工具。
 func RegisterTools(server *mcp.Server, client *grok.Client, debug bool) {
 	log := logx.New("mcp", debug)
-	registerSearchTool(server, client, log, "grok_web_search",
-		"Search the public web in real time via Grok (through CPA /v1/responses + web_search tool). Returns an answer with source URLs.",
-		grok.ToolTypeWebSearch)
-	registerSearchTool(server, client, log, "grok_x_search",
-		"Search posts on X in real time via Grok (through CPA /v1/responses + x_search tool). Returns an answer with source URLs.",
-		grok.ToolTypeXSearch)
+	registerSearchTool(
+		server,
+		client,
+		log,
+		webSearchToolName,
+		webSearchToolTitle,
+		webSearchToolDescription,
+		grok.ToolTypeWebSearch,
+	)
+	registerSearchTool(
+		server,
+		client,
+		log,
+		xSearchToolName,
+		xSearchToolTitle,
+		xSearchToolDescription,
+		grok.ToolTypeXSearch,
+	)
 }
 
-func registerSearchTool(server *mcp.Server, client *grok.Client, log *logx.Logger, name, description string, toolType grok.ToolType) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        name,
-		Description: description,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
+func registerSearchTool(
+	server *mcp.Server,
+	client *grok.Client,
+	log *logx.Logger,
+	name string,
+	title string,
+	description string,
+	toolType grok.ToolType,
+) {
+	mcp.AddTool(server, newSearchTool(name, title, description), func(ctx context.Context, req *mcp.CallToolRequest, input SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
 		return runSearch(ctx, req, client, log, toolType, input)
 	})
+}
+
+func newSearchTool(name, title, description string) *mcp.Tool {
+	openWorldHint := true
+	return &mcp.Tool{
+		Name:        name,
+		Title:       title,
+		Description: description,
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:  true,
+			OpenWorldHint: &openWorldHint,
+		},
+	}
 }
 
 // runSearch 调用上游流式搜索，并在客户端提供 progressToken 时推送每轮搜索进度通知。

@@ -36,7 +36,9 @@ func main() {
 	}
 
 	client := grok.NewClient(cfg)
-	server := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, &mcp.ServerOptions{
+		Instructions: mcpserver.ServerInstructions,
+	})
 	mcpserver.RegisterTools(server, client, cfg.Debug)
 
 	// 优雅退出：SIGINT / SIGTERM 时取消 context，触发 HTTP Server Shutdown。
