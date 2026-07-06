@@ -690,6 +690,101 @@ a {
   grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
 }
 
+.tutorial-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  margin-bottom: 32px;
+}
+
+.tutorial-card {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+}
+
+.tutorial-card-wide {
+  grid-column: 1 / -1;
+}
+
+.tutorial-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.tutorial-card-head > .material-symbols-outlined {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  background: var(--success-soft);
+  color: var(--primary);
+}
+
+.tutorial-card h3 {
+  margin: 0;
+  color: var(--on-surface);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.tutorial-card p {
+  margin: 4px 0 0;
+  color: var(--on-surface-variant);
+}
+
+.tutorial-steps,
+.tutorial-tool-list,
+.tutorial-check-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--on-surface-variant);
+}
+
+.tutorial-tool-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.tutorial-tool-list li {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius);
+  background: var(--surface-dim);
+}
+
+.tutorial-code {
+  overflow-x: auto;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius);
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+}
+
+.tutorial-code code {
+  font-family: inherit;
+}
+
+.tutorial-card .hint {
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: var(--surface-low);
+  color: var(--on-surface-variant);
+}
+
 .card {
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-lg);
@@ -1285,7 +1380,8 @@ tbody tr:last-child td {
   }
 
   .viz-grid,
-  .settings-grid {
+  .settings-grid,
+  .tutorial-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1368,6 +1464,7 @@ tbody tr:last-child td {
   }
 
   .nav-bottom {
+    display: contents;
     margin-top: 0;
   }
 
