@@ -74,6 +74,31 @@ func TestExtractToolNameParsesAndRestoresBody(t *testing.T) {
 	}
 }
 
+func TestExtractToolNameMiddlewareRejectsJSONRPCBatch(t *testing.T) {
+	payload := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_web_search"}}]`
+	called := false
+	h := ExtractToolNameMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(payload))
+	h.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("JSON-RPC batch request must not reach downstream handler")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for JSON-RPC batch, got %d", rec.Code)
+	}
+	if contentType := rec.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("expected application/json content type, got %q", contentType)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "JSON-RPC batch requests are not supported") {
+		t.Fatalf("expected batch rejection message, got %q", body)
+	}
+}
+
 func TestExtractToolNameIgnoresNonToolCall(t *testing.T) {
 	for _, payload := range []string{
 		`{"jsonrpc":"2.0","method":"initialize","params":{}}`,

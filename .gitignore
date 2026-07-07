@@ -21,6 +21,7 @@ coverage.txt
 .env.local
 
 # IDE
+.cursor/
 .vscode/
 .idea/
 

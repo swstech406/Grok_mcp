@@ -50,11 +50,11 @@ func TestEnsureBootstrapAdminCreatesAdminForEmptyStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if secondCredentials != nil {
-		t.Fatalf("expected no credentials when users already exist, got %+v", secondCredentials)
+		t.Fatalf("expected no credentials when an enabled admin already exists, got %+v", secondCredentials)
 	}
 }
 
-func TestEnsureBootstrapAdminSkipsNonEmptyStore(t *testing.T) {
+func TestEnsureBootstrapAdminCreatesAdminWhenOnlyRegularUsersExist(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "bootstrap-non-empty.db")
 	sqliteStore, err := store.OpenSQLite(storePath)
 	if err != nil {
@@ -70,8 +70,16 @@ func TestEnsureBootstrapAdminSkipsNonEmptyStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credentials != nil {
-		t.Fatalf("expected no bootstrap credentials for non-empty database, got %+v", credentials)
+	if credentials == nil {
+		t.Fatalf("expected bootstrap credentials when no enabled admin exists")
+	}
+
+	adminUser, err := sqliteStore.GetUserByUsername(context.Background(), bootstrapAdminUsername)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adminUser == nil || adminUser.Role != store.RoleAdmin || !adminUser.Enabled {
+		t.Fatalf("expected enabled bootstrap admin user, got %+v", adminUser)
 	}
 }
 

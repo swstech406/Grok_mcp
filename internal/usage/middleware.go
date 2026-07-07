@@ -17,6 +17,11 @@ import (
 // toolNameCtxKey 为 context 中存放 tools/call 工具名的私有键类型。
 type toolNameCtxKey struct{}
 
+type jsonRPCRequestInspection struct {
+	ToolName       string
+	IsBatchRequest bool
+}
+
 // WithToolName 将已解析的工具名附加到 context，供下游中间件复用，避免重复解析请求体。
 func WithToolName(ctx context.Context, name string) context.Context {
 	return context.WithValue(ctx, toolNameCtxKey{}, name)
@@ -30,11 +35,16 @@ func ToolNameFromContext(ctx context.Context) (string, bool) {
 
 // ExtractToolNameMiddleware 在鉴权之后、额度与用量中间件之前解析一次 tools/call 工具名并写入 context。
 // 这样后续中间件直接读取 context，无需重复读取并恢复 Body。对非 tools/call 请求写入空名后透传。
+// JSON-RPC batch 请求会被提前拒绝，避免批量 tools/call 绕过配额预留与用量记录。
 func ExtractToolNameMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			name := extractToolName(r)
-			r = r.WithContext(WithToolName(r.Context(), name))
+			inspection := inspectJSONRPCRequest(r)
+			if inspection.IsBatchRequest {
+				writeJSONRPCBatchUnsupported(w)
+				return
+			}
+			r = r.WithContext(WithToolName(r.Context(), inspection.ToolName))
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -42,7 +52,13 @@ func ExtractToolNameMiddleware() func(http.Handler) http.Handler {
 
 // PeekToolName 解析 tools/call 工具名但不消费 Body；保留供未挂载 ExtractToolNameMiddleware 的旧链路使用。
 func PeekToolName(r *http.Request) string {
-	return extractToolName(r)
+	return inspectJSONRPCRequest(r).ToolName
+}
+
+func writeJSONRPCBatchUnsupported(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"JSON-RPC batch requests are not supported"},"id":null}`))
 }
 
 // responseRecorder 捕获 HTTP 状态码；SSE 流式响应仅保留最后一条 data 行用于判断 isError。
@@ -348,18 +364,27 @@ const maxParseBody = 1 << 20 // 1 MiB
 // extractToolName 从 MCP JSON-RPC 请求体解析 tools/call 的 params.name。
 // 读 Body 时有大小上限，但会用 MultiReader 完整恢复，以便下游 handler 仍能读取全部内容。
 func extractToolName(r *http.Request) string {
+	return inspectJSONRPCRequest(r).ToolName
+}
+
+func inspectJSONRPCRequest(r *http.Request) jsonRPCRequestInspection {
 	if r.Body == nil {
-		return ""
+		return jsonRPCRequestInspection{}
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxParseBody+1))
 	if err != nil {
-		return ""
+		return jsonRPCRequestInspection{}
 	}
 	// 恢复完整 Body：已读字节 + 原始流的剩余部分（若 LimitReader 在上限前停止，则后者为空流）。
 	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
 
+	trimmedBody := bytes.TrimSpace(body)
+	if len(trimmedBody) > 0 && trimmedBody[0] == '[' {
+		return jsonRPCRequestInspection{IsBatchRequest: true}
+	}
+
 	if int64(len(body)) > maxParseBody {
-		return "" // 超出上限的非典型请求体，跳过解析。
+		return jsonRPCRequestInspection{} // 超出上限的非典型请求体，跳过解析。
 	}
 
 	var msg struct {
@@ -369,10 +394,10 @@ func extractToolName(r *http.Request) string {
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(body, &msg); err != nil {
-		return ""
+		return jsonRPCRequestInspection{}
 	}
 	if msg.Method == "tools/call" {
-		return msg.Params.Name
+		return jsonRPCRequestInspection{ToolName: msg.Params.Name}
 	}
-	return ""
+	return jsonRPCRequestInspection{}
 }

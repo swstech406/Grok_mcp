@@ -158,6 +158,7 @@ type Store interface {
 	UpdateUser(ctx context.Context, id string, updates UserUpdates) (*User, error)
 	DeleteUser(ctx context.Context, id string) error
 	CountUsers(ctx context.Context) (int64, error)
+	CountEnabledAdmins(ctx context.Context) (int64, error)
 	ReserveSuccessCall(ctx context.Context, userID string, successLimit int) error
 	ReleaseSuccessCall(ctx context.Context, userID string) error
 	TryIncrementUserSuccessCalls(ctx context.Context, userID string, successLimit int) error

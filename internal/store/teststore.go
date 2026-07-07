@@ -24,7 +24,8 @@ func (TestStore) ListUsers(context.Context) ([]*User, error)               { ret
 func (TestStore) UpdateUser(context.Context, string, UserUpdates) (*User, error) {
 	return nil, nil
 }
-func (TestStore) CountUsers(context.Context) (int64, error) { return 0, nil }
+func (TestStore) CountUsers(context.Context) (int64, error)         { return 0, nil }
+func (TestStore) CountEnabledAdmins(context.Context) (int64, error) { return 0, nil }
 func (TestStore) ReserveSuccessCall(context.Context, string, int) error {
 	return nil
 }

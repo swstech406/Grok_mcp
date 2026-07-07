@@ -185,11 +185,11 @@ func initializeServerSettings(ctx context.Context, st store.Store, cfg *config.C
 }
 
 func ensureBootstrapAdmin(ctx context.Context, st store.Store) (*bootstrapAdminCredentials, error) {
-	userCount, err := st.CountUsers(ctx)
+	enabledAdminCount, err := st.CountEnabledAdmins(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("count users: %w", err)
+		return nil, fmt.Errorf("count enabled admins: %w", err)
 	}
-	if userCount > 0 {
+	if enabledAdminCount > 0 {
 		return nil, nil
 	}
 

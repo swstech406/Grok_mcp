@@ -242,6 +242,14 @@ func (s *SQLiteStore) CountUsers(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+func (s *SQLiteStore) CountEnabledAdmins(ctx context.Context) (int64, error) {
+	var enabledAdminCount int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM users WHERE role = ? AND enabled = 1`, string(RoleAdmin),
+	).Scan(&enabledAdminCount)
+	return enabledAdminCount, err
+}
+
 // ReserveSuccessCall 在 tools/call 前原子递增 success_calls；success_limit 为 0 表示不限。
 func (s *SQLiteStore) ReserveSuccessCall(ctx context.Context, userID string, successLimit int) error {
 	return s.TryIncrementUserSuccessCalls(ctx, userID, successLimit)
