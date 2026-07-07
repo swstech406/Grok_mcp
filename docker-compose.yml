@@ -12,14 +12,18 @@ services:
     container_name: grok-mcp
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # 默认仅绑定宿主机 loopback；公网暴露请放在 HTTPS 反向代理之后。
+      - "127.0.0.1:8080:8080"
     environment:
       CPA_BASE_URL: "${CPA_BASE_URL:-http://host.docker.internal:8317}"
       CPA_API_KEY: "${CPA_API_KEY:?CPA_API_KEY is required}"
       GROK_JWT_SECRET: "${GROK_JWT_SECRET:?GROK_JWT_SECRET is required}"
       GROK_HTTP_ADDR: ":8080"
       GROK_DB_PATH: "/app/data/grok-mcp.db"
+      GROK_PANEL_REGISTRATION: "${GROK_PANEL_REGISTRATION:-bootstrap-only}"
+      GROK_SETUP_TOKEN: "${GROK_SETUP_TOKEN:-}"
       GROK_DEFAULT_USER_RPM: "${GROK_DEFAULT_USER_RPM:-60}"
+      GROK_MCP_IP_RPM: "${GROK_MCP_IP_RPM:-300}"
       GROK_MODEL: "${GROK_MODEL:-grok-4.3}"
       GROK_HTTP_TIMEOUT: "${GROK_HTTP_TIMEOUT:-120}"
       GROK_MCP_DEBUG: "${GROK_MCP_DEBUG:-}"

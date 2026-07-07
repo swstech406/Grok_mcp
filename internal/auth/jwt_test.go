@@ -60,6 +60,54 @@ func TestJWTValidTokenAccepted(t *testing.T) {
 	}
 }
 
+func TestJWTRejectsMalformedWrongSecretAndExpiredTokens(t *testing.T) {
+	st, user := jwtTestStore(t)
+	h := guardedHandler(testSecret, st)
+
+	if code := do(t, h, "not-a-jwt"); code != http.StatusUnauthorized {
+		t.Fatalf("malformed token should be rejected with 401, got %d", code)
+	}
+
+	wrongSecretToken, _, err := IssuePanelToken("wrong-secret-must-be-at-least-32-bytes!", user, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := do(t, h, wrongSecretToken); code != http.StatusUnauthorized {
+		t.Fatalf("wrong-secret token should be rejected with 401, got %d", code)
+	}
+
+	expiringToken, _, err := IssuePanelToken(testSecret, user, time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if code := do(t, h, expiringToken); code != http.StatusUnauthorized {
+		t.Fatalf("expired token should be rejected with 401, got %d", code)
+	}
+}
+
+func TestJWTMiddlewareSkipsConfiguredPublicPaths(t *testing.T) {
+	st, _ := jwtTestStore(t)
+	called := false
+	h := JWTMiddleware(testSecret, st, map[string]struct{}{
+		"/panel/v1/auth/login": {},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/login", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatal("expected skipped path to reach downstream handler")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
 // TestJWTRoleDowngradeInvalidatesToken 验证角色降级后，旧 token 因 role + tv 不匹配被拒签。
 func TestJWTRoleDowngradeInvalidatesToken(t *testing.T) {
 	st, user := jwtTestStore(t)

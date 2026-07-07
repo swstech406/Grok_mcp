@@ -118,6 +118,33 @@ func TestSearchStreamValidateSearchRequestErrors(t *testing.T) {
 			want: "excluded_domains supports at most 5 entries",
 		},
 		{
+			name: "domain filter rejects scheme",
+			req: grok.SearchRequest{
+				Query:          "test",
+				ToolType:       grok.ToolTypeWebSearch,
+				AllowedDomains: []string{"https://example.com"},
+			},
+			want: "scheme is not allowed",
+		},
+		{
+			name: "domain filter rejects localhost",
+			req: grok.SearchRequest{
+				Query:           "test",
+				ToolType:        grok.ToolTypeWebSearch,
+				ExcludedDomains: []string{"localhost"},
+			},
+			want: "local hostnames are not allowed",
+		},
+		{
+			name: "domain filter rejects ip literals",
+			req: grok.SearchRequest{
+				Query:          "test",
+				ToolType:       grok.ToolTypeWebSearch,
+				AllowedDomains: []string{"127.0.0.1"},
+			},
+			want: "IP literals are not allowed",
+		},
+		{
 			name: "unsupported model",
 			req: grok.SearchRequest{
 				Query:    "test",
@@ -156,7 +183,7 @@ func TestSearchStreamWebSearchTopLevelDomains(t *testing.T) {
 	_, err := client.SearchStream(context.Background(), grok.SearchRequest{
 		Query:          "test",
 		ToolType:       grok.ToolTypeWebSearch,
-		AllowedDomains: []string{"a.com", "b.com"},
+		AllowedDomains: []string{" A.COM ", "b.com"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("SearchStream failed: %v", err)
@@ -175,6 +202,9 @@ func TestSearchStreamWebSearchTopLevelDomains(t *testing.T) {
 	}
 	if len(req.Tools) != 1 || len(req.Tools[0].AllowedDomains) != 2 {
 		t.Fatalf("expected top-level allowed_domains on tool, got %+v", req.Tools)
+	}
+	if req.Tools[0].AllowedDomains[0] != "a.com" {
+		t.Fatalf("expected domain filters to be normalized, got %+v", req.Tools[0].AllowedDomains)
 	}
 }
 
@@ -606,6 +636,116 @@ func TestSearchStreamXSearchAnswerAndCitations(t *testing.T) {
 	}
 	if len(result.Citations) != 1 || result.Citations[0] != "https://x.example/post" {
 		t.Fatalf("citations %v", result.Citations)
+	}
+}
+
+func TestSearchStreamSSEIgnoresCommentsAndEventLines(t *testing.T) {
+	stream := strings.Join([]string{
+		": keepalive comment",
+		"event: response.completed",
+		"data: " + completedEvent(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"comment ok"}]}]}`),
+		"",
+	}, "\n")
+
+	server := newSSEServer(t, stream)
+	defer server.Close()
+
+	client := newClientAt(t, server.URL)
+	result, err := client.SearchStream(context.Background(), grok.SearchRequest{
+		Query:    "test",
+		ToolType: grok.ToolTypeWebSearch,
+	}, nil)
+	if err != nil {
+		t.Fatalf("SearchStream failed: %v", err)
+	}
+	if result.Answer != "comment ok" {
+		t.Fatalf("unexpected answer: %q", result.Answer)
+	}
+}
+
+func TestSearchStreamDeduplicatesCitationsAndIgnoresEmptyCitationItems(t *testing.T) {
+	responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":"answer","annotations":[{"type":"url_citation","url":"https://example.com/a","title":"A"},{"type":"url_citation","url":"https://example.com/a","title":"Duplicate"},{"type":"file_citation","url":"https://example.com/ignored","title":"Ignored"}]}]}],"citations":[{"url":"https://example.com/a","title":"Top Duplicate"},{"url":"   ","title":"Empty"},null,"https://example.com/b"]}`
+
+	server := newSSEServer(t, sse(completedEvent(responseJSON)))
+	defer server.Close()
+
+	client := newClientAt(t, server.URL)
+	result, err := client.SearchStream(context.Background(), grok.SearchRequest{
+		Query:    "test",
+		ToolType: grok.ToolTypeWebSearch,
+	}, nil)
+	if err != nil {
+		t.Fatalf("SearchStream failed: %v", err)
+	}
+	if len(result.Citations) != 2 {
+		t.Fatalf("expected 2 unique citations, got %d (%v)", len(result.Citations), result.Citations)
+	}
+	if result.Citations[0] != "https://example.com/a" || result.Citations[1] != "https://example.com/b" {
+		t.Fatalf("unexpected citation order: %v", result.Citations)
+	}
+	if result.Sources[0].Title != "A" {
+		t.Fatalf("expected first source title from first annotation, got %+v", result.Sources[0])
+	}
+}
+
+func TestSearchStreamMultipleOutputTextBlocksJoinedByNewline(t *testing.T) {
+	responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":" first paragraph "},{"type":"output_text","text":"second paragraph"},{"type":"output_text","text":"   "}]}]}`
+
+	server := newSSEServer(t, sse(completedEvent(responseJSON)))
+	defer server.Close()
+
+	client := newClientAt(t, server.URL)
+	result, err := client.SearchStream(context.Background(), grok.SearchRequest{
+		Query:    "test",
+		ToolType: grok.ToolTypeWebSearch,
+	}, nil)
+	if err != nil {
+		t.Fatalf("SearchStream failed: %v", err)
+	}
+	if result.Answer != "first paragraph\nsecond paragraph" {
+		t.Fatalf("unexpected joined answer: %q", result.Answer)
+	}
+}
+
+func TestSearchStreamMalformedUsageReturnsDecodeError(t *testing.T) {
+	responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":"answer"}]}],"usage":"not an object"}`
+
+	server := newSSEServer(t, sse(completedEvent(responseJSON)))
+	defer server.Close()
+
+	client := newClientAt(t, server.URL)
+	_, err := client.SearchStream(context.Background(), grok.SearchRequest{
+		Query:    "test",
+		ToolType: grok.ToolTypeWebSearch,
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "decode usage") {
+		t.Fatalf("expected usage decode error, got %v", err)
+	}
+}
+
+func TestSearchStreamOnlyReportsWebSearchCallRounds(t *testing.T) {
+	stream := sse(
+		`{"type":"response.output_item.done","item":{"type":"x_search_call","action":{"query":"ignored"}}}`,
+		`{"type":"response.output_item.done","item":{"type":"web_search_call","action":{"query":"reported"}}}`,
+		completedEvent(`{"output":[{"role":"assistant","content":[{"type":"output_text","text":"round ok"}]}]}`),
+	)
+
+	server := newSSEServer(t, stream)
+	defer server.Close()
+
+	var rounds []grok.SearchRound
+	client := newClientAt(t, server.URL)
+	_, err := client.SearchStream(context.Background(), grok.SearchRequest{
+		Query:    "test",
+		ToolType: grok.ToolTypeWebSearch,
+	}, func(round grok.SearchRound) {
+		rounds = append(rounds, round)
+	})
+	if err != nil {
+		t.Fatalf("SearchStream failed: %v", err)
+	}
+	if len(rounds) != 1 || rounds[0].Query != "reported" {
+		t.Fatalf("expected only web_search_call round to be reported, got %+v", rounds)
 	}
 }
 

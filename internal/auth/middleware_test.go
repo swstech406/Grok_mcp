@@ -2,9 +2,12 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/grok-mcp/internal/keyhash"
 	"github.com/grok-mcp/internal/store"
@@ -63,4 +66,187 @@ func TestAPIKeyMiddleware(t *testing.T) {
 	if rec2.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec2.Code)
 	}
+}
+
+func TestAPIKeyMiddlewareRejectsInvalidDisabledKeyAndDisabledUser(t *testing.T) {
+	testCases := []struct {
+		name string
+		key  *store.APIKey
+		user *store.User
+		want int
+	}{
+		{name: "unknown key", want: http.StatusForbidden},
+		{
+			name: "disabled key",
+			key:  &store.APIKey{ID: "k-disabled", UserID: "u1", Enabled: false},
+			user: &store.User{ID: "u1", Enabled: true},
+			want: http.StatusForbidden,
+		},
+		{
+			name: "disabled user",
+			key:  &store.APIKey{ID: "k-user-disabled", UserID: "u1", Enabled: true},
+			user: &store.User{ID: "u1", Enabled: false},
+			want: http.StatusForbidden,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			raw := "grok_" + stringsForAuthTest(testCase.name)
+			hash := keyhash.HashAPIKey(raw)
+			st := &memStore{byHash: map[string]*store.APIKey{}, users: map[string]*store.User{}}
+			if testCase.key != nil {
+				st.byHash[hash] = testCase.key
+			}
+			if testCase.user != nil {
+				st.users[testCase.user.ID] = testCase.user
+			}
+
+			handler := APIKeyMiddleware(NewStoreAPIKeyResolver(st))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+raw)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != testCase.want {
+				t.Fatalf("status = %d, want %d", rec.Code, testCase.want)
+			}
+		})
+	}
+}
+
+func TestAPIKeyMiddlewareResolverErrorReturnsInternalServerError(t *testing.T) {
+	handler := APIKeyMiddleware(failingAPIKeyResolver{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer grok_testtoken")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+type failingAPIKeyResolver struct{}
+
+func (failingAPIKeyResolver) Resolve(context.Context, string) (*store.APIKey, *store.User, error) {
+	return nil, nil, errors.New("resolver unavailable")
+}
+
+func TestCachedAPIKeyResolverReturnsClonesAndInvalidates(t *testing.T) {
+	keyHash := "hash-for-cache"
+	st := &cacheResolverStore{
+		key:  &store.APIKey{ID: "k1", UserID: "u1", Name: "original", Enabled: true},
+		user: &store.User{ID: "u1", Enabled: true, TierID: "tier-paid"},
+		tier: &store.Tier{ID: "tier-paid", RPM: 42, SuccessLimit: 84},
+	}
+	resolver := NewCachedAPIKeyResolver(st, time.Hour)
+
+	firstKey, firstUser, err := resolver.Resolve(context.Background(), keyHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey.Enabled = false
+	firstUser.Enabled = false
+	firstUser.RPM = 999
+
+	secondKey, secondUser, err := resolver.Resolve(context.Background(), keyHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.keyLookups != 1 || st.userLookups != 1 {
+		t.Fatalf("expected second resolve to use cache, keyLookups=%d userLookups=%d", st.keyLookups, st.userLookups)
+	}
+	if !secondKey.Enabled || !secondUser.Enabled || secondUser.RPM != 42 || secondUser.SuccessLimit != 84 {
+		t.Fatalf("cached values must be cloned and tier-enriched, key=%+v user=%+v", secondKey, secondUser)
+	}
+
+	st.key.Name = "after-invalidate"
+	resolver.InvalidateAll()
+	thirdKey, _, err := resolver.Resolve(context.Background(), keyHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thirdKey.Name != "after-invalidate" {
+		t.Fatalf("expected invalidation to force reload, got key=%+v", thirdKey)
+	}
+	if st.keyLookups != 2 || st.userLookups != 2 {
+		t.Fatalf("expected reload after invalidation, keyLookups=%d userLookups=%d", st.keyLookups, st.userLookups)
+	}
+}
+
+func TestCachedAPIKeyResolverReloadsAfterTTL(t *testing.T) {
+	keyHash := "hash-for-ttl"
+	st := &cacheResolverStore{
+		key:  &store.APIKey{ID: "k1", UserID: "u1", Name: "before-expiry", Enabled: true},
+		user: &store.User{ID: "u1", Enabled: true},
+	}
+	resolver := NewCachedAPIKeyResolver(st, time.Nanosecond)
+
+	if _, _, err := resolver.Resolve(context.Background(), keyHash); err != nil {
+		t.Fatal(err)
+	}
+	st.key.Name = "after-expiry"
+	time.Sleep(time.Millisecond)
+
+	key, _, err := resolver.Resolve(context.Background(), keyHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Name != "after-expiry" {
+		t.Fatalf("expected TTL expiry to reload key, got %+v", key)
+	}
+	if st.keyLookups != 2 {
+		t.Fatalf("expected two key lookups after TTL expiry, got %d", st.keyLookups)
+	}
+}
+
+type cacheResolverStore struct {
+	store.TestStore
+	key         *store.APIKey
+	user        *store.User
+	tier        *store.Tier
+	keyLookups  int
+	userLookups int
+}
+
+func (s *cacheResolverStore) GetKeyByHash(context.Context, string) (*store.APIKey, error) {
+	s.keyLookups++
+	if s.key == nil {
+		return nil, nil
+	}
+	keyCopy := *s.key
+	return &keyCopy, nil
+}
+
+func (s *cacheResolverStore) GetUserByID(context.Context, string) (*store.User, error) {
+	s.userLookups++
+	if s.user == nil {
+		return nil, store.ErrUserNotFound
+	}
+	userCopy := *s.user
+	return &userCopy, nil
+}
+
+func (s *cacheResolverStore) GetTierByID(_ context.Context, tierID string) (*store.Tier, error) {
+	if s.tier == nil || s.tier.ID != tierID {
+		return nil, store.ErrTierNotFound
+	}
+	tierCopy := *s.tier
+	return &tierCopy, nil
+}
+
+func stringsForAuthTest(value string) string {
+	var builder strings.Builder
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' {
+			builder.WriteRune(character)
+		}
+	}
+	return builder.String()
 }

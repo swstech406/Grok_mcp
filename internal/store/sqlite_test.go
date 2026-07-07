@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +131,187 @@ func TestUsageStats(t *testing.T) {
 	}
 }
 
+func TestUsageStatsSinceFilterAndUserScope(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	firstUserID := testUserID(t, s)
+	secondUser, err := s.CreateUser(ctx, "second-keyowner", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstKey, _, err := s.CreateKey(ctx, firstUserID, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, _, err := s.CreateKey(ctx, secondUser.ID, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	records := []UsageRecord{
+		{KeyID: firstKey.ID, ToolName: "grok_web_search", Timestamp: now.Add(-2 * time.Hour), DurationMs: 10, Success: true},
+		{KeyID: firstKey.ID, ToolName: "grok_web_search", Timestamp: now, DurationMs: 11, Success: true},
+		{KeyID: firstKey.ID, ToolName: "grok_x_search", Timestamp: now, DurationMs: 12, Success: false},
+		{KeyID: secondKey.ID, ToolName: "grok_web_search", Timestamp: now, DurationMs: 13, Success: true},
+	}
+	for _, record := range records {
+		if err := s.RecordUsage(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := s.GetUsageStats(ctx, firstKey.ID, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalCalls != 2 || stats.SuccessCalls != 1 {
+		t.Fatalf("expected recent key stats total=2 success=1, got %+v", stats)
+	}
+	if stats.ByTool["grok_web_search"] != 1 || stats.ByTool["grok_x_search"] != 1 {
+		t.Fatalf("unexpected key stats by tool: %+v", stats.ByTool)
+	}
+
+	userStats, err := s.GetUserUsageStats(ctx, firstUserID, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userStats.TotalCalls != 2 {
+		t.Fatalf("expected first user scope to exclude second user's key, got %+v", userStats)
+	}
+}
+
+func TestAsyncUsageWriterCloseFlushesUsageAndTouch(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	key, _, err := s.CreateKey(ctx, testUserID(t, s), "async")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writer := NewAsyncUsageWriter(s, 8)
+	now := time.Now().UTC()
+	writer.Enqueue(UsageRecord{KeyID: key.ID, TouchKey: true})
+	writer.Enqueue(UsageRecord{KeyID: key.ID, ToolName: "grok_web_search", Timestamp: now, DurationMs: 21, Success: true})
+	writer.Enqueue(UsageRecord{KeyID: key.ID, ToolName: "grok_x_search", Timestamp: now, DurationMs: 22, Success: false})
+	writer.Close()
+
+	updatedKey, err := s.GetKeyByID(ctx, key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedKey.TotalCalls != 1 || updatedKey.LastUsedAt == nil {
+		t.Fatalf("expected touch record to update key usage, got %+v", updatedKey)
+	}
+
+	stats, err := s.GetUsageStats(ctx, key.ID, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalCalls != 2 || stats.SuccessCalls != 1 {
+		t.Fatalf("expected async writer to flush two usage rows with one success, got %+v", stats)
+	}
+	if stats.ByTool["grok_web_search"] != 1 || stats.ByTool["grok_x_search"] != 1 {
+		t.Fatalf("unexpected async usage by tool: %+v", stats.ByTool)
+	}
+}
+
+func TestUpdateUserTokenVersionSemantics(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	user, err := s.CreateUser(ctx, "token-version-user", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialTokenVersion := user.TokenVersion
+
+	tier, err := s.CreateTier(ctx, "token-version-tier", 10, 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.UpdateUser(ctx, user.ID, UserUpdates{TierID: &tier.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TokenVersion != initialTokenVersion {
+		t.Fatalf("tier change must not revoke JWTs, token_version=%d want %d", updated.TokenVersion, initialTokenVersion)
+	}
+
+	disabled := false
+	updated, err = s.UpdateUser(ctx, user.ID, UserUpdates{Enabled: &disabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TokenVersion != initialTokenVersion+1 {
+		t.Fatalf("enabled change must bump token_version, got %d", updated.TokenVersion)
+	}
+
+	role := RoleAdmin
+	updated, err = s.UpdateUser(ctx, user.ID, UserUpdates{Role: &role})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TokenVersion != initialTokenVersion+2 {
+		t.Fatalf("role change must bump token_version, got %d", updated.TokenVersion)
+	}
+
+	revokeTokens := true
+	updated, err = s.UpdateUser(ctx, user.ID, UserUpdates{RevokeTokens: &revokeTokens})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TokenVersion != initialTokenVersion+3 {
+		t.Fatalf("explicit revocation must bump token_version, got %d", updated.TokenVersion)
+	}
+}
+
+func TestTierLifecycleValidationAndInUseProtection(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+
+	tier, err := s.CreateTier(ctx, "paid", 7, 70, 700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTier(ctx, "PAID", 8, 80, 800); !errors.Is(err, ErrTierNameTaken) {
+		t.Fatalf("expected case-insensitive duplicate tier name error, got %v", err)
+	}
+
+	newName := "pro"
+	newRPM := 120
+	newSuccessLimit := 1200
+	updatedTier, err := s.UpdateTier(ctx, tier.ID, TierUpdates{Name: &newName, RPM: &newRPM, SuccessLimit: &newSuccessLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedTier.Name != newName || updatedTier.RPM != newRPM || updatedTier.SuccessLimit != newSuccessLimit {
+		t.Fatalf("unexpected updated tier: %+v", updatedTier)
+	}
+
+	user, err := s.CreateUser(ctx, "tier-user", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateUser(ctx, user.ID, UserUpdates{TierID: &tier.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteTier(ctx, tier.ID); !errors.Is(err, ErrTierInUse) {
+		t.Fatalf("expected in-use tier delete to fail, got %v", err)
+	}
+
+	unusedTier, err := s.CreateTier(ctx, "unused", 99, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteTier(ctx, unusedTier.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetTierByID(ctx, unusedTier.ID); !errors.Is(err, ErrTierNotFound) {
+		t.Fatalf("expected deleted tier to be missing, got %v", err)
+	}
+}
+
 func TestMigrateIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "m.db")
@@ -143,4 +326,27 @@ func TestMigrateIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = s2.Close()
+}
+
+func TestOpenSQLiteAppliesAllEmbeddedMigrations(t *testing.T) {
+	s := openTestDB(t)
+
+	entries, err := migrationFS.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expectedMigrationCount int
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			expectedMigrationCount++
+		}
+	}
+
+	var appliedMigrationCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&appliedMigrationCount); err != nil {
+		t.Fatal(err)
+	}
+	if appliedMigrationCount != expectedMigrationCount {
+		t.Fatalf("applied migrations = %d, want %d", appliedMigrationCount, expectedMigrationCount)
+	}
 }

@@ -29,7 +29,7 @@ xAI / Grok
 ## 功能
 
 - Streamable HTTP MCP 端点：`/mcp`
-- 管理面板 API：`/panel/v1/*`（注册/登录开放；其他接口需 JWT；管理员接口需 `role=admin`）
+- 管理面板 API：`/panel/v1/*`（默认仅允许空库 bootstrap 首个管理员；登录开放；其他接口需 JWT；管理员接口需 `role=admin`）
 - 客户端 API Key 鉴权（Key 归属用户）
 - 按用户汇总的 RPM 与 success limit
 - SQLite 持久化 API Key 与调用明细
@@ -82,7 +82,9 @@ set +a
 - 管理面板前端：`http://127.0.0.1:8080/panel/`
 - 面板 API：`http://127.0.0.1:8080/panel/v1/*`
 
-### 3. 注册、登录并创建客户端 API Key
+### 3. Bootstrap 管理员、登录并创建客户端 API Key
+
+默认 `GROK_PANEL_REGISTRATION=bootstrap-only`：只允许空库注册首个管理员，后续用户请由管理员在面板中管理。如配置了 `GROK_SETUP_TOKEN`，注册请求还必须携带同名的 `setup_token` JSON 字段。
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8080/panel/v1/auth/register" \
@@ -163,7 +165,7 @@ claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
 
 ### 5. 反向代理安全建议
 
-服务端内置了面板登录/注册的内存限流与登录失败短期锁定；公网部署时仍建议在 Nginx、Caddy、Traefik 等反向代理层额外启用 IP 级 rate limit，尤其是：
+服务端内置了面板登录/注册的内存限流、登录失败短期锁定，以及 `/mcp` 鉴权前来源 IP 限流；公网部署时仍建议在 Nginx、Caddy、Traefik 等反向代理层额外启用 IP 级 rate limit，尤其是：
 
 - `POST /panel/v1/auth/login`
 - `POST /panel/v1/auth/register`
@@ -225,7 +227,7 @@ docker compose up -d --build
 - `CPA_API_KEY`
 - `GROK_JWT_SECRET`
 
-容器默认监听 `:8080`，SQLite 数据保存到命名卷 `grok-mcp-data`。
+容器内默认监听 `:8080`，Compose 示例默认只绑定宿主机 `127.0.0.1:8080`。如需公网访问，请通过 HTTPS 反向代理暴露服务。SQLite 数据保存到命名卷 `grok-mcp-data`。
 
 ## 配置项
 
@@ -233,12 +235,15 @@ docker compose up -d --build
 |---|:---:|---|---|
 | `CPA_API_KEY` | 是 | 无 | 调用 CPA 的 Bearer Key |
 | `GROK_JWT_SECRET` | 是 | 无 | 面板 JWT HS256 签名密钥 |
+| `GROK_PANEL_REGISTRATION` | 否 | `bootstrap-only` | 自助注册策略：`bootstrap-only`、`open` 或 `disabled` |
+| `GROK_SETUP_TOKEN` | 否 | 无 | 设置后，注册请求必须携带匹配的 `setup_token` |
 | `GROK_DEFAULT_USER_RPM` | 否 | `60` | 内存限流器的兜底 RPM；用户实际 RPM 由 tier 决定 |
+| `GROK_MCP_IP_RPM` | 否 | `300` | `/mcp` API key 鉴权前按 TCP 来源 IP 限流的 RPM |
 | `CPA_BASE_URL` | 否 | `http://127.0.0.1:8317` | CPA 根地址，不含尾部 `/` |
 | `GROK_MODEL` | 否 | `grok-4.3` | 默认模型，可被工具参数 `model` 覆盖 |
 | `GROK_HTTP_TIMEOUT` | 否 | `120` | 上游 HTTP 超时，单位秒 |
 | `GROK_MCP_DEBUG` | 否 | 无 | 设为 `1`、`true` 或 `yes` 时输出调试日志 |
-| `GROK_HTTP_ADDR` | 否 | `:8080` | HTTP 监听地址 |
+| `GROK_HTTP_ADDR` | 否 | `127.0.0.1:8080` | HTTP 监听地址；直接公网暴露明文 HTTP 会泄露 JWT/API key |
 | `GROK_DB_PATH` | 否 | `./grok-mcp.db` | SQLite 数据库路径 |
 
 （已移除 `GROK_ADMIN_TOKEN` 与 `/admin/v1`；请使用 `/panel/v1`。）
@@ -329,7 +334,7 @@ PATCH  /panel/v1/admin/users/{id}
 GET    /panel/v1/admin/users/{id}/usage
 ```
 
-首个注册用户自动为 `admin`。用户限额（`rpm`、`success_limit`）以 tier 为唯一来源，管理员通过 Tier Management 页维护 tier 预设，并在用户编辑页为用户指定 tier。
+默认注册策略为 `bootstrap-only`：首个注册用户自动为 `admin`，空库初始化完成后自助注册会返回 403。若确需继续开放注册，可显式设置 `GROK_PANEL_REGISTRATION=open`；生产公网部署建议保留默认值，并可额外设置 `GROK_SETUP_TOKEN` 防止首个管理员被抢注。用户限额（`rpm`、`success_limit`）以 tier 为唯一来源，管理员通过 Tier Management 页维护 tier 预设，并在用户编辑页为用户指定 tier。
 
 ## 代码结构
 
@@ -342,7 +347,7 @@ internal/panel/           面板 REST API（/panel/v1）
 internal/panelui/         面板前端静态资源（embed）
 internal/quota/           用户成功请求额度（tools/call 的 success 预留与失败回滚）
 internal/auth/            MCP API Key 与面板 JWT（HS256，含 iss/aud 校验）
-internal/ratelimit/       按用户的内存 RPM 限流（令牌桶）
+internal/ratelimit/       按用户和来源 IP 的内存 RPM 限流（令牌桶）
 internal/usage/           MCP tools/call 用量与 success 标记，含 panic 回滚
 internal/store/           SQLite、迁移、用户与 Key CRUD、异步用量写入
 internal/grok/            上游 CPA /v1/responses 客户端与 SSE 解析

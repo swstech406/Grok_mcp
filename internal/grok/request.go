@@ -3,6 +3,7 @@ package grok
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strings"
 )
 
@@ -19,26 +20,97 @@ func validateModel(model string) error {
 }
 
 // validateSearchRequest 校验查询、工具类型，以及 web_search 域名过滤参数的互斥与数量上限。
-func validateSearchRequest(req SearchRequest) error {
+func validateSearchRequest(req SearchRequest) (SearchRequest, error) {
 	if strings.TrimSpace(req.Query) == "" {
-		return fmt.Errorf("query must not be empty")
+		return req, fmt.Errorf("query must not be empty")
 	}
 	if req.ToolType != ToolTypeWebSearch && req.ToolType != ToolTypeXSearch {
-		return fmt.Errorf("unsupported tool type: %q", req.ToolType)
+		return req, fmt.Errorf("unsupported tool type: %q", req.ToolType)
 	}
 	if req.ToolType != ToolTypeWebSearch {
-		return nil
+		return req, nil
 	}
 	if len(req.AllowedDomains) > 0 && len(req.ExcludedDomains) > 0 {
-		return fmt.Errorf("allowed_domains and excluded_domains cannot be used together")
+		return req, fmt.Errorf("allowed_domains and excluded_domains cannot be used together")
 	}
 	if len(req.AllowedDomains) > 5 {
-		return fmt.Errorf("allowed_domains supports at most 5 entries")
+		return req, fmt.Errorf("allowed_domains supports at most 5 entries")
 	}
 	if len(req.ExcludedDomains) > 5 {
-		return fmt.Errorf("excluded_domains supports at most 5 entries")
+		return req, fmt.Errorf("excluded_domains supports at most 5 entries")
 	}
-	return nil
+
+	allowedDomains, err := normalizeDomainFilters("allowed_domains", req.AllowedDomains)
+	if err != nil {
+		return req, err
+	}
+	excludedDomains, err := normalizeDomainFilters("excluded_domains", req.ExcludedDomains)
+	if err != nil {
+		return req, err
+	}
+	req.AllowedDomains = allowedDomains
+	req.ExcludedDomains = excludedDomains
+	return req, nil
+}
+
+func normalizeDomainFilters(fieldName string, rawDomains []string) ([]string, error) {
+	if len(rawDomains) == 0 {
+		return nil, nil
+	}
+	normalizedDomains := make([]string, 0, len(rawDomains))
+	for _, rawDomain := range rawDomains {
+		normalizedDomain, err := normalizeDomainFilter(rawDomain)
+		if err != nil {
+			return nil, fmt.Errorf("%s entry %q is invalid: %w", fieldName, rawDomain, err)
+		}
+		normalizedDomains = append(normalizedDomains, normalizedDomain)
+	}
+	return normalizedDomains, nil
+}
+
+func normalizeDomainFilter(rawDomain string) (string, error) {
+	domain := strings.ToLower(strings.TrimSpace(rawDomain))
+	if domain == "" {
+		return "", fmt.Errorf("domain must not be empty")
+	}
+	if len(domain) > 253 {
+		return "", fmt.Errorf("domain is too long")
+	}
+	if strings.Contains(domain, "://") {
+		return "", fmt.Errorf("scheme is not allowed")
+	}
+	if strings.ContainsAny(domain, "/\\?#@:") {
+		return "", fmt.Errorf("path, query, port, and userinfo are not allowed")
+	}
+	if strings.Contains(domain, "*") {
+		return "", fmt.Errorf("wildcards are not allowed")
+	}
+	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.Contains(domain, "..") {
+		return "", fmt.Errorf("domain labels must be non-empty")
+	}
+	if domain == "localhost" || strings.HasSuffix(domain, ".localhost") || strings.HasSuffix(domain, ".local") {
+		return "", fmt.Errorf("local hostnames are not allowed")
+	}
+	if _, err := netip.ParseAddr(domain); err == nil {
+		return "", fmt.Errorf("IP literals are not allowed")
+	}
+
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) > 63 {
+			return "", fmt.Errorf("domain label is too long")
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return "", fmt.Errorf("domain labels must not start or end with hyphen")
+		}
+		for _, character := range label {
+			isLowerLetter := character >= 'a' && character <= 'z'
+			isDigit := character >= '0' && character <= '9'
+			if !isLowerLetter && !isDigit && character != '-' {
+				return "", fmt.Errorf("domain contains unsupported characters")
+			}
+		}
+	}
+	return domain, nil
 }
 
 // buildToolDef 将业务侧 SearchRequest 映射为上游 tools[] 中的单条工具定义。

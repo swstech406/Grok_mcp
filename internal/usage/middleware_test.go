@@ -112,6 +112,11 @@ func TestMCPToolResultIsError(t *testing.T) {
 	if !mcpToolResultIsError([]byte(sse)) {
 		t.Fatal("expected tool error in SSE payload")
 	}
+
+	batch := `[{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}},{"jsonrpc":"2.0","id":2,"result":{"isError":true,"content":[{"type":"text","text":"fail"}]}}]`
+	if !mcpToolResultIsError([]byte(batch)) {
+		t.Fatal("expected tool error in JSON-RPC batch payload")
+	}
 }
 
 func TestResponseRecorderFlushDelegates(t *testing.T) {
@@ -142,6 +147,83 @@ type releaseCountingStore struct {
 func (r *releaseCountingStore) ReleaseSuccessCall(context.Context, string) error {
 	r.releaseSuccessCalls++
 	return nil
+}
+
+type failureRecordingStore struct {
+	store.TestStore
+	releaseSuccessCalls int
+	touchedKeys         []string
+	recordedUsage       []store.UsageRecord
+}
+
+func (f *failureRecordingStore) TouchKeyUsage(_ context.Context, keyID string) error {
+	f.touchedKeys = append(f.touchedKeys, keyID)
+	return nil
+}
+
+func (f *failureRecordingStore) ReleaseSuccessCall(_ context.Context, _ string) error {
+	f.releaseSuccessCalls++
+	return nil
+}
+
+func (f *failureRecordingStore) RecordUsage(_ context.Context, record store.UsageRecord) error {
+	f.recordedUsage = append(f.recordedUsage, record)
+	return nil
+}
+
+func TestMCPMiddlewareReleasesAndRecordsFailureOnToolErrorAndHTTPError(t *testing.T) {
+	testCases := []struct {
+		name    string
+		handler http.Handler
+	}{
+		{
+			name: "mcp tool isError",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"failed"}]}}`))
+			}),
+		},
+		{
+			name: "http failure status",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "upstream unavailable", http.StatusBadGateway)
+			}),
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			key := &store.APIKey{ID: "k1"}
+			user := &store.User{ID: "u1"}
+			st := &failureRecordingStore{}
+			writer := store.NewAsyncUsageWriter(st, 8)
+			h := MCPMiddleware(st, writer)(testCase.handler)
+
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+			ctx := auth.WithAPIKey(req.Context(), key)
+			ctx = auth.WithUser(ctx, user)
+			ctx = WithToolName(ctx, "grok_web_search")
+			req = req.WithContext(ctx)
+
+			h.ServeHTTP(httptest.NewRecorder(), req)
+			writer.Close()
+
+			if st.releaseSuccessCalls != 1 {
+				t.Fatalf("expected one quota release, got %d", st.releaseSuccessCalls)
+			}
+			if len(st.touchedKeys) != 1 || st.touchedKeys[0] != "k1" {
+				t.Fatalf("expected one touch for k1, got %+v", st.touchedKeys)
+			}
+			if len(st.recordedUsage) != 1 {
+				t.Fatalf("expected one usage record, got %+v", st.recordedUsage)
+			}
+			if st.recordedUsage[0].Success {
+				t.Fatalf("expected unsuccessful usage record, got %+v", st.recordedUsage[0])
+			}
+			if st.recordedUsage[0].ToolName != "grok_web_search" {
+				t.Fatalf("unexpected tool name in usage record: %+v", st.recordedUsage[0])
+			}
+		})
+	}
 }
 
 // TestMCPMiddlewareReleasesOnPanic 验证 issue 8 的修复：当 handler panic 时，

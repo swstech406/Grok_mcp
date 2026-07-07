@@ -27,8 +27,9 @@ func panelTestServerWithAuthProtector(t *testing.T, authProtector *AuthProtector
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cfg := &config.Config{
-		JWTSecret:      "jwt-secret-must-be-at-least-32-bytes!",
-		DefaultUserRPM: 60,
+		JWTSecret:             "jwt-secret-must-be-at-least-32-bytes!",
+		DefaultUserRPM:        60,
+		PanelRegistrationMode: config.PanelRegistrationOpen,
 	}
 	h := &Handler{Store: st, Config: cfg, AuthProtector: authProtector}
 	mux := NewMux(h)
@@ -143,6 +144,55 @@ func TestSecondUserIsNotAdmin(t *testing.T) {
 	}
 }
 
+func TestBootstrapOnlyRegistrationRejectsSecondSelfSignup(t *testing.T) {
+	ts, _, cfg := panelTestServer(t)
+	cfg.PanelRegistrationMode = config.PanelRegistrationBootstrapOnly
+	defer ts.Close()
+
+	firstUser := registerPanelUser(t, ts, "bootstrapadmin", "password123")
+	if firstUser.Role != store.RoleAdmin {
+		t.Fatalf("expected bootstrap user to be admin, got %s", firstUser.Role)
+	}
+
+	secondRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/auth/register", bytes.NewBufferString(`{"username":"blockeduser","password":"password123"}`))
+	secondResponse, err := http.DefaultClient.Do(secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondResponse.Body.Close()
+	if secondResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected bootstrap-only mode to reject second registration with 403, got %d", secondResponse.StatusCode)
+	}
+}
+
+func TestBootstrapRegistrationRequiresSetupTokenWhenConfigured(t *testing.T) {
+	ts, _, cfg := panelTestServer(t)
+	cfg.PanelRegistrationMode = config.PanelRegistrationBootstrapOnly
+	cfg.SetupToken = "setup-secret"
+	defer ts.Close()
+
+	missingTokenRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/auth/register", bytes.NewBufferString(`{"username":"missingtoken","password":"password123"}`))
+	missingTokenResponse, err := http.DefaultClient.Do(missingTokenRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingTokenResponse.Body.Close()
+	if missingTokenResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected missing setup token to return 403, got %d", missingTokenResponse.StatusCode)
+	}
+
+	validTokenRequestBody := `{"username":"withtoken","password":"password123","setup_token":"setup-secret"}`
+	validTokenRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/auth/register", bytes.NewBufferString(validTokenRequestBody))
+	validTokenResponse, err := http.DefaultClient.Do(validTokenRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer validTokenResponse.Body.Close()
+	if validTokenResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected valid setup token registration to return 201, got %d", validTokenResponse.StatusCode)
+	}
+}
+
 func TestRegisterRejectsOversizedPassword(t *testing.T) {
 	ts, _, _ := panelTestServer(t)
 	defer ts.Close()
@@ -243,4 +293,198 @@ func TestLoginFailureLocksUsernameIPPair(t *testing.T) {
 	if goodLoginResponse.Header.Get("Retry-After") == "" {
 		t.Fatalf("expected Retry-After header on lockout response")
 	}
+}
+
+func TestRegisterRejectsDuplicateUsernameAndInvalidJSON(t *testing.T) {
+	ts, _, _ := panelTestServer(t)
+	defer ts.Close()
+
+	registerPanelUser(t, ts, "duplicate", "password123")
+
+	duplicateRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/auth/register", bytes.NewBufferString(`{"username":"duplicate","password":"password123"}`))
+	duplicateResponse, err := http.DefaultClient.Do(duplicateRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateResponse.Body.Close()
+	if duplicateResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("expected duplicate username to return 409, got %d", duplicateResponse.StatusCode)
+	}
+
+	invalidJSONRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/auth/register", bytes.NewBufferString(`{"username"`))
+	invalidJSONResponse, err := http.DefaultClient.Do(invalidJSONRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer invalidJSONResponse.Body.Close()
+	if invalidJSONResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid JSON to return 400, got %d", invalidJSONResponse.StatusCode)
+	}
+}
+
+func TestKeyLifecycleOnlyReturnsRawKeyOnCreate(t *testing.T) {
+	ts, _, _ := panelTestServer(t)
+	defer ts.Close()
+
+	registerPanelUser(t, ts, "keyowner", "password123")
+	loginResponse := loginPanelUser(t, ts, "keyowner", "password123")
+
+	createRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/keys", bytes.NewBufferString(`{"name":"primary"}`))
+	createRequest = withJWT(createRequest, loginResponse.Token)
+	createResponse, err := http.DefaultClient.Do(createRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResponse.Body.Close()
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected create key status 201, got %d", createResponse.StatusCode)
+	}
+	var created CreateKeyResponse
+	if err := json.NewDecoder(createResponse.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Key.ID == "" || !strings.HasPrefix(created.APIKey, "grok_") {
+		t.Fatalf("expected created key metadata and one-time raw key, got %+v", created)
+	}
+
+	listRequest, _ := http.NewRequest(http.MethodGet, ts.URL+"/panel/v1/keys", nil)
+	listRequest = withJWT(listRequest, loginResponse.Token)
+	listResponse, err := http.DefaultClient.Do(listRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResponse.Body.Close()
+	var listed struct {
+		Keys []KeyResponse `json:"keys"`
+	}
+	if err := json.NewDecoder(listResponse.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if listResponse.StatusCode != http.StatusOK || len(listed.Keys) != 1 {
+		t.Fatalf("expected one listed key, status=%d keys=%+v", listResponse.StatusCode, listed.Keys)
+	}
+	if listed.Keys[0].ID != created.Key.ID || listed.Keys[0].Name != "primary" {
+		t.Fatalf("unexpected listed key: %+v", listed.Keys[0])
+	}
+
+	updatedName := "renamed"
+	updateBody := `{"name":"` + updatedName + `","enabled":false}`
+	updateRequest, _ := http.NewRequest(http.MethodPatch, ts.URL+"/panel/v1/keys/"+created.Key.ID, bytes.NewBufferString(updateBody))
+	updateRequest = withJWT(updateRequest, loginResponse.Token)
+	updateResponse, err := http.DefaultClient.Do(updateRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer updateResponse.Body.Close()
+	if updateResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected update key status 200, got %d", updateResponse.StatusCode)
+	}
+	var updated KeyResponse
+	if err := json.NewDecoder(updateResponse.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != updatedName || updated.Enabled {
+		t.Fatalf("unexpected updated key: %+v", updated)
+	}
+
+	deleteRequest, _ := http.NewRequest(http.MethodDelete, ts.URL+"/panel/v1/keys/"+created.Key.ID, nil)
+	deleteRequest = withJWT(deleteRequest, loginResponse.Token)
+	deleteResponse, err := http.DefaultClient.Do(deleteRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteResponse.Body.Close()
+	if deleteResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected delete key status 204, got %d", deleteResponse.StatusCode)
+	}
+}
+
+func TestAdminRoutesRequireAdminRole(t *testing.T) {
+	ts, _, _ := panelTestServer(t)
+	defer ts.Close()
+
+	registerPanelUser(t, ts, "firstadmin", "password123")
+	registerPanelUser(t, ts, "plainuser", "password123")
+	loginResponse := loginPanelUser(t, ts, "plainuser", "password123")
+
+	request, _ := http.NewRequest(http.MethodGet, ts.URL+"/panel/v1/admin/users", nil)
+	request = withJWT(request, loginResponse.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected non-admin admin route access to return 403, got %d", response.StatusCode)
+	}
+}
+
+func TestAdminRevokeTokensInvalidatesExistingJWT(t *testing.T) {
+	ts, _, _ := panelTestServer(t)
+	defer ts.Close()
+
+	registerPanelUser(t, ts, "tokenadmin", "password123")
+	registerPanelUser(t, ts, "tokenuser", "password123")
+	adminLogin := loginPanelUser(t, ts, "tokenadmin", "password123")
+	userLogin := loginPanelUser(t, ts, "tokenuser", "password123")
+
+	revokeRequest, _ := http.NewRequest(http.MethodPatch, ts.URL+"/panel/v1/admin/users/"+userLogin.User.ID, bytes.NewBufferString(`{"revoke_tokens":true}`))
+	revokeRequest = withJWT(revokeRequest, adminLogin.Token)
+	revokeResponse, err := http.DefaultClient.Do(revokeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeResponse.Body.Close()
+	if revokeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected token revocation update status 200, got %d", revokeResponse.StatusCode)
+	}
+
+	meRequest, _ := http.NewRequest(http.MethodGet, ts.URL+"/panel/v1/me", nil)
+	meRequest = withJWT(meRequest, userLogin.Token)
+	meResponse, err := http.DefaultClient.Do(meRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer meResponse.Body.Close()
+	if meResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected revoked token to return 401, got %d", meResponse.StatusCode)
+	}
+}
+
+func registerPanelUser(t *testing.T, ts *httptest.Server, username string, password string) UserResponse {
+	t.Helper()
+	requestBody := `{"username":"` + username + `","password":"` + password + `"}`
+	request, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/auth/register", bytes.NewBufferString(requestBody))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("register %q status = %d, want %d", username, response.StatusCode, http.StatusCreated)
+	}
+	var userResponse UserResponse
+	if err := json.NewDecoder(response.Body).Decode(&userResponse); err != nil {
+		t.Fatal(err)
+	}
+	return userResponse
+}
+
+func loginPanelUser(t *testing.T, ts *httptest.Server, username string, password string) LoginResponse {
+	t.Helper()
+	requestBody := `{"username":"` + username + `","password":"` + password + `"}`
+	request, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/auth/login", bytes.NewBufferString(requestBody))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("login %q status = %d, want %d", username, response.StatusCode, http.StatusOK)
+	}
+	var loginResponse LoginResponse
+	if err := json.NewDecoder(response.Body).Decode(&loginResponse); err != nil {
+		t.Fatal(err)
+	}
+	return loginResponse
 }

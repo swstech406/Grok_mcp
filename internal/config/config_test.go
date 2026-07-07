@@ -127,8 +127,45 @@ func TestLoadHTTPDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if cfg.HTTPAddr != ":8080" || cfg.DBPath != "./grok-mcp.db" || cfg.DefaultUserRPM != 60 {
+	if cfg.HTTPAddr != "127.0.0.1:8080" ||
+		cfg.DBPath != "./grok-mcp.db" ||
+		cfg.DefaultUserRPM != 60 ||
+		cfg.PanelRegistrationMode != PanelRegistrationBootstrapOnly ||
+		cfg.MCPIPRPM != 300 {
 		t.Fatalf("unexpected http defaults: %+v", cfg)
+	}
+}
+
+func TestLoadCustomSecuritySettings(t *testing.T) {
+	panelEnv(t)
+	setEnv(t, "GROK_PANEL_REGISTRATION", "open")
+	setEnv(t, "GROK_SETUP_TOKEN", "setup-secret")
+	setEnv(t, "GROK_MCP_IP_RPM", "123")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.PanelRegistrationMode != PanelRegistrationOpen || cfg.SetupToken != "setup-secret" || cfg.MCPIPRPM != 123 {
+		t.Fatalf("unexpected security settings: %+v", cfg)
+	}
+}
+
+func TestLoadRejectsInvalidSecuritySettings(t *testing.T) {
+	panelEnv(t)
+	setEnv(t, "GROK_PANEL_REGISTRATION", "surprise")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GROK_PANEL_REGISTRATION") {
+		t.Fatalf("expected registration mode validation error, got %v", err)
+	}
+
+	panelEnv(t)
+	setEnv(t, "GROK_PANEL_REGISTRATION", "bootstrap-only")
+	setEnv(t, "GROK_MCP_IP_RPM", "0")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "GROK_MCP_IP_RPM must be a positive integer") {
+		t.Fatalf("expected MCP IP RPM validation error, got %v", err)
 	}
 }
 

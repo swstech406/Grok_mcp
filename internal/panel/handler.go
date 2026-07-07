@@ -1,9 +1,12 @@
 package panel
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -85,6 +88,29 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, destination any) bool {
+	contentType := strings.TrimSpace(r.Header.Get("Content-Type"))
+	if contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || !strings.EqualFold(mediaType, "application/json") {
+			writeError(w, http.StatusUnsupportedMediaType, "content type must be application/json")
+			return false
+		}
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	return true
+}
+
 const maxPanelBodyBytes = 1 << 20 // 1 MiB
 
 // MaxPanelBodyBytes 返回面板 API 默认请求体上限。
@@ -105,8 +131,10 @@ func MaxBodyMiddleware(limit int64) func(http.Handler) http.Handler {
 
 func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+	if !h.allowSelfRegistration(w, r, req.SetupToken) {
 		return
 	}
 	username, err := validatePanelAuthCredentials(req.Username, req.Password)
@@ -137,11 +165,50 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "registration failed")
 		return
 	}
+	if h.registrationMode() == config.PanelRegistrationBootstrapOnly && user.Role != store.RoleAdmin {
+		_ = h.Store.DeleteUser(r.Context(), user.ID)
+		writeError(w, http.StatusForbidden, "registration is disabled after bootstrap")
+		return
+	}
 	var tier *store.Tier
 	if user.TierID != "" {
 		tier, _ = h.Store.GetTierByID(r.Context(), user.TierID)
 	}
 	writeJSON(w, http.StatusCreated, toUserResponseWithTier(user, tier))
+}
+
+func (h *Handler) allowSelfRegistration(w http.ResponseWriter, r *http.Request, setupToken string) bool {
+	mode := h.registrationMode()
+	if mode == config.PanelRegistrationDisabled {
+		writeError(w, http.StatusForbidden, "registration is disabled")
+		return false
+	}
+	if h.Config != nil && h.Config.SetupToken != "" && subtle.ConstantTimeCompare([]byte(setupToken), []byte(h.Config.SetupToken)) != 1 {
+		writeError(w, http.StatusForbidden, "invalid setup token")
+		return false
+	}
+	if mode == config.PanelRegistrationOpen {
+		return true
+	}
+
+	userCount, err := h.Store.CountUsers(r.Context())
+	if err != nil {
+		log.Printf("count users before register failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "registration failed")
+		return false
+	}
+	if userCount > 0 {
+		writeError(w, http.StatusForbidden, "registration is disabled after bootstrap")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) registrationMode() string {
+	if h.Config == nil || strings.TrimSpace(h.Config.PanelRegistrationMode) == "" {
+		return config.PanelRegistrationBootstrapOnly
+	}
+	return strings.ToLower(strings.TrimSpace(h.Config.PanelRegistrationMode))
 }
 
 // dummyBcryptHash 是用于拉平登录时序的固定 bcrypt 哈希。
@@ -159,8 +226,7 @@ var dummyBcryptHash = func() []byte {
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	username, err := validatePanelAuthCredentials(req.Username, req.Password)
@@ -258,8 +324,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateKeyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -288,8 +353,7 @@ func (h *Handler) updateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req UpdateKeyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
@@ -409,8 +473,7 @@ func (h *Handler) adminGetUser(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req UpdateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	u, err := h.Store.UpdateUser(r.Context(), id, store.UserUpdates{
@@ -494,8 +557,7 @@ func (h *Handler) adminListTiers(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) adminCreateTier(w http.ResponseWriter, r *http.Request) {
 	var req CreateTierRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -520,8 +582,7 @@ func (h *Handler) adminCreateTier(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) adminUpdateTier(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req UpdateTierRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	t, err := h.Store.UpdateTier(r.Context(), id, store.TierUpdates{

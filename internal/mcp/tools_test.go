@@ -1,11 +1,20 @@
 package mcpserver
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/grok-mcp/internal/config"
 	"github.com/grok-mcp/internal/grok"
+	"github.com/grok-mcp/internal/logx"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestServerInstructionsDocumentSearchToolUsage(t *testing.T) {
@@ -179,4 +188,195 @@ func TestFormatSearchRoundMessageEmpty(t *testing.T) {
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
+}
+
+func TestRunSearchReturnsStructuredOutputFromUpstream(t *testing.T) {
+	var capturedRequest struct {
+		Input []struct {
+			Content string `json:"content"`
+		} `json:"input"`
+		Tools []struct {
+			Type           string   `json:"type"`
+			AllowedDomains []string `json:"allowed_domains"`
+		} `json:"tools"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, "/v1/responses")
+		}
+		if authorization := r.Header.Get("Authorization"); authorization != "Bearer test-cpa-key" {
+			t.Fatalf("Authorization = %q, want %q", authorization, "Bearer test-cpa-key")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &capturedRequest); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+
+		responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":"structured answer","annotations":[{"type":"url_citation","url":"https://example.com/source","title":"Example Source"}]}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + completedEventForMCPTest(responseJSON) + "\n\n"))
+	}))
+	defer server.Close()
+
+	toolResult, output, err := runSearch(context.Background(), nil, newMCPTestClient(t, server.URL), logx.New("mcp-test", false), grok.SearchRequest{
+		Query:          "  structured query  ",
+		ToolType:       grok.ToolTypeWebSearch,
+		AllowedDomains: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("runSearch returned Go error: %v", err)
+	}
+	if toolResult != nil {
+		t.Fatalf("runSearch returned unexpected tool error: %+v", toolResult)
+	}
+	if output.Answer != "structured answer" {
+		t.Fatalf("Answer = %q, want %q", output.Answer, "structured answer")
+	}
+	if len(output.Citations) != 1 || output.Citations[0] != "https://example.com/source" {
+		t.Fatalf("unexpected citations: %+v", output.Citations)
+	}
+	if output.Usage == nil || output.Usage.TotalTokens != 3 {
+		t.Fatalf("unexpected usage: %+v", output.Usage)
+	}
+	if len(capturedRequest.Input) != 1 || capturedRequest.Input[0].Content != "structured query" {
+		t.Fatalf("expected trimmed query in upstream request, got %+v", capturedRequest.Input)
+	}
+	if len(capturedRequest.Tools) != 1 || capturedRequest.Tools[0].Type != "web_search" || len(capturedRequest.Tools[0].AllowedDomains) != 1 {
+		t.Fatalf("unexpected upstream tools request: %+v", capturedRequest.Tools)
+	}
+}
+
+func TestRunSearchMapsValidationAndUpstreamErrorsToMCPToolErrors(t *testing.T) {
+	t.Run("missing query", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			t.Fatalf("missing-query validation should not call upstream, got %s %s", r.Method, r.URL.Path)
+		}))
+		defer server.Close()
+
+		toolResult, output, err := runSearch(context.Background(), nil, newMCPTestClient(t, server.URL), logx.New("mcp-test", false), grok.SearchRequest{
+			Query:    "   ",
+			ToolType: grok.ToolTypeWebSearch,
+		})
+		if err != nil {
+			t.Fatalf("runSearch returned Go error: %v", err)
+		}
+		if output.Answer != "" {
+			t.Fatalf("expected empty output on validation error, got %+v", output)
+		}
+		if got := toolErrorText(t, toolResult); got != "query is required" {
+			t.Fatalf("tool error text = %q, want %q", got, "query is required")
+		}
+	})
+
+	t.Run("upstream HTTP status", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("sensitive upstream details"))
+		}))
+		defer server.Close()
+
+		toolResult, output, err := runSearch(context.Background(), nil, newMCPTestClient(t, server.URL), logx.New("mcp-test", false), grok.SearchRequest{
+			Query:    "upstream failure",
+			ToolType: grok.ToolTypeWebSearch,
+		})
+		if err != nil {
+			t.Fatalf("runSearch returned Go error: %v", err)
+		}
+		if output.Answer != "" {
+			t.Fatalf("expected empty output on upstream error, got %+v", output)
+		}
+		if got := toolErrorText(t, toolResult); got != "upstream returned HTTP 502" {
+			t.Fatalf("tool error text = %q, want %q", got, "upstream returned HTTP 502")
+		}
+		if strings.Contains(toolErrorText(t, toolResult), "sensitive upstream details") {
+			t.Fatalf("tool error leaked upstream body: %q", toolErrorText(t, toolResult))
+		}
+	})
+}
+
+func TestRunSearchSendsXSearchToolTypeWithoutWebOnlyFields(t *testing.T) {
+	var capturedRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &capturedRequest); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":"x answer"}]}]}`
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + completedEventForMCPTest(responseJSON) + "\n\n"))
+	}))
+	defer server.Close()
+
+	toolResult, output, err := runSearch(context.Background(), nil, newMCPTestClient(t, server.URL), logx.New("mcp-test", false), grok.SearchRequest{
+		Query:                    "x query",
+		ToolType:                 grok.ToolTypeXSearch,
+		AllowedDomains:           []string{"ignored.example"},
+		EnableImageUnderstanding: boolPointerForMCPTest(true),
+	})
+	if err != nil {
+		t.Fatalf("runSearch returned Go error: %v", err)
+	}
+	if toolResult != nil || output.Answer != "x answer" {
+		t.Fatalf("unexpected runSearch result: toolResult=%+v output=%+v", toolResult, output)
+	}
+
+	tools, ok := capturedRequest["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("unexpected tools payload: %+v", capturedRequest["tools"])
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected tool payload: %+v", tools[0])
+	}
+	if tool["type"] != "x_search" {
+		t.Fatalf("tool type = %v, want x_search", tool["type"])
+	}
+	for _, webOnlyField := range []string{"allowed_domains", "excluded_domains", "enable_image_understanding", "enable_image_search"} {
+		if _, exists := tool[webOnlyField]; exists {
+			t.Fatalf("x_search request must not include %q: %+v", webOnlyField, tool)
+		}
+	}
+}
+
+func newMCPTestClient(t *testing.T, baseURL string) *grok.Client {
+	t.Helper()
+	return grok.NewClient(&config.Config{
+		CPABaseURL: baseURL,
+		CPAAPIKey:  "test-cpa-key",
+		Model:      "grok-4.3",
+		Timeout:    5 * time.Second,
+	})
+}
+
+func completedEventForMCPTest(responseJSON string) string {
+	return `{"type":"response.completed","response":` + strings.TrimSpace(responseJSON) + `}`
+}
+
+func toolErrorText(t *testing.T, result *mcp.CallToolResult) string {
+	t.Helper()
+	if result == nil {
+		t.Fatal("expected MCP tool error result, got nil")
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true, got %+v", result)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected exactly one error content item, got %+v", result.Content)
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected text error content, got %T", result.Content[0])
+	}
+	return textContent.Text
+}
+
+func boolPointerForMCPTest(value bool) *bool {
+	return &value
 }

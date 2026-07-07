@@ -25,13 +25,17 @@ type recordingStore struct {
 	store.TestStore
 
 	reserveSuccessCalls int
+	lastUserID          string
+	lastSuccessLimit    int
 
 	// 控制返回的错误
 	reserveSuccessErr error
 }
 
-func (r *recordingStore) ReserveSuccessCall(context.Context, string, int) error {
+func (r *recordingStore) ReserveSuccessCall(_ context.Context, userID string, successLimit int) error {
 	r.reserveSuccessCalls++
+	r.lastUserID = userID
+	r.lastSuccessLimit = successLimit
 	return r.reserveSuccessErr
 }
 
@@ -99,6 +103,24 @@ func TestReserveSuccessAndForward(t *testing.T) {
 	}
 	if st.reserveSuccessCalls != 1 {
 		t.Fatalf("want 1 reserveSuccessCall, got %d", st.reserveSuccessCalls)
+	}
+}
+
+func TestReserveUsesAuthenticatedUserLimit(t *testing.T) {
+	st := &recordingStore{}
+	h := MCPMiddleware(st)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	user := &store.User{ID: "paid-user", SuccessLimit: 123}
+	req := newToolCallRequest("grok_x_search")
+	req = req.WithContext(auth.WithUser(req.Context(), user))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if st.lastUserID != user.ID || st.lastSuccessLimit != user.SuccessLimit {
+		t.Fatalf("reserve got user=%q limit=%d, want user=%q limit=%d", st.lastUserID, st.lastSuccessLimit, user.ID, user.SuccessLimit)
 	}
 }
 

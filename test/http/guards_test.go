@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ type integrationEnv struct {
 	writer  *store.AsyncUsageWriter
 	userLim *ratelimit.UserLimiter
 	created panel.CreateKeyResponse
+	login   panel.LoginResponse
 }
 
 func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
@@ -115,7 +117,7 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 	if keyResp.StatusCode != http.StatusCreated {
 		t.Fatalf("create key %d", keyResp.StatusCode)
 	}
-	return &integrationEnv{ts: ts, st: st, writer: writer, userLim: userLim, created: created}
+	return &integrationEnv{ts: ts, st: st, writer: writer, userLim: userLim, created: created, login: login}
 }
 
 func TestHTTPPanelKeysRequireJWT(t *testing.T) {
@@ -155,6 +157,45 @@ func TestHTTPMCPDisabledAPIKeyForbidden(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 403 disabled key, got %d body=%s", resp.StatusCode, truncate(string(body), 256))
+	}
+}
+
+func TestHTTPPanelKeyUpdateInvalidatesMCPAuthCache(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":"cache warm answer"}]}]}`
+		completed := `{"type":"response.completed","response":` + strings.TrimSpace(responseJSON) + `}`
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + completed + "\n\n"))
+	}))
+	defer cpa.Close()
+
+	env := bootIntegrationEnv(t, cpa)
+	toolPayload := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"warm cache"}}}`
+	firstStatus, firstBody := callMCPTool(t, env, toolPayload)
+	if firstStatus != http.StatusOK || !strings.Contains(firstBody, "cache warm answer") {
+		t.Fatalf("expected first call to warm auth cache, status=%d body=%s", firstStatus, truncate(firstBody, 512))
+	}
+
+	disableRequest, _ := http.NewRequest(http.MethodPatch, env.ts.URL+"/panel/v1/keys/"+env.created.Key.ID, bytes.NewBufferString(`{"enabled":false}`))
+	disableRequest.Header.Set("Authorization", "Bearer "+env.login.Token)
+	disableResponse, err := http.DefaultClient.Do(disableRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disableBody, _ := io.ReadAll(disableResponse.Body)
+	disableResponse.Body.Close()
+	if disableResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected key disable through panel to return 200, got %d body=%s", disableResponse.StatusCode, truncate(string(disableBody), 512))
+	}
+
+	secondStatus, secondBody := callMCPTool(t, env, toolPayload)
+	if secondStatus != http.StatusForbidden {
+		t.Fatalf("expected disabled cached key to be rejected after invalidation, status=%d body=%s", secondStatus, truncate(secondBody, 512))
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("expected rejected cached key to skip upstream, upstream calls=%d", upstreamCalls.Load())
 	}
 }
 
@@ -223,4 +264,108 @@ func TestHTTPToolCallUpstreamFailureRecordsUnsuccessfulUsage(t *testing.T) {
 	if stats.SuccessCalls != 0 {
 		t.Fatalf("expected unsuccessful usage, success=%d", stats.SuccessCalls)
 	}
+}
+
+func TestHTTPMCPQuotaExhaustionSkipsUpstreamAndUsage(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":"quota success answer"}]}]}`
+		completed := `{"type":"response.completed","response":` + strings.TrimSpace(responseJSON) + `}`
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + completed + "\n\n"))
+	}))
+	defer cpa.Close()
+
+	env := bootIntegrationEnv(t, cpa)
+	ctx := context.Background()
+	key, err := env.st.GetKeyByID(ctx, env.created.Key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tier, err := env.st.CreateTier(ctx, "single-success", 99, 1000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.UpdateUser(ctx, key.UserID, store.UserUpdates{TierID: &tier.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	toolPayload := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"quota test"}}}`
+	firstStatus, firstBody := callMCPTool(t, env, toolPayload)
+	if firstStatus != http.StatusOK || !strings.Contains(firstBody, "quota success answer") {
+		t.Fatalf("expected first tools/call success, status=%d body=%s", firstStatus, truncate(firstBody, 512))
+	}
+
+	secondStatus, secondBody := callMCPTool(t, env, toolPayload)
+	if secondStatus != http.StatusTooManyRequests {
+		t.Fatalf("expected quota exhaustion 429, got %d body=%s", secondStatus, truncate(secondBody, 512))
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("expected exhausted quota to skip upstream; upstream calls=%d", upstreamCalls.Load())
+	}
+
+	env.writer.Close()
+	stats, err := env.st.GetUsageStats(ctx, env.created.Key.ID, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalCalls != 1 || stats.SuccessCalls != 1 {
+		t.Fatalf("expected only successful admitted call to be recorded, got %+v", stats)
+	}
+}
+
+func TestHTTPMCPXSearchFlowForwardsXTool(t *testing.T) {
+	var capturedRequest map[string]any
+	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &capturedRequest); err != nil {
+			t.Fatalf("decode upstream request body: %v", err)
+		}
+		responseJSON := `{"output":[{"role":"assistant","content":[{"type":"output_text","text":"mock x answer"}]}]}`
+		completed := `{"type":"response.completed","response":` + strings.TrimSpace(responseJSON) + `}`
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + completed + "\n\n"))
+	}))
+	defer cpa.Close()
+
+	env := bootIntegrationEnv(t, cpa)
+	toolPayload := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"grok_x_search","arguments":{"query":"x integration"}}}`
+	status, body := callMCPTool(t, env, toolPayload)
+	if status != http.StatusOK || !strings.Contains(body, "mock x answer") {
+		t.Fatalf("expected x_search tools/call success, status=%d body=%s", status, truncate(body, 512))
+	}
+
+	tools, ok := capturedRequest["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("unexpected upstream tools payload: %+v", capturedRequest["tools"])
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected upstream tool payload: %+v", tools[0])
+	}
+	if tool["type"] != "x_search" {
+		t.Fatalf("upstream tool type = %v, want x_search", tool["type"])
+	}
+	for _, webOnlyField := range []string{"allowed_domains", "excluded_domains", "enable_image_understanding", "enable_image_search"} {
+		if _, exists := tool[webOnlyField]; exists {
+			t.Fatalf("x_search upstream request must not include %q: %+v", webOnlyField, tool)
+		}
+	}
+}
+
+func callMCPTool(t *testing.T, env *integrationEnv, payload string) (int, string) {
+	t.Helper()
+	request, _ := http.NewRequest(http.MethodPost, env.ts.URL+"/mcp", bytes.NewBufferString(payload))
+	setMCPHeaders(request, env.created.APIKey)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	return response.StatusCode, string(body)
 }

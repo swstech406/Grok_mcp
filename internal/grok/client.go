@@ -39,9 +39,11 @@ func NewClient(cfg *config.Config) *Client {
 // SearchStream 发起流式搜索；每完成一轮 web_search_call 会调用 onRound（可为 nil），
 // 最终在 response.completed 事件到达后返回聚合后的 SearchResult。
 func (c *Client) SearchStream(ctx context.Context, req SearchRequest, onRound func(SearchRound)) (*SearchResult, error) {
-	if err := validateSearchRequest(req); err != nil {
+	validatedRequest, err := validateSearchRequest(req)
+	if err != nil {
 		return nil, err
 	}
+	req = validatedRequest
 
 	model, body, err := c.buildSearchRequestBody(req)
 	if err != nil {

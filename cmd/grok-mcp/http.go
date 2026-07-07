@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/grok-mcp/internal/auth"
@@ -31,6 +33,8 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 
 	userLim := ratelimit.NewUserLimiter(cfg.DefaultUserRPM)
 	defer userLim.Close()
+	mcpIPLimiter := ratelimit.NewIPLimiter(cfg.MCPIPRPM)
+	defer mcpIPLimiter.Close()
 
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
 
@@ -45,6 +49,7 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
 	mcpChain = userLim.UserMiddleware()(mcpChain)
 	mcpChain = auth.APIKeyMiddleware(authResolver)(mcpChain)
+	mcpChain = mcpIPLimiter.Middleware()(mcpChain)
 
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/mcp/", mcpChain)
@@ -68,7 +73,7 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           rootMux,
+		Handler:           securityHeadersMiddleware(rootMux),
 		ReadHeaderTimeout: 10 * time.Second,
 		// MaxBytesReader only caps request size. ReadTimeout also bounds how long a
 		// client may take to send the body after headers, mitigating slow-body DoS.
@@ -81,6 +86,9 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 
 	errCh := make(chan error, 1)
 	go func() {
+		if isWildcardHTTPAddr(cfg.HTTPAddr) {
+			log.Printf("WARNING: grok-mcp is listening on %s without built-in TLS; use an HTTPS reverse proxy before exposing it publicly", cfg.HTTPAddr)
+		}
 		log.Printf("grok-mcp HTTP listening on %s", cfg.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
@@ -96,4 +104,33 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 	case err := <-errCh:
 		return err
 	}
+}
+
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		if isSensitiveHTTPPath(r.URL.Path) {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isSensitiveHTTPPath(requestPath string) bool {
+	return requestPath == "/mcp" || strings.HasPrefix(requestPath, "/mcp/") || requestPath == "/panel/v1" || strings.HasPrefix(requestPath, "/panel/v1/")
+}
+
+func isWildcardHTTPAddr(httpAddr string) bool {
+	trimmedAddr := strings.TrimSpace(httpAddr)
+	if trimmedAddr == "" || strings.HasPrefix(trimmedAddr, ":") {
+		return true
+	}
+	host, _, err := net.SplitHostPort(trimmedAddr)
+	if err != nil {
+		return false
+	}
+	return host == "" || host == "0.0.0.0" || host == "::" || host == "[::]"
 }
