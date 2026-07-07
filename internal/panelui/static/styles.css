@@ -118,15 +118,15 @@ a {
 }
 
 .success-rate-value.good {
-  color: var(--success);
+  color: #15803d;
 }
 
 .success-rate-value.warning {
-  color: var(--warning);
+  color: #ca8a04;
 }
 
 .success-rate-value.bad {
-  color: var(--error);
+  color: #dc2626;
 }
 
 .hidden {
