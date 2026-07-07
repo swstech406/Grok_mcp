@@ -83,6 +83,7 @@ export function renderRecentActivity(records, compact, options = {}) {
   const showViewAllButton = options.showViewAllButton ?? compact;
   const showRequestIdColumn = options.showRequestIdColumn ?? true;
   const showLatencyColumn = options.showLatencyColumn ?? true;
+  const useCompactTableLayout = Boolean(options.compactTable);
   const visibleColumnCount = [true, showRequestIdColumn, true, showLatencyColumn, true].filter(Boolean).length;
   const viewAllAction = options.viewAllAction || "go";
   const viewAllRoute = options.viewAllRoute || "usage";
@@ -96,8 +97,9 @@ export function renderRecentActivity(records, compact, options = {}) {
       return `data-${escapeAttr(dataAttributeName)}="${escapeAttr(attributeValue)}"`;
     })
   ].filter(Boolean).join(" ");
+  const tableCardClass = useCompactTableLayout ? "card table-card compact-activity-table" : "card table-card";
   return `
-    <section class="card table-card">
+    <section class="${tableCardClass}">
       <div class="table-head">
         <h3>Recent Activity</h3>
         ${showViewAllButton ? `<button class="button ghost small" ${viewAllAttributes} type="button">${escapeHTML(viewAllLabel)}</button>` : ""}
@@ -106,11 +108,11 @@ export function renderRecentActivity(records, compact, options = {}) {
         <table>
           <thead>
             <tr>
-              <th>TOOL NAME</th>
+              <th class="activity-tool-column">TOOL NAME</th>
               ${showRequestIdColumn ? "<th>REQUEST ID</th>" : ""}
-              <th>TIMESTAMP</th>
+              <th class="activity-timestamp-column">TIMESTAMP</th>
               ${showLatencyColumn ? "<th>LATENCY</th>" : ""}
-              <th class="right">STATUS</th>
+              <th class="activity-status-column right">STATUS</th>
             </tr>
           </thead>
           <tbody>
@@ -126,11 +128,11 @@ export function renderActivityRow(record, options = {}) {
   const showLatencyColumn = options.showLatencyColumn ?? true;
   return `
     <tr>
-      <td class="mono" style="color: var(--primary);">${escapeHTML(record.tool_name || "unknown")}</td>
+      <td class="activity-tool-column mono" style="color: var(--primary);">${escapeHTML(record.tool_name || "unknown")}</td>
       ${showRequestIdColumn ? `<td class="muted">${escapeHTML(`req_${String(record.id || "").padStart(8, "0").slice(-8)}`)}</td>` : ""}
-      <td>${relativeTime(record.timestamp)}</td>
+      <td class="activity-timestamp-column">${relativeTime(record.timestamp)}</td>
       ${showLatencyColumn ? `<td>${record.duration_ms ? `${formatNumber(record.duration_ms)}ms` : "--"}</td>` : ""}
-      <td class="right"><span class="badge ${record.success ? "" : "error"}">${record.success ? "Success" : "Failed"}</span></td>
+      <td class="activity-status-column right"><span class="badge ${record.success ? "" : "error"}">${record.success ? "Success" : "Failed"}</span></td>
     </tr>`;
 }
 

@@ -181,7 +181,8 @@ export function renderUserUsageModal(user, usage) {
             viewAllRoute: "",
             viewAllDataset: { userId: user.id },
             showRequestIdColumn: false,
-            showLatencyColumn: false
+            showLatencyColumn: false,
+            compactTable: true
           })}
         </div>
       </section>

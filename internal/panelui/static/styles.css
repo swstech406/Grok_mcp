@@ -1037,6 +1037,26 @@ table {
   text-align: left;
 }
 
+.compact-activity-table table {
+  width: max-content;
+  min-width: 0;
+}
+
+.compact-activity-table th,
+.compact-activity-table td {
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.compact-activity-table .activity-tool-column,
+.compact-activity-table .activity-status-column {
+  width: 1%;
+}
+
+.compact-activity-table .activity-timestamp-column {
+  width: max-content;
+}
+
 th,
 td {
   padding: 14px 20px;
