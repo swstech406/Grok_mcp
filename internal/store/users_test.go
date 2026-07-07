@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRegisterUserOnlyOneAdminUnderConcurrency(t *testing.T) {
@@ -108,5 +109,60 @@ func TestUpdateUserChangesTierID(t *testing.T) {
 	}
 	if updated.TierID != tier.ID {
 		t.Fatalf("tier_id want %s got %s", tier.ID, updated.TierID)
+	}
+}
+
+func TestDeleteUserRemovesUserKeysAndUsage(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	user, err := s.CreateUser(ctx, "delete-me", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := s.CreateKey(ctx, user.ID, "temporary key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordUsage(ctx, UsageRecord{
+		KeyID:      key.ID,
+		ToolName:   "grok_web_search",
+		Timestamp:  time.Now().UTC(),
+		DurationMs: 25,
+		Success:    true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteUser(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetUserByID(ctx, user.ID); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected deleted user to be missing, got %v", err)
+	}
+	keys, err := s.ListKeysByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("expected user keys to be deleted, got %d", len(keys))
+	}
+	stats, err := s.GetGlobalStats(ctx, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalCalls != 0 {
+		t.Fatalf("expected deleted user usage to be deleted, got %d calls", stats.TotalCalls)
+	}
+}
+
+func TestDeleteUserRejectsLastAdmin(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	admin, err := s.CreateUser(ctx, "only-admin", "hash", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteUser(ctx, admin.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("expected last admin deletion to fail, got %v", err)
 	}
 }

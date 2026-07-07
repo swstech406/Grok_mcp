@@ -53,6 +53,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	admin.HandleFunc("GET /panel/v1/admin/users", h.adminListUsers)
 	admin.HandleFunc("GET /panel/v1/admin/users/{id}", h.adminGetUser)
 	admin.HandleFunc("PATCH /panel/v1/admin/users/{id}", h.adminUpdateUser)
+	admin.HandleFunc("DELETE /panel/v1/admin/users/{id}", h.adminDeleteUser)
 	admin.HandleFunc("GET /panel/v1/admin/users/{id}/usage", h.adminUserUsage)
 	admin.HandleFunc("GET /panel/v1/admin/tiers", h.adminListTiers)
 	admin.HandleFunc("POST /panel/v1/admin/tiers", h.adminCreateTier)
@@ -430,6 +431,30 @@ func (h *Handler) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.invalidateAuthCache()
 	writeJSON(w, http.StatusOK, toUserResponseWithTier(u, tier))
+}
+
+func (h *Handler) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	currentUser, ok := auth.UserFromContext(r.Context())
+	if ok && currentUser.ID == id {
+		writeError(w, http.StatusConflict, "cannot delete current user")
+		return
+	}
+	if err := h.Store.DeleteUser(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if errors.Is(err, store.ErrLastAdmin) {
+			writeError(w, http.StatusConflict, "cannot delete last admin")
+			return
+		}
+		log.Printf("admin delete user %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to delete user")
+		return
+	}
+	h.invalidateAuthCache()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) adminUserUsage(w http.ResponseWriter, r *http.Request) {

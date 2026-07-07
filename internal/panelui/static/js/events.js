@@ -210,6 +210,21 @@ export async function deleteTier(id) {
   }
 }
 
+export async function deleteUser(id) {
+  const user = state.users.find((item) => item.id === id);
+  if (!user) return;
+  if (!window.confirm(`Delete user "${user.username}"? This will also delete this user's API keys and usage logs.`)) return;
+  try {
+    await api(`/admin/users/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await loadUsers();
+    notify("用户已删除。", "success");
+    render();
+  } catch (err) {
+    notify(errorText(err), "error");
+    render();
+  }
+}
+
 export async function onClick(event) {
   const actionEl = event.target.closest("[data-action]");
   if (!actionEl) return;
@@ -246,6 +261,8 @@ export async function onClick(event) {
     const user = state.users.find((item) => item.id === actionEl.dataset.userId);
     state.modal = { type: "edit-user", user };
     render();
+  } else if (action === "delete-user") {
+    await deleteUser(actionEl.dataset.userId);
   } else if (action === "open-create-tier") {
     state.modal = { type: "create-tier" };
     render();

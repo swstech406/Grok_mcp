@@ -1,5 +1,5 @@
 import { renderEmptyRow } from "../components/metric-card.js";
-import { filteredUsers, isAdmin } from "../state.js";
+import { filteredUsers, isAdmin, state } from "../state.js";
 import { escapeAttr, escapeHTML, formatNumber, limitText, rpmText, shortID } from "../utils.js";
 
 export function renderUsers() {
@@ -54,6 +54,9 @@ export function renderUserRow(user) {
   const tierBadge = user.tier_name
     ? `<span class="badge off">${escapeHTML(user.tier_name)}</span>`
     : `<span class="muted">—</span>`;
+  const deleteButton = state.user && state.user.id === user.id
+    ? ""
+    : `<button class="mini-icon danger" data-action="delete-user" data-user-id="${escapeAttr(user.id)}" title="Delete" type="button"><span class="material-symbols-outlined">delete</span></button>`;
   return `
     <tr>
       <td>
@@ -69,6 +72,7 @@ export function renderUserRow(user) {
         <span class="row-actions">
           <button class="mini-icon" data-action="user-usage" data-user-id="${escapeAttr(user.id)}" title="Usage" type="button"><span class="material-symbols-outlined">bar_chart</span></button>
           <button class="mini-icon" data-action="edit-user" data-user-id="${escapeAttr(user.id)}" title="Edit" type="button"><span class="material-symbols-outlined">edit</span></button>
+          ${deleteButton}
         </span>
       </td>
     </tr>`;

@@ -628,6 +628,15 @@ a {
   background: #93000a;
 }
 
+.mini-icon.danger {
+  color: var(--error);
+}
+
+.mini-icon.danger:hover {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
 .button.ghost {
   border-color: transparent;
   background: transparent;

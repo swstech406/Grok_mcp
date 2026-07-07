@@ -202,6 +202,48 @@ func (s *SQLiteStore) UpdateUser(ctx context.Context, id string, updates UserUpd
 	return s.GetUserByID(ctx, id)
 }
 
+func (s *SQLiteStore) DeleteUser(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var role string
+	if err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?`, id).Scan(&role); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrUserNotFound
+		}
+		return err
+	}
+
+	if UserRole(role) == RoleAdmin {
+		var adminCount int64
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = ?`, string(RoleAdmin)).Scan(&adminCount); err != nil {
+			return err
+		}
+		if adminCount <= 1 {
+			return ErrLastAdmin
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_log WHERE key_id IN (SELECT id FROM apikeys WHERE user_id = ?)`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM apikeys WHERE user_id = ?`, id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return ErrUserNotFound
+	}
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) CountUsers(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
