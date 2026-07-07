@@ -696,6 +696,12 @@ a {
   margin-bottom: 32px;
 }
 
+.tutorial-column {
+  display: grid;
+  align-content: start;
+  gap: 24px;
+}
+
 .tutorial-card {
   display: grid;
   gap: 18px;

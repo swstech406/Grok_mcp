@@ -31,20 +31,21 @@ Authorization: Bearer YOUR_MCP_API_KEY</code></pre>
         <p class="hint">The panel JWT is only for signing in to this dashboard. MCP clients must use an MCP API key.</p>
       </article>
 
-      <article class="card tutorial-card">
-        <div class="tutorial-card-head">
-          <span class="material-symbols-outlined">developer_board</span>
-          <div>
-            <h3>Cursor</h3>
-            <p>Add this server to the global or project MCP configuration file.</p>
+      <div class="tutorial-column">
+        <article class="card tutorial-card">
+          <div class="tutorial-card-head">
+            <span class="material-symbols-outlined">developer_board</span>
+            <div>
+              <h3>Cursor</h3>
+              <p>Add this server to the global or project MCP configuration file.</p>
+            </div>
           </div>
-        </div>
-        <ol class="tutorial-steps">
-          <li>Open <span class="mono">~/.cursor/mcp.json</span> for global setup, or <span class="mono">.cursor/mcp.json</span> for project setup.</li>
-          <li>Add the server configuration below.</li>
-          <li>Save the file, then restart Cursor or reload MCP tools.</li>
-        </ol>
-        <pre class="tutorial-code"><code>{
+          <ol class="tutorial-steps">
+            <li>Open <span class="mono">~/.cursor/mcp.json</span> for global setup, or <span class="mono">.cursor/mcp.json</span> for project setup.</li>
+            <li>Add the server configuration below.</li>
+            <li>Save the file, then restart Cursor or reload MCP tools.</li>
+          </ol>
+          <pre class="tutorial-code"><code>{
 "mcpServers": {
   "grok-search": {
     "url": "http://localhost:8080/mcp",
@@ -54,26 +55,49 @@ Authorization: Bearer YOUR_MCP_API_KEY</code></pre>
   }
 }
 }</code></pre>
-      </article>
+        </article>
 
-      <article class="card tutorial-card">
-        <div class="tutorial-card-head">
-          <span class="material-symbols-outlined">code_blocks</span>
-          <div>
-            <h3>Codex CLI</h3>
-            <p>Configure Codex with direct Streamable HTTP if supported, or use a stdio bridge.</p>
+        <article class="card tutorial-card">
+          <div class="tutorial-card-head">
+            <span class="material-symbols-outlined">terminal</span>
+            <div>
+              <h3>Claude Code</h3>
+              <p>Add this server as an HTTP MCP server with a bearer token header.</p>
+            </div>
           </div>
-        </div>
-        <ol class="tutorial-steps">
-          <li>Open <span class="mono">~/.codex/config.toml</span>.</li>
-          <li>Use direct HTTP if your installed Codex version supports remote MCP servers.</li>
-          <li>If direct HTTP is not available, use the <span class="mono">mcp-remote</span> bridge fallback.</li>
-        </ol>
-        <pre class="tutorial-code"><code>[mcp_servers.grok_search]
+          <ol class="tutorial-steps">
+            <li>Open a terminal in the project where Claude Code should use this server.</li>
+            <li>Replace the endpoint and token placeholders below.</li>
+            <li>List MCP servers in Claude Code and confirm the server is connected.</li>
+          </ol>
+          <pre class="tutorial-code"><code>claude mcp add grok-search \\
+--transport http \\
+--header "Authorization: Bearer YOUR_MCP_API_KEY" \\
+http://localhost:8080/mcp
+
+claude mcp list</code></pre>
+        </article>
+      </div>
+
+      <div class="tutorial-column">
+        <article class="card tutorial-card">
+          <div class="tutorial-card-head">
+            <span class="material-symbols-outlined">code_blocks</span>
+            <div>
+              <h3>Codex CLI</h3>
+              <p>Configure Codex with direct Streamable HTTP if supported, or use a stdio bridge.</p>
+            </div>
+          </div>
+          <ol class="tutorial-steps">
+            <li>Open <span class="mono">~/.codex/config.toml</span>.</li>
+            <li>Use direct HTTP if your installed Codex version supports remote MCP servers.</li>
+            <li>If direct HTTP is not available, use the <span class="mono">mcp-remote</span> bridge fallback.</li>
+          </ol>
+          <pre class="tutorial-code"><code>[mcp_servers.grok_search]
 transport = "streamable_http"
 url = "http://localhost:8080/mcp"
 headers = { Authorization = "Bearer YOUR_MCP_API_KEY" }</code></pre>
-        <pre class="tutorial-code"><code>[mcp_servers.grok_search]
+          <pre class="tutorial-code"><code>[mcp_servers.grok_search]
 command = "npx"
 args = [
 "-y",
@@ -82,42 +106,22 @@ args = [
 "--header",
 "Authorization: Bearer YOUR_MCP_API_KEY"
 ]</code></pre>
-      </article>
+        </article>
 
-      <article class="card tutorial-card">
-        <div class="tutorial-card-head">
-          <span class="material-symbols-outlined">terminal</span>
-          <div>
-            <h3>Claude Code</h3>
-            <p>Add this server as an HTTP MCP server with a bearer token header.</p>
+        <article class="card tutorial-card">
+          <div class="tutorial-card-head">
+            <span class="material-symbols-outlined">travel_explore</span>
+            <div>
+              <h3>Available Tools</h3>
+              <p>Once connected, the MCP client can call these read-only search tools.</p>
+            </div>
           </div>
-        </div>
-        <ol class="tutorial-steps">
-          <li>Open a terminal in the project where Claude Code should use this server.</li>
-          <li>Replace the endpoint and token placeholders below.</li>
-          <li>List MCP servers in Claude Code and confirm the server is connected.</li>
-        </ol>
-        <pre class="tutorial-code"><code>claude mcp add grok-search \\
---transport http \\
---header "Authorization: Bearer YOUR_MCP_API_KEY" \\
-http://localhost:8080/mcp
-
-claude mcp list</code></pre>
-      </article>
-
-      <article class="card tutorial-card">
-        <div class="tutorial-card-head">
-          <span class="material-symbols-outlined">travel_explore</span>
-          <div>
-            <h3>Available Tools</h3>
-            <p>Once connected, the MCP client can call these read-only search tools.</p>
-          </div>
-        </div>
-        <ul class="tutorial-tool-list">
-          <li><span class="mono">grok_web_search</span><span>Real-time public web search through Grok web search.</span></li>
-          <li><span class="mono">grok_x_search</span><span>Real-time X post search through Grok X search.</span></li>
-        </ul>
-      </article>
+          <ul class="tutorial-tool-list">
+            <li><span class="mono">grok_web_search</span><span>Real-time public web search through Grok web search.</span></li>
+            <li><span class="mono">grok_x_search</span><span>Real-time X post search through Grok X search.</span></li>
+          </ul>
+        </article>
+      </div>
 
       <article class="card tutorial-card tutorial-card-wide">
         <div class="tutorial-card-head">
