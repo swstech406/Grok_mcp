@@ -60,6 +60,11 @@ export async function loadRouteData() {
       await loadKeys();
     } else if (state.route === "usage") {
       await loadKeys();
+      if (isAdmin()) {
+        await loadUsers();
+      } else {
+        state.selectedUsageUserID = "";
+      }
       state.usage = await loadUsageForSelection();
     } else if (state.route === "users" && isAdmin()) {
       await loadUsers();

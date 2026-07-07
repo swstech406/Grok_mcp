@@ -310,6 +310,8 @@ export async function onClick(event) {
     await deleteKey(actionEl.dataset.targetId);
   } else if (action === "user-usage") {
     await openUserUsage(actionEl.dataset.userId);
+  } else if (action === "view-user-usage-logs") {
+    viewUserUsageLogs(actionEl.dataset.userId);
   } else if (action === "logout") {
     clearSession();
     notify("已退出登录。", "success");
@@ -324,7 +326,13 @@ export async function onChange(event) {
   if (target.matches("[data-key-toggle]")) {
     const checkbox = target;
     await updateKeyEnabled(checkbox.dataset.keyToggle, checkbox.checked);
+  } else if (target.id === "usage-user-select") {
+    state.selectedUsageUserID = target.value;
+    state.selectedKeyID = "all";
+    await loadRouteData();
+    render();
   } else if (target.id === "usage-key-select") {
+    state.selectedUsageUserID = "";
     state.selectedKeyID = target.value;
     await loadRouteData();
     render();
@@ -407,6 +415,14 @@ export async function openUserUsage(id) {
     notify(errorText(err), "error");
     render();
   }
+}
+
+export function viewUserUsageLogs(id) {
+  if (!id) return;
+  state.selectedUsageUserID = id;
+  state.selectedKeyID = "all";
+  state.modal = null;
+  navigate("usage");
 }
 
 export async function copyCreatedKey(options = {}) {

@@ -1,5 +1,5 @@
 import { filteredRecords } from "../state.js";
-import { bucketRecords, clamp, escapeHTML, formatNumber, percentOf, relativeTime, trimToolName } from "../utils.js";
+import { bucketRecords, clamp, escapeAttr, escapeHTML, formatNumber, percentOf, relativeTime, trimToolName } from "../utils.js";
 
 export function metricCard(title, value, icon, note, tone, progress) {
   return `
@@ -78,13 +78,26 @@ export function renderToolUsage(usage) {
     </div>`;
 }
 
-export function renderRecentActivity(records, compact) {
+export function renderRecentActivity(records, compact, options = {}) {
   const rows = filteredRecords(records || []).slice(0, compact ? 5 : 500);
+  const showViewAllButton = options.showViewAllButton ?? compact;
+  const viewAllAction = options.viewAllAction || "go";
+  const viewAllRoute = options.viewAllRoute || "usage";
+  const viewAllLabel = options.viewAllLabel || "View All Logs";
+  const viewAllDataset = options.viewAllDataset || {};
+  const viewAllAttributes = [
+    `data-action="${escapeAttr(viewAllAction)}"`,
+    viewAllRoute ? `data-route="${escapeAttr(viewAllRoute)}"` : "",
+    ...Object.entries(viewAllDataset).map(([attributeName, attributeValue]) => {
+      const dataAttributeName = String(attributeName).replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+      return `data-${escapeAttr(dataAttributeName)}="${escapeAttr(attributeValue)}"`;
+    })
+  ].filter(Boolean).join(" ");
   return `
     <section class="card table-card">
       <div class="table-head">
         <h3>Recent Activity</h3>
-        <button class="button ghost small" data-action="go" data-route="usage" type="button">View All Logs</button>
+        ${showViewAllButton ? `<button class="button ghost small" ${viewAllAttributes} type="button">${escapeHTML(viewAllLabel)}</button>` : ""}
       </div>
       <div class="table-wrap">
         <table>

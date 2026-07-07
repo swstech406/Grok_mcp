@@ -17,6 +17,7 @@ export const state = {
   tiers: [],
   usage: emptyUsage(),
   selectedKeyID: "all",
+  selectedUsageUserID: "",
   sinceMode: "24h",
   search: "",
   modal: null,
@@ -29,6 +30,8 @@ export function clearSession() {
   state.keys = [];
   state.users = [];
   state.usage = emptyUsage();
+  state.selectedKeyID = "all";
+  state.selectedUsageUserID = "";
   removeStored(storage.token);
   removeStored(storage.user);
 }

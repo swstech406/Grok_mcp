@@ -62,6 +62,10 @@ export async function loadAggregatedUsage(mode) {
 
 export async function loadUsageForSelection() {
   const since = sinceQuery(state.sinceMode);
+  if (state.selectedUsageUserID) {
+    const data = await api(`/admin/users/${encodeURIComponent(state.selectedUsageUserID)}/usage${since}`);
+    return normalizeUsage(data);
+  }
   if (state.selectedKeyID === "all") {
     return loadAggregatedUsage(state.sinceMode);
   }

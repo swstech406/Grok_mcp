@@ -175,7 +175,11 @@ export function renderUserUsageModal(user, usage) {
             ${metricCard("Total Calls", formatNumber(usage.total_calls), "data_usage", "All user keys", "good", null)}
             ${metricCard("Success Calls", formatNumber(usage.success_calls), "check_circle", `${successPercent(usage)} success`, "good", null)}
           </div>
-          ${renderRecentActivity(usage.records || [], true)}
+          ${renderRecentActivity(usage.records || [], true, {
+            viewAllAction: "view-user-usage-logs",
+            viewAllRoute: "",
+            viewAllDataset: { userId: user.id }
+          })}
         </div>
       </section>
     </div>`;
