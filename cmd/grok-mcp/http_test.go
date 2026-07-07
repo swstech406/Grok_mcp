@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/grok-mcp/internal/store"
@@ -69,5 +72,27 @@ func TestEnsureBootstrapAdminSkipsNonEmptyStore(t *testing.T) {
 	}
 	if credentials != nil {
 		t.Fatalf("expected no bootstrap credentials for non-empty database, got %+v", credentials)
+	}
+}
+
+func TestSecurityHeadersAllowPanelExternalAssets(t *testing.T) {
+	handler := securityHeadersMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/panel/", nil)
+
+	handler.ServeHTTP(recorder, request)
+
+	contentSecurityPolicyHeader := recorder.Header().Get("Content-Security-Policy")
+	expectedDirectives := []string{
+		"style-src 'self' https://fonts.googleapis.com",
+		"font-src 'self' https://fonts.gstatic.com data:",
+		"img-src 'self' data: blob: https:",
+	}
+	for _, expectedDirective := range expectedDirectives {
+		if !strings.Contains(contentSecurityPolicyHeader, expectedDirective) {
+			t.Fatalf("CSP header %q does not contain %q", contentSecurityPolicyHeader, expectedDirective)
+		}
 	}
 }

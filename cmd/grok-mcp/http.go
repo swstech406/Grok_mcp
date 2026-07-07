@@ -25,6 +25,18 @@ import (
 
 const bootstrapAdminUsername = "admin"
 
+var contentSecurityPolicy = strings.Join([]string{
+	"default-src 'self'",
+	"script-src 'self'",
+	"style-src 'self' https://fonts.googleapis.com",
+	"font-src 'self' https://fonts.gstatic.com data:",
+	"img-src 'self' data: blob: https:",
+	"connect-src 'self'",
+	"base-uri 'none'",
+	"frame-ancestors 'none'",
+	"form-action 'self'",
+}, "; ")
+
 type bootstrapAdminCredentials struct {
 	Username string
 	Password string
@@ -171,7 +183,7 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 		if isSensitiveHTTPPath(r.URL.Path) {
 			w.Header().Set("Cache-Control", "no-store")
 		}
