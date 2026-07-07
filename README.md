@@ -223,7 +223,7 @@ docker compose up -d --build
 - `CPA_API_KEY`
 - `GROK_JWT_SECRET`
 
-容器内默认监听 `:8080`，Compose 示例默认只绑定宿主机 `127.0.0.1:8080`。如需公网访问，请通过 HTTPS 反向代理暴露服务。SQLite 数据保存到命名卷 `grok-mcp-data`。
+容器内默认监听 `:8080`，Compose 示例默认映射宿主机 `8080`。如需公网访问，请通过 HTTPS 反向代理暴露服务。SQLite 数据保存到命名卷 `grok-mcp-data`。
 
 ## 配置项
 
@@ -237,7 +237,7 @@ docker compose up -d --build
 | `GROK_MODEL` | 否 | `grok-4.3` | 默认模型，可被工具参数 `model` 覆盖 |
 | `GROK_HTTP_TIMEOUT` | 否 | `120` | 上游 HTTP 超时，单位秒 |
 | `GROK_MCP_DEBUG` | 否 | 无 | 设为 `1`、`true` 或 `yes` 时输出调试日志 |
-| `GROK_HTTP_ADDR` | 否 | `127.0.0.1:8080` | HTTP 监听地址；直接公网暴露明文 HTTP 会泄露 JWT/API key |
+| `GROK_HTTP_ADDR` | 否 | `:8080` | HTTP 监听地址；直接公网暴露明文 HTTP 会泄露 JWT/API key |
 | `GROK_DB_PATH` | 否 | `./grok-mcp.db` | SQLite 数据库路径 |
 
 （已移除 `GROK_ADMIN_TOKEN` 与 `/admin/v1`；请使用 `/panel/v1`。）

@@ -13,7 +13,7 @@ const (
 	defaultBaseURL  = "http://127.0.0.1:8317"
 	defaultModel    = "grok-4.3"
 	defaultTimeout  = 120 * time.Second
-	defaultHTTPAddr = "127.0.0.1:8080"
+	defaultHTTPAddr = ":8080"
 	defaultDBPath   = "./grok-mcp.db"
 	// defaultMCPIPRPM 在 API key 鉴权前按来源 IP 限制 /mcp 请求，保护认证存储免受暴力探测和 DoS。
 	defaultMCPIPRPM = 300

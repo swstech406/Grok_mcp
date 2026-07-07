@@ -127,7 +127,7 @@ func TestLoadHTTPDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if cfg.HTTPAddr != "127.0.0.1:8080" ||
+	if cfg.HTTPAddr != ":8080" ||
 		cfg.DBPath != "./grok-mcp.db" ||
 		cfg.DefaultUserRPM != 60 ||
 		cfg.MCPIPRPM != 300 {

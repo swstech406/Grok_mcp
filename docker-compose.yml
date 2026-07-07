@@ -12,8 +12,8 @@ services:
     container_name: grok-mcp
     restart: unless-stopped
     ports:
-      # 默认仅绑定宿主机 loopback；公网暴露请放在 HTTPS 反向代理之后。
-      - "127.0.0.1:8080:8080"
+      # 默认映射宿主机 8080；公网暴露请放在 HTTPS 反向代理之后。
+      - "8080:8080"
     environment:
       CPA_BASE_URL: "${CPA_BASE_URL:-http://host.docker.internal:8317}"
       CPA_API_KEY: "${CPA_API_KEY:?CPA_API_KEY is required}"
