@@ -19,6 +19,7 @@ export function renderDashboard() {
       ${metricCard("Rate Per Minute<br>(RPM)", `${formatNumber(recentMinuteCalls)} <span class="muted">/ ${rpmText(state.user.rpm)}</span>`, "speed", "User-level shared rate limit", rpmPct >= 90 ? "bad" : "good", rpmProgress)}
       ${metricCard("Success Rate", successRateValue, "check_circle", usage.total_calls ? "Based on completed calls" : "No traffic yet", "good", null, { reserveProgressSpace: true })}
       ${metricCard("Success Limit", `${formatNumber(state.user.success_calls)} <span class="muted">/ ${limitText(state.user.success_limit)}</span>`, "check_circle", quotaNote(successPct), successPct >= 90 ? "bad" : "good", successPct, { trailingNote: successLimitResetText })}
+      ${renderUserTierCard()}
     </section>
     <section class="grid viz-grid">
       <div class="card panel">
@@ -33,6 +34,17 @@ export function renderDashboard() {
     ${renderRecentActivity(usage.records, true, {
       viewAllDataset: { expandUsageActivity: "true" }
     })}`;
+}
+
+function renderUserTierCard() {
+  const tierLabel = String(state.user.tier_name || state.user.tier_id || "Unassigned").trim() || "Unassigned";
+  return `
+    <div class="card metric-card dashboard-tier-card">
+      <div class="metric-top">
+        <span class="metric-title">User Tier</span>
+      </div>
+      <div class="metric-value">${escapeHTML(tierLabel)}</div>
+    </div>`;
 }
 
 function classifySuccessRateTone(successRate, totalCalls) {
