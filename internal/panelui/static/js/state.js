@@ -19,6 +19,7 @@ export const state = {
   usage: emptyUsage(),
   selectedKeyID: "all",
   sinceMode: "24h",
+  usageActivityCompact: true,
   search: "",
   modal: null,
   toast: null

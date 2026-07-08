@@ -18,7 +18,9 @@ document.addEventListener("click", onClick);
 document.addEventListener("change", onChange);
 document.addEventListener("input", onInput);
 window.addEventListener("hashchange", async () => {
+  const previousRoute = state.route;
   state.route = readRoute();
+  resetUsageActivityView(previousRoute, state.route);
   await loadRouteData();
   render();
 });
@@ -55,7 +57,7 @@ export async function loadRouteData() {
     setStored(storage.user, JSON.stringify(state.user));
     if (state.route === "dashboard") {
       await loadKeys();
-      state.usage = await loadAggregatedUsage("24h");
+      state.usage = await loadAggregatedUsage(state.sinceMode);
     } else if (state.route === "keys") {
       await loadKeys();
     } else if (state.route === "usage") {
@@ -73,6 +75,12 @@ export async function loadRouteData() {
     handleAPIError(err);
   } finally {
     state.loading = false;
+  }
+}
+
+function resetUsageActivityView(previousRoute, nextRoute) {
+  if (nextRoute === "usage" && previousRoute !== "usage") {
+    state.usageActivityCompact = true;
   }
 }
 

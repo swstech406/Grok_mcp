@@ -44,20 +44,44 @@ export function rangeLabel(mode) {
   return "Last 24 Hours";
 }
 
-export function bucketRecords(records) {
+export function bucketRecords(records, mode = "24h") {
   const buckets = new Array(8).fill(0);
   const now = Date.now();
-  const start = now - 24 * 60 * 60 * 1000;
-  for (const record of records) {
-    const ts = new Date(record.timestamp).getTime();
-    if (!Number.isFinite(ts) || ts < start || ts > now) continue;
-    const index = Math.min(7, Math.max(0, Math.floor(((ts - start) / (now - start)) * 8)));
-    buckets[index] += 1;
-  }
-  if (buckets.every((item) => item === 0)) {
-    return [1, 2, 3, 5, 4, 6, 3, 2].map(() => 0);
+  const validTimestamps = (records || [])
+    .map((record) => new Date(record.timestamp).getTime())
+    .filter((timestamp) => Number.isFinite(timestamp));
+  const bucketWindow = resolveBucketWindow(validTimestamps, mode, now);
+  const bucketWindowDuration = Math.max(1, bucketWindow.end - bucketWindow.start);
+
+  for (const timestamp of validTimestamps) {
+    if (timestamp < bucketWindow.start || timestamp > bucketWindow.end) continue;
+    const bucketIndex = Math.min(7, Math.max(0, Math.floor(((timestamp - bucketWindow.start) / bucketWindowDuration) * 8)));
+    buckets[bucketIndex] += 1;
   }
   return buckets;
+}
+
+function resolveBucketWindow(timestamps, mode, now) {
+  if (mode === "7d") {
+    return { start: now - 7 * 24 * 60 * 60 * 1000, end: now };
+  }
+  if (mode === "all") {
+    return resolveAllTimeBucketWindow(timestamps, now);
+  }
+  return { start: now - 24 * 60 * 60 * 1000, end: now };
+}
+
+function resolveAllTimeBucketWindow(timestamps, now) {
+  const historicalTimestamps = timestamps.filter((timestamp) => timestamp <= now);
+  if (!historicalTimestamps.length) {
+    return { start: now - 24 * 60 * 60 * 1000, end: now };
+  }
+
+  const oldestTimestamp = Math.min(...historicalTimestamps);
+  return {
+    start: oldestTimestamp < now ? oldestTimestamp : now - 24 * 60 * 60 * 1000,
+    end: now
+  };
 }
 
 export function buildDashboardAlert(records) {

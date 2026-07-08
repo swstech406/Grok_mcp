@@ -35,9 +35,14 @@ export function renderUsage() {
           <h3>Traffic Volume</h3>
           <span class="mono muted">${escapeHTML(rangeLabel(state.sinceMode))}</span>
         </div>
-        ${renderBars(usage.records)}
+        ${renderBars(usage.records, state.sinceMode)}
       </div>
       ${renderToolUsage(usage)}
     </section>
-    ${renderRecentActivity(filteredRecords(usage.records), false)}`;
+    ${renderRecentActivity(filteredRecords(usage.records), state.usageActivityCompact, {
+      showViewAllButton: state.usageActivityCompact,
+      viewAllAction: "expand-usage-activity",
+      viewAllRoute: "",
+      viewAllLabel: "View All Activity"
+    })}`;
 }

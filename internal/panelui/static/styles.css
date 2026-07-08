@@ -1224,6 +1224,29 @@ summary.debug-json-panel-head {
   line-height: 32px;
 }
 
+.bar-chart-shell {
+  display: grid;
+  grid-template-columns: minmax(36px, max-content) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.chart-y-axis {
+  height: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-bottom: 18px;
+  color: var(--on-surface-variant);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 14px;
+}
+
+.chart-body {
+  min-width: 0;
+}
+
 .bar-chart {
   position: relative;
   height: 260px;

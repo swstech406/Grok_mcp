@@ -297,6 +297,9 @@ export async function onClick(event) {
   } else if (action === "refresh") {
     await loadRouteData();
     render();
+  } else if (action === "expand-usage-activity") {
+    state.usageActivityCompact = false;
+    render();
   } else if (action === "reload-server-settings") {
     await loadServerSettings();
     notify("服务器设置已刷新。", "success");

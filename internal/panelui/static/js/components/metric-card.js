@@ -37,14 +37,50 @@ export function renderDashboardAlert(alert) {
     </section>`;
 }
 
-export function renderBars(records) {
-  const buckets = bucketRecords(records || []);
-  const max = Math.max(1, ...buckets);
+export function renderBars(records, mode = "24h") {
+  const buckets = bucketRecords(records || [], mode);
+  const maximumBucketValue = Math.max(0, ...buckets);
+  const verticalAxisValues = createChartAxisValues(maximumBucketValue);
+  const verticalAxisMaximum = verticalAxisValues[0] || 1;
+  const horizontalAxisLabels = createChartTimeLabels(mode);
+
   return `
-    <div class="bar-chart" aria-label="流量柱状图">
-      ${buckets.map((value) => `<div class="bar" title="${value} calls" style="height: ${Math.max(8, Math.round((value / max) * 92))}%;"></div>`).join("")}
-    </div>
-    <div class="chart-axis"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>Now</span></div>`;
+    <div class="bar-chart-shell" role="img" aria-label="流量柱状图">
+      <div class="chart-y-axis" aria-hidden="true">
+        ${verticalAxisValues.map((value) => `<span>${formatNumber(value)}</span>`).join("")}
+      </div>
+      <div class="chart-body">
+        <div class="bar-chart">
+          ${buckets.map((value) => `<div class="bar" title="${formatNumber(value)} calls" style="height: ${createBarHeightPercent(value, verticalAxisMaximum)}%;"></div>`).join("")}
+        </div>
+        <div class="chart-axis">${horizontalAxisLabels.map((label) => `<span>${escapeHTML(label)}</span>`).join("")}</div>
+      </div>
+    </div>`;
+}
+
+function createChartAxisValues(maximumBucketValue) {
+  const safeMaximumValue = Math.max(1, Number(maximumBucketValue) || 0);
+  const tickStep = Math.max(1, Math.ceil(safeMaximumValue / 4));
+  const roundedMaximumValue = tickStep * 4;
+  return Array.from({ length: 5 }, (_, tickIndex) => roundedMaximumValue - tickStep * tickIndex);
+}
+
+function createBarHeightPercent(value, maximumValue) {
+  const safeValue = Number(value) || 0;
+  if (safeValue <= 0) {
+    return 0;
+  }
+  return Math.max(8, Math.round((safeValue / Math.max(1, maximumValue)) * 92));
+}
+
+function createChartTimeLabels(mode) {
+  if (mode === "7d") {
+    return ["7d ago", "5d ago", "3d ago", "1d ago", "Now"];
+  }
+  if (mode === "all") {
+    return ["Oldest", "25%", "50%", "75%", "Now"];
+  }
+  return ["24h ago", "18h ago", "12h ago", "6h ago", "Now"];
 }
 
 export function renderToolUsage(usage) {
@@ -93,7 +129,7 @@ export function renderRecentActivity(records, compact, options = {}) {
   const visibleColumnCount = [true, showRequestIdColumn, true, showLatencyColumn, true, showDebugColumn].filter(Boolean).length;
   const viewAllAction = options.viewAllAction || "go";
   const viewAllRoute = options.viewAllRoute || "usage";
-  const viewAllLabel = options.viewAllLabel || "View All Logs";
+  const viewAllLabel = options.viewAllLabel || "View All Activity";
   const viewAllDataset = options.viewAllDataset || {};
   const viewAllAttributes = [
     `data-action="${escapeAttr(viewAllAction)}"`,

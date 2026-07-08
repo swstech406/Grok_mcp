@@ -1,6 +1,6 @@
 import { metricCard, renderBars, renderDashboardAlert, renderRecentActivity, renderToolUsage } from "../components/metric-card.js";
 import { state } from "../state.js";
-import { buildDashboardAlert, countRecordsInWindow, formatNumber, limitText, percentOf, quotaNote, rpmText } from "../utils.js";
+import { buildDashboardAlert, countRecordsInWindow, escapeHTML, formatNumber, limitText, percentOf, quotaNote, rangeLabel, rpmText } from "../utils.js";
 
 export function renderDashboard() {
   const usage = state.usage;
@@ -23,9 +23,9 @@ export function renderDashboard() {
       <div class="card panel">
         <div class="panel-head">
           <h3>Traffic Volume</h3>
-          <button class="button secondary small" data-action="go" data-route="usage" type="button">Last 24 Hours</button>
+          <span class="mono muted">${escapeHTML(rangeLabel(state.sinceMode))}</span>
         </div>
-        ${renderBars(usage.records)}
+        ${renderBars(usage.records, state.sinceMode)}
       </div>
       ${renderToolUsage(usage)}
     </section>
