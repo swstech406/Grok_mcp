@@ -43,6 +43,7 @@ func Handler() http.Handler {
 			http.Redirect(w, r, "/panel/", http.StatusFound)
 			return
 		}
+		setPanelUICacheHeaders(w)
 
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/panel/")
 		if name == "" || name == "." {
@@ -63,4 +64,10 @@ func Handler() http.Handler {
 
 		http.ServeFileFS(w, r, staticFS, "index.html")
 	})
+}
+
+func setPanelUICacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 }

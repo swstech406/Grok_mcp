@@ -30,6 +30,7 @@ func TestHandlerServesAllowedStaticAsset(t *testing.T) {
 	if responseRecorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusOK)
 	}
+	assertPanelUICacheHeaders(t, responseRecorder)
 	if body := responseRecorder.Body.String(); !strings.Contains(body, "document.addEventListener") {
 		t.Fatalf("expected app.js response body to look like the frontend bundle, got %q", body)
 	}
@@ -55,10 +56,24 @@ func TestHandlerFallsBackToIndexForSpaRoutesAndUnknownAssets(t *testing.T) {
 			if responseRecorder.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusOK)
 			}
+			assertPanelUICacheHeaders(t, responseRecorder)
 			if body := responseRecorder.Body.String(); !strings.Contains(body, "<div id=\"app\"") {
 				t.Fatalf("expected index.html fallback body, got %q", body)
 			}
 		})
+	}
+}
+
+func assertPanelUICacheHeaders(t *testing.T, responseRecorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if cacheControl := responseRecorder.Header().Get("Cache-Control"); cacheControl != "no-store, max-age=0" {
+		t.Fatalf("Cache-Control = %q, want no-store, max-age=0", cacheControl)
+	}
+	if pragma := responseRecorder.Header().Get("Pragma"); pragma != "no-cache" {
+		t.Fatalf("Pragma = %q, want no-cache", pragma)
+	}
+	if expires := responseRecorder.Header().Get("Expires"); expires != "0" {
+		t.Fatalf("Expires = %q, want 0", expires)
 	}
 }
 
