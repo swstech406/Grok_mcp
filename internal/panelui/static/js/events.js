@@ -131,24 +131,49 @@ export async function submitEditKey(form) {
 export async function submitEditUser(form) {
   const data = new FormData(form);
   const id = String(data.get("id") || "");
+  const tierID = String(data.get("tier_id") || "").trim();
+  if (!id) {
+    notify("用户信息缺失，请刷新后重试。", "error");
+    render();
+    return;
+  }
+  if (!tierID) {
+    notify("请选择用户 Tier 后再保存。", "error");
+    render();
+    return;
+  }
   const body = {
     enabled: data.get("enabled") === "on",
     role: String(data.get("role") || "user"),
-    tier_id: String(data.get("tier_id") || "")
+    tier_id: tierID
   };
   if (data.get("revoke_tokens") === "on") {
     body.revoke_tokens = true;
   }
+  const submitButton = form.querySelector('[data-action="submit-edit-user"]');
+  const originalSubmitButtonHTML = submitButton ? submitButton.innerHTML : "";
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.innerHTML = '<span class="material-symbols-outlined">hourglass_top</span><span>Saving...</span>';
+  }
   try {
-    await api(`/admin/users/${encodeURIComponent(id)}`, {
+    const updatedUser = await api(`/admin/users/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body
     });
+    state.users = state.users.map((user) => user.id === updatedUser.id ? updatedUser : user);
+    if (state.user && state.user.id === updatedUser.id) {
+      state.user = updatedUser;
+      setStored(storage.user, JSON.stringify(state.user));
+    }
     state.modal = null;
-    await loadUsers();
     notify("用户已更新。", "success");
     render();
   } catch (err) {
+    if (submitButton && document.contains(submitButton)) {
+      submitButton.disabled = false;
+      submitButton.innerHTML = originalSubmitButtonHTML;
+    }
     notify(errorText(err), "error");
     render();
   }
@@ -335,8 +360,24 @@ export async function onClick(event) {
     navigate("usage");
   } else if (action === "edit-user") {
     const user = state.users.find((item) => item.id === actionEl.dataset.userId);
+    if (!user) return;
+    try {
+      if (!state.tiers.length) {
+        await loadTiers();
+      }
+    } catch (err) {
+      notify(errorText(err), "error");
+      render();
+      return;
+    }
     state.modal = { type: "edit-user", user };
     render();
+  } else if (action === "submit-edit-user") {
+    event.preventDefault();
+    const form = actionEl.closest("form");
+    if (form instanceof HTMLFormElement) {
+      await submitEditUser(form);
+    }
   } else if (action === "delete-user") {
     openDeleteUserModal(actionEl.dataset.userId);
   } else if (action === "confirm-delete-user") {

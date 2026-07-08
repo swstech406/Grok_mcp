@@ -401,14 +401,14 @@ export function renderEditUserModal(user) {
             </div>
             <div class="field">
               <label for="edit-user-tier">Tier</label>
-              <select id="edit-user-tier" name="tier_id" class="select" required>
+              <select id="edit-user-tier" name="tier_id" class="select">
                 ${tierOptions(user.tier_id || "")}
               </select>
               <span class="hint">必须选择 tier；限额（RPM / success limit）完全由 tier 决定，用户不再保留独立限额。调整 tier 预设请到 Tier Management 页。</span>
             </div>
             <div class="modal-actions">
               <button class="button secondary" data-action="close-modal" type="button">Cancel</button>
-              <button class="button" type="submit"><span class="material-symbols-outlined">save</span><span>Save</span></button>
+              <button class="button" data-action="submit-edit-user" type="button"><span class="material-symbols-outlined">save</span><span>Save</span></button>
             </div>
           </form>
         </div>
