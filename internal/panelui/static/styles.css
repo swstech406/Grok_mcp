@@ -871,6 +871,240 @@ a {
   font-family: inherit;
 }
 
+.debug-json-modal {
+  width: min(96vw, 1120px);
+  max-height: min(90vh, 900px);
+}
+
+.debug-json-modal .modal-body {
+  max-height: calc(90vh - 48px);
+  overflow: auto;
+}
+
+.debug-json-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.debug-json-summary-item {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius);
+  background: var(--surface-low);
+}
+
+.debug-json-summary-item span {
+  color: var(--on-surface-variant);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.debug-json-summary-item strong {
+  overflow-wrap: anywhere;
+  color: var(--on-surface);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.debug-json-summary-item.good strong {
+  color: var(--success);
+}
+
+.debug-json-summary-item.bad strong {
+  color: var(--error);
+}
+
+.debug-json-warning {
+  margin-bottom: 16px;
+}
+
+.debug-json-viewer {
+  display: grid;
+  gap: 16px;
+}
+
+.debug-json-panel {
+  overflow: hidden;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  background: var(--surface-lowest);
+}
+
+.debug-json-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--outline-variant);
+  background: var(--surface-low);
+  color: var(--on-surface);
+  font-weight: 600;
+}
+
+summary.debug-json-panel-head {
+  cursor: pointer;
+}
+
+.debug-json-tree {
+  max-height: 56vh;
+  overflow: auto;
+  padding: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.debug-json-node,
+.debug-json-leaf {
+  margin: 4px 0;
+}
+
+.debug-json-node summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.debug-json-node summary::-webkit-details-marker {
+  display: none;
+}
+
+.debug-json-node summary::before {
+  width: 16px;
+  color: #94a3b8;
+  content: "chevron_right";
+  font-family: "Material Symbols Outlined";
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+
+.debug-json-node[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.debug-json-node summary:hover,
+.debug-json-leaf:hover {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.debug-json-children {
+  margin-left: 15px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.debug-json-leaf {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 5px 8px 5px 40px;
+  border-radius: var(--radius-sm);
+}
+
+.debug-json-key {
+  color: #93c5fd;
+  overflow-wrap: anywhere;
+}
+
+.debug-json-type,
+.debug-json-count {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.18);
+  color: #bfdbfe;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.debug-json-count {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.debug-json-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.debug-json-value.is-string {
+  color: #86efac;
+}
+
+.debug-json-value.is-number {
+  color: #fbbf24;
+}
+
+.debug-json-value.is-boolean {
+  color: #f0abfc;
+}
+
+.debug-json-value.is-null,
+.debug-json-empty {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.debug-json-empty {
+  display: inline-flex;
+  padding: 5px 8px 5px 40px;
+}
+
+.debug-json-block {
+  overflow: auto;
+  max-height: 56vh;
+  margin: 0;
+  padding: 14px 16px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+}
+
+.debug-json-block code {
+  font-family: inherit;
+}
+
+.debug-json-raw-panel .debug-json-panel-head {
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .debug-json-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .debug-json-leaf {
+    grid-template-columns: minmax(96px, 0.4fr) minmax(0, 1fr);
+  }
+
+  .debug-json-leaf .debug-json-type {
+    display: none;
+  }
+}
+
 .tutorial-card .hint {
   margin: 0;
   padding: 12px;

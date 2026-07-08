@@ -2,7 +2,7 @@ import { api } from "../api.js";
 import { metricCard, renderRecentActivity } from "./metric-card.js";
 import { tierOptions } from "../pages/tiers.js";
 import { state } from "../state.js";
-import { escapeAttr, escapeHTML, formatNumber, successPercent } from "../utils.js";
+import { escapeAttr, escapeHTML, formatNumber, relativeTime, successPercent } from "../utils.js";
 
 export function renderModal() {
   if (!state.modal) return "";
@@ -22,11 +22,15 @@ export function renderModal() {
 export function renderDebugJSONModal(record) {
   if (!record) return "";
   const requestID = `req_${String(record.id || "").padStart(8, "0").slice(-8)}`;
-  let formattedDebugJSON = String(record.debug_json || "{}");
+  const rawDebugJSON = String(record.debug_json || "{}");
+  let parsedDebugJSON = null;
+  let formattedDebugJSON = rawDebugJSON;
+  let parseError = "";
   try {
-    formattedDebugJSON = JSON.stringify(JSON.parse(formattedDebugJSON), null, 2);
-  } catch {
-    // Keep the raw debug payload when it is not valid JSON for any reason.
+    parsedDebugJSON = JSON.parse(rawDebugJSON);
+    formattedDebugJSON = JSON.stringify(parsedDebugJSON, null, 2);
+  } catch (error) {
+    parseError = error instanceof Error ? error.message : "Invalid JSON payload";
   }
   return `
     <div class="modal-backdrop" data-action="close-modal">
@@ -35,10 +39,107 @@ export function renderDebugJSONModal(record) {
         <div class="modal-body">
           <h3>Debug JSON</h3>
           <p>${escapeHTML(requestID)} full captured request and response payload.</p>
-          <pre class="debug-json-block"><code>${escapeHTML(formattedDebugJSON)}</code></pre>
+          <div class="debug-json-summary">
+            ${renderDebugJSONSummaryItem("Tool", record.tool_name || "unknown")}
+            ${renderDebugJSONSummaryItem("Status", record.success ? "Success" : "Failed", record.success ? "good" : "bad")}
+            ${renderDebugJSONSummaryItem("Latency", record.duration_ms ? `${formatNumber(record.duration_ms)}ms` : "--")}
+            ${renderDebugJSONSummaryItem("Time", relativeTime(record.timestamp))}
+          </div>
+          ${parseError ? `
+            <div class="warning-box debug-json-warning">
+              <span class="material-symbols-outlined">warning</span>
+              <div>
+                <strong>Unable to parse as JSON.</strong>
+                <p>${escapeHTML(parseError)}</p>
+              </div>
+            </div>` : ""}
+          <div class="debug-json-viewer">
+            <div class="debug-json-panel">
+              <div class="debug-json-panel-head">
+                <span>Visual Tree</span>
+                <span class="mono muted">${parsedDebugJSON === null ? "Raw fallback" : `${formatNumber(countDebugJSONNodes(parsedDebugJSON))} nodes`}</span>
+              </div>
+              <div class="debug-json-tree" role="tree">
+                ${parsedDebugJSON === null ? `<pre class="debug-json-block"><code>${escapeHTML(formattedDebugJSON)}</code></pre>` : renderDebugJSONTree(parsedDebugJSON)}
+              </div>
+            </div>
+            <details class="debug-json-panel debug-json-raw-panel">
+              <summary class="debug-json-panel-head">
+                <span>Formatted Raw JSON</span>
+                <span class="mono muted">click to expand</span>
+              </summary>
+              <pre class="debug-json-block"><code>${escapeHTML(formattedDebugJSON)}</code></pre>
+            </details>
+          </div>
         </div>
       </section>
     </div>`;
+}
+
+function renderDebugJSONSummaryItem(label, value, tone = "") {
+  return `
+    <div class="debug-json-summary-item ${escapeAttr(tone)}">
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value)}</strong>
+    </div>`;
+}
+
+function renderDebugJSONTree(value, key = "root", depth = 0) {
+  if (Array.isArray(value)) {
+    return renderDebugJSONArray(value, key, depth);
+  }
+  if (value && typeof value === "object") {
+    return renderDebugJSONObject(value, key, depth);
+  }
+  return renderDebugJSONPrimitive(key, value);
+}
+
+function renderDebugJSONObject(value, key, depth) {
+  const entries = Object.entries(value);
+  const shouldOpen = depth < 2;
+  return `
+    <details class="debug-json-node" ${shouldOpen ? "open" : ""}>
+      <summary>
+        <span class="debug-json-key">${escapeHTML(key)}</span>
+        <span class="debug-json-type">object</span>
+        <span class="debug-json-count">${formatNumber(entries.length)} ${entries.length === 1 ? "field" : "fields"}</span>
+      </summary>
+      <div class="debug-json-children">
+        ${entries.length ? entries.map(([entryKey, entryValue]) => renderDebugJSONTree(entryValue, entryKey, depth + 1)).join("") : `<span class="debug-json-empty">empty object</span>`}
+      </div>
+    </details>`;
+}
+
+function renderDebugJSONArray(value, key, depth) {
+  const shouldOpen = depth < 2;
+  return `
+    <details class="debug-json-node" ${shouldOpen ? "open" : ""}>
+      <summary>
+        <span class="debug-json-key">${escapeHTML(key)}</span>
+        <span class="debug-json-type">array</span>
+        <span class="debug-json-count">${formatNumber(value.length)} ${value.length === 1 ? "item" : "items"}</span>
+      </summary>
+      <div class="debug-json-children">
+        ${value.length ? value.map((entryValue, entryIndex) => renderDebugJSONTree(entryValue, `[${entryIndex}]`, depth + 1)).join("") : `<span class="debug-json-empty">empty array</span>`}
+      </div>
+    </details>`;
+}
+
+function renderDebugJSONPrimitive(key, value) {
+  const valueType = value === null ? "null" : typeof value;
+  const displayValue = valueType === "string" ? `"${value}"` : String(value);
+  return `
+    <div class="debug-json-leaf">
+      <span class="debug-json-key">${escapeHTML(key)}</span>
+      <span class="debug-json-type">${escapeHTML(valueType)}</span>
+      <span class="debug-json-value ${escapeAttr(`is-${valueType}`)}">${escapeHTML(displayValue)}</span>
+    </div>`;
+}
+
+function countDebugJSONNodes(value) {
+  if (!value || typeof value !== "object") return 1;
+  const childValues = Array.isArray(value) ? value : Object.values(value);
+  return 1 + childValues.reduce((nodeCount, childValue) => nodeCount + countDebugJSONNodes(childValue), 0);
 }
 
 export function renderCreateKeyModal() {
