@@ -137,7 +137,7 @@ export async function submitEditKey(form) {
     });
     state.keys = state.keys.map((key) => key.id === updatedKey.id ? updatedKey : key);
     state.modal = null;
-    notify("Key 已更新。", "success");
+    notify(updatedKey.enabled ? "Key 已启用。" : "Key 已禁用。", "success");
     render();
   } catch (err) {
     if (submitButton && document.contains(submitButton)) {
