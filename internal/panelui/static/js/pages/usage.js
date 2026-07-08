@@ -38,7 +38,11 @@ export function renderUsage() {
       showViewAllButton: state.usageActivityCompact,
       viewAllAction: "expand-usage-activity",
       viewAllRoute: "",
-      viewAllLabel: "View All Activity"
+      viewAllLabel: "View All Activity",
+      showPagination: true,
+      page: state.usageActivityPage,
+      pageSize: state.usageActivityPageSize,
+      pageSizeOptions: [10, 20, 50, 100]
     })}`;
 }
 

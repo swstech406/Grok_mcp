@@ -1640,6 +1640,75 @@ tbody tr:last-child td {
   border-bottom: 0;
 }
 
+.activity-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--outline-variant);
+  background: rgba(243, 243, 254, 0.35);
+  flex-wrap: wrap;
+}
+
+.activity-pagination-summary {
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.activity-pagination-summary strong {
+  color: var(--on-surface);
+  font-weight: 600;
+}
+
+.activity-pagination-controls,
+.activity-page-size-field,
+.activity-page-buttons {
+  display: flex;
+  align-items: center;
+}
+
+.activity-pagination-controls {
+  justify-content: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.activity-page-size-field {
+  gap: 8px;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.activity-page-size-select {
+  width: auto;
+  min-width: 84px;
+  height: 36px;
+  padding: 0 10px;
+}
+
+.activity-page-buttons {
+  gap: 6px;
+}
+
+.activity-page-button {
+  width: 34px;
+  height: 34px;
+}
+
+.activity-page-button .material-symbols-outlined {
+  font-size: 20px;
+}
+
+.activity-page-status {
+  min-width: 104px;
+  color: var(--on-surface-variant);
+  text-align: center;
+}
+
 .right {
   text-align: right;
 }

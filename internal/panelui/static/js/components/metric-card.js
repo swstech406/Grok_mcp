@@ -1,6 +1,8 @@
 import { filteredRecords } from "../state.js";
 import { bucketRecords, clamp, escapeAttr, escapeHTML, formatNumber, percentOf, relativeTime, trimToolName } from "../utils.js";
 
+const DEFAULT_ACTIVITY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
 export function metricCard(title, value, icon, note, tone, progress, options = {}) {
   const shouldReserveProgressSpace = options.reserveProgressSpace === true;
   const trailingNoteMarkup = options.trailingNote
@@ -124,7 +126,16 @@ export function renderToolUsage(usage) {
 }
 
 export function renderRecentActivity(records, compact, options = {}) {
-  const rows = filteredRecords(records || []).slice(0, compact ? 5 : 500);
+  const allRows = filteredRecords(records || []);
+  const showPagination = Boolean(options.showPagination) && !compact;
+  const pageSizeOptions = normalizeActivityPageSizeOptions(options.pageSizeOptions);
+  const pageSize = normalizeActivityPageSize(options.pageSize, pageSizeOptions);
+  const totalRows = allRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const currentPage = normalizeActivityPage(options.page, totalPages);
+  const pageStartIndex = showPagination ? (currentPage - 1) * pageSize : 0;
+  const pageEndIndex = showPagination ? pageStartIndex + pageSize : (compact ? 5 : allRows.length);
+  const rows = allRows.slice(pageStartIndex, pageEndIndex);
   const showViewAllButton = options.showViewAllButton ?? compact;
   const showRequestIdColumn = options.showRequestIdColumn ?? true;
   const showLatencyColumn = options.showLatencyColumn ?? true;
@@ -167,7 +178,65 @@ export function renderRecentActivity(records, compact, options = {}) {
           </tbody>
         </table>
       </div>
+      ${showPagination ? renderActivityPagination({ totalRows, currentPage, totalPages, pageSize, pageSizeOptions, pageStartIndex, pageEndIndex }) : ""}
     </section>`;
+}
+
+function renderActivityPagination({ totalRows, currentPage, totalPages, pageSize, pageSizeOptions, pageStartIndex, pageEndIndex }) {
+  const firstVisibleRowNumber = totalRows > 0 ? pageStartIndex + 1 : 0;
+  const lastVisibleRowNumber = Math.min(totalRows, pageEndIndex);
+  const previousPage = Math.max(1, currentPage - 1);
+  const nextPage = Math.min(totalPages, currentPage + 1);
+  const onFirstPage = currentPage <= 1;
+  const onLastPage = currentPage >= totalPages;
+
+  return `
+      <div class="activity-pagination" aria-label="Recent Activity pagination">
+        <div class="activity-pagination-summary">
+          <span>Showing <strong>${formatNumber(firstVisibleRowNumber)}-${formatNumber(lastVisibleRowNumber)}</strong> of <strong>${formatNumber(totalRows)}</strong></span>
+        </div>
+        <div class="activity-pagination-controls">
+          <label class="activity-page-size-field" for="usage-activity-page-size">
+            <span>Rows per page</span>
+            <select class="select activity-page-size-select" id="usage-activity-page-size" aria-label="Rows per page">
+              ${pageSizeOptions.map((pageSizeOption) => `<option value="${escapeAttr(pageSizeOption)}" ${pageSizeOption === pageSize ? "selected" : ""}>${formatNumber(pageSizeOption)}</option>`).join("")}
+            </select>
+          </label>
+          <div class="activity-page-buttons" role="group" aria-label="Recent Activity page controls">
+            ${renderActivityPageButton("first_page", "First page", 1, onFirstPage)}
+            ${renderActivityPageButton("chevron_left", "Previous page", previousPage, onFirstPage)}
+            <span class="activity-page-status mono">Page ${formatNumber(currentPage)} / ${formatNumber(totalPages)}</span>
+            ${renderActivityPageButton("chevron_right", "Next page", nextPage, onLastPage)}
+            ${renderActivityPageButton("last_page", "Last page", totalPages, onLastPage)}
+          </div>
+        </div>
+      </div>`;
+}
+
+function renderActivityPageButton(icon, label, page, disabled) {
+  return `
+            <button class="mini-icon activity-page-button" data-action="usage-activity-page" data-page="${escapeAttr(page)}" type="button" aria-label="${escapeAttr(label)}" title="${escapeAttr(label)}" ${disabled ? "disabled" : ""}>
+              <span class="material-symbols-outlined">${icon}</span>
+            </button>`;
+}
+
+function normalizeActivityPageSizeOptions(pageSizeOptions) {
+  const normalizedPageSizeOptions = [...new Set((pageSizeOptions || DEFAULT_ACTIVITY_PAGE_SIZE_OPTIONS)
+    .map((pageSizeOption) => Number(pageSizeOption))
+    .filter((pageSizeOption) => Number.isInteger(pageSizeOption) && pageSizeOption > 0))]
+    .sort((firstPageSize, secondPageSize) => firstPageSize - secondPageSize);
+
+  return normalizedPageSizeOptions.length ? normalizedPageSizeOptions : DEFAULT_ACTIVITY_PAGE_SIZE_OPTIONS;
+}
+
+function normalizeActivityPageSize(pageSize, pageSizeOptions) {
+  const numericPageSize = Number(pageSize);
+  return pageSizeOptions.includes(numericPageSize) ? numericPageSize : pageSizeOptions[0];
+}
+
+function normalizeActivityPage(page, totalPages) {
+  const numericPage = Math.floor(Number(page) || 1);
+  return Math.min(Math.max(1, numericPage), Math.max(1, totalPages));
 }
 
 export function renderActivityRow(record, options = {}) {

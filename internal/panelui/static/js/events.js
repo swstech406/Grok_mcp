@@ -6,6 +6,7 @@ import { clearSession, state, storage } from "./state.js";
 import { errorText, normalizeUsage, setStored } from "./utils.js";
 
 const VALID_USAGE_RANGE_MODES = new Set(["24h", "7d", "all"]);
+const VALID_USAGE_ACTIVITY_PAGE_SIZES = new Set([10, 20, 50, 100]);
 
 export async function onSubmit(event) {
   const form = event.target;
@@ -353,10 +354,19 @@ export async function onClick(event) {
       return;
     }
     state.sinceMode = nextUsageRangeMode;
+    state.usageActivityPage = 1;
     await loadRouteData();
     render();
   } else if (action === "expand-usage-activity") {
     state.usageActivityCompact = false;
+    state.usageActivityPage = 1;
+    render();
+  } else if (action === "usage-activity-page") {
+    const nextUsageActivityPage = Math.floor(Number(actionEl.dataset.page) || 1);
+    if (nextUsageActivityPage < 1 || state.usageActivityPage === nextUsageActivityPage) {
+      return;
+    }
+    state.usageActivityPage = nextUsageActivityPage;
     render();
   } else if (action === "reload-server-settings") {
     await loadServerSettings();
@@ -450,11 +460,21 @@ export async function onChange(event) {
       return;
     }
     state.selectedKeyID = target.value;
+    state.usageActivityPage = 1;
     await loadRouteData();
     render();
   } else if (target.id === "usage-since-select") {
     state.sinceMode = target.value;
+    state.usageActivityPage = 1;
     await loadRouteData();
+    render();
+  } else if (target.id === "usage-activity-page-size") {
+    const nextUsageActivityPageSize = Number(target.value);
+    if (!VALID_USAGE_ACTIVITY_PAGE_SIZES.has(nextUsageActivityPageSize) || state.usageActivityPageSize === nextUsageActivityPageSize) {
+      return;
+    }
+    state.usageActivityPageSize = nextUsageActivityPageSize;
+    state.usageActivityPage = 1;
     render();
   }
 }
@@ -464,6 +484,7 @@ export function onInput(event) {
   if (!(target instanceof HTMLInputElement)) return;
   if (target.id === "global-search") {
     state.search = target.value;
+    state.usageActivityPage = 1;
     render();
     const next = document.getElementById("global-search");
     if (next) {
@@ -547,6 +568,7 @@ export async function viewUserUsageLogs(id) {
   if (!user) return;
   try {
     const usage = await api(`/admin/users/${encodeURIComponent(id)}/usage`);
+    state.usageActivityPage = 1;
     state.modal = { type: "user-usage-logs", user, usage: normalizeUsage(usage) };
     render();
   } catch (err) {

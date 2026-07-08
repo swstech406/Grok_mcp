@@ -454,7 +454,13 @@ export function renderUserUsageLogsModal(user, usage) {
             ${metricCard("Success Calls", formatNumber(usage.success_calls), "check_circle", `${successPercent(usage)} success`, "good", null)}
             ${metricCard("Failed Calls", formatNumber(Math.max(0, usage.total_calls - usage.success_calls)), "error", "Not counted as success quota", usage.total_calls === usage.success_calls ? "good" : "bad", null)}
           </div>
-          ${renderRecentActivity(usage.records || [], false, { showViewAllButton: false })}
+          ${renderRecentActivity(usage.records || [], false, {
+            showViewAllButton: false,
+            showPagination: true,
+            page: state.usageActivityPage,
+            pageSize: state.usageActivityPageSize,
+            pageSizeOptions: [10, 20, 50, 100]
+          })}
         </div>
       </section>
     </div>`;

@@ -81,11 +81,13 @@ export async function loadRouteData() {
 function resetUsageActivityView(previousRoute, nextRoute) {
   if (nextRoute !== "usage") {
     state.expandUsageActivityOnNextUsageNavigation = false;
+    state.usageActivityPage = 1;
     return;
   }
 
   if (previousRoute !== "usage") {
     state.usageActivityCompact = !state.expandUsageActivityOnNextUsageNavigation;
+    state.usageActivityPage = 1;
   }
 
   state.expandUsageActivityOnNextUsageNavigation = false;

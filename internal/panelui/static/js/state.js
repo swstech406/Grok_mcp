@@ -20,6 +20,8 @@ export const state = {
   selectedKeyID: "all",
   sinceMode: "24h",
   usageActivityCompact: true,
+  usageActivityPage: 1,
+  usageActivityPageSize: 10,
   expandUsageActivityOnNextUsageNavigation: false,
   search: "",
   modal: null,
@@ -35,6 +37,8 @@ export function clearSession() {
   state.serverSettings = null;
   state.usage = emptyUsage();
   state.selectedKeyID = "all";
+  state.usageActivityPage = 1;
+  state.usageActivityPageSize = 10;
   removeStored(storage.token);
   removeStored(storage.user);
 }
