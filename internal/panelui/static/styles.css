@@ -1008,6 +1008,24 @@ summary.debug-json-panel-head {
   border-left: 1px solid rgba(148, 163, 184, 0.24);
 }
 
+.debug-json-string-node > summary .debug-json-count {
+  background: rgba(16, 185, 129, 0.18);
+  color: #bbf7d0;
+}
+
+.debug-json-string-preview {
+  max-height: 88px;
+  overflow: auto;
+  margin: 2px 0 8px 40px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.72);
+  color: #cbd5e1;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .debug-json-leaf {
   display: grid;
   grid-template-columns: minmax(120px, 0.35fr) auto minmax(0, 1fr);

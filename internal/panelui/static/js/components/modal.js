@@ -91,7 +91,7 @@ function renderDebugJSONTree(value, key = "root", depth = 0) {
   if (value && typeof value === "object") {
     return renderDebugJSONObject(value, key, depth);
   }
-  return renderDebugJSONPrimitive(key, value);
+  return renderDebugJSONPrimitive(key, value, depth);
 }
 
 function renderDebugJSONObject(value, key, depth) {
@@ -125,8 +125,14 @@ function renderDebugJSONArray(value, key, depth) {
     </details>`;
 }
 
-function renderDebugJSONPrimitive(key, value) {
+function renderDebugJSONPrimitive(key, value, depth) {
   const valueType = value === null ? "null" : typeof value;
+  if (valueType === "string") {
+    const parsedStringPayload = parseDebugJSONString(value);
+    if (parsedStringPayload) {
+      return renderDebugJSONParsedString(key, value, parsedStringPayload, depth);
+    }
+  }
   const displayValue = valueType === "string" ? `"${value}"` : String(value);
   return `
     <div class="debug-json-leaf">
@@ -136,7 +142,129 @@ function renderDebugJSONPrimitive(key, value) {
     </div>`;
 }
 
+function renderDebugJSONParsedString(key, originalValue, parsedStringPayload, depth) {
+  const shouldOpen = depth < 3;
+  return `
+    <details class="debug-json-node debug-json-string-node" ${shouldOpen ? "open" : ""}>
+      <summary>
+        <span class="debug-json-key">${escapeHTML(key)}</span>
+        <span class="debug-json-type">string</span>
+        <span class="debug-json-count">${escapeHTML(parsedStringPayload.label)}</span>
+      </summary>
+      <div class="debug-json-string-preview">${escapeHTML(createDebugJSONStringPreview(originalValue))}</div>
+      <div class="debug-json-children">
+        ${renderDebugJSONTree(parsedStringPayload.value, parsedStringPayload.key, depth + 1)}
+      </div>
+    </details>`;
+}
+
+function parseDebugJSONString(value) {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) return null;
+
+  const parsedServerSentEvents = parseDebugJSONServerSentEvents(trimmedValue);
+  if (parsedServerSentEvents) return parsedServerSentEvents;
+
+  const parsedJSONValue = parseDebugJSONText(trimmedValue);
+  if (!parsedJSONValue) return null;
+
+  return {
+    key: "parsed",
+    label: Array.isArray(parsedJSONValue) ? "parsed JSON array" : "parsed JSON object",
+    value: parsedJSONValue
+  };
+}
+
+function parseDebugJSONText(value) {
+  const trimmedValue = value.trim();
+  const looksLikeJSONContainer = trimmedValue.startsWith("{") || trimmedValue.startsWith("[");
+  if (!looksLikeJSONContainer) return null;
+
+  try {
+    const parsedValue = JSON.parse(trimmedValue);
+    return parsedValue && typeof parsedValue === "object" ? parsedValue : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseDebugJSONServerSentEvents(value) {
+  const normalizedValue = value.replace(/\r\n/g, "\n");
+  const lines = normalizedValue.split("\n");
+  const hasServerSentEventField = lines.some((line) => /^(event|data|id|retry):/.test(line));
+  if (!hasServerSentEventField) return null;
+
+  const parsedEvents = [];
+  let currentEvent = createEmptyDebugJSONServerSentEvent();
+  for (const line of lines) {
+    if (line === "") {
+      appendDebugJSONServerSentEvent(parsedEvents, currentEvent);
+      currentEvent = createEmptyDebugJSONServerSentEvent();
+      continue;
+    }
+    if (line.startsWith(":")) continue;
+
+    const separatorIndex = line.indexOf(":");
+    const fieldName = separatorIndex === -1 ? line : line.slice(0, separatorIndex);
+    const rawFieldValue = separatorIndex === -1 ? "" : line.slice(separatorIndex + 1);
+    const fieldValue = rawFieldValue.startsWith(" ") ? rawFieldValue.slice(1) : rawFieldValue;
+
+    if (fieldName === "event") {
+      currentEvent.event = fieldValue;
+    } else if (fieldName === "data") {
+      currentEvent.dataLines.push(fieldValue);
+    } else if (fieldName === "id") {
+      currentEvent.id = fieldValue;
+    } else if (fieldName === "retry") {
+      currentEvent.retry = fieldValue;
+    }
+  }
+  appendDebugJSONServerSentEvent(parsedEvents, currentEvent);
+
+  if (!parsedEvents.length) return null;
+  return {
+    key: parsedEvents.length === 1 ? "sse" : "events",
+    label: `${formatNumber(parsedEvents.length)} ${parsedEvents.length === 1 ? "SSE event" : "SSE events"}`,
+    value: parsedEvents.length === 1 ? parsedEvents[0] : parsedEvents
+  };
+}
+
+function createEmptyDebugJSONServerSentEvent() {
+  return {
+    event: "",
+    id: "",
+    retry: "",
+    dataLines: []
+  };
+}
+
+function appendDebugJSONServerSentEvent(parsedEvents, currentEvent) {
+  const hasEventData = currentEvent.dataLines.length > 0;
+  const hasEventMetadata = Boolean(currentEvent.event || currentEvent.id || currentEvent.retry);
+  if (!hasEventData && !hasEventMetadata) return;
+
+  const parsedEvent = {};
+  if (currentEvent.event) parsedEvent.event = currentEvent.event;
+  if (currentEvent.id) parsedEvent.id = currentEvent.id;
+  if (currentEvent.retry) parsedEvent.retry = currentEvent.retry;
+  if (hasEventData) {
+    const dataValue = currentEvent.dataLines.join("\n");
+    parsedEvent.data = parseDebugJSONText(dataValue) || dataValue;
+  }
+  parsedEvents.push(parsedEvent);
+}
+
+function createDebugJSONStringPreview(value) {
+  const singleLineValue = value.replace(/\s+/g, " ").trim();
+  if (singleLineValue.length <= 160) return singleLineValue;
+  return `${singleLineValue.slice(0, 157)}...`;
+}
+
 function countDebugJSONNodes(value) {
+  if (typeof value === "string") {
+    const parsedStringPayload = parseDebugJSONString(value);
+    return parsedStringPayload ? 1 + countDebugJSONNodes(parsedStringPayload.value) : 1;
+  }
   if (!value || typeof value !== "object") return 1;
   const childValues = Array.isArray(value) ? value : Object.values(value);
   return 1 + childValues.reduce((nodeCount, childValue) => nodeCount + countDebugJSONNodes(childValue), 0);
