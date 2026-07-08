@@ -42,6 +42,17 @@ export async function api(path, options = {}) {
 export async function loadKeys() {
   const data = await api("/keys");
   state.keys = Array.isArray(data.keys) ? data.keys : [];
+  ensureSelectedUsageKeyExists();
+}
+
+function ensureSelectedUsageKeyExists() {
+  if (state.selectedKeyID === "all") {
+    return;
+  }
+  const selectedKeyExists = state.keys.some((key) => key.id === state.selectedKeyID);
+  if (!selectedKeyExists) {
+    state.selectedKeyID = "all";
+  }
 }
 
 export async function loadUsers() {

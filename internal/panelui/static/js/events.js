@@ -5,6 +5,8 @@ import { navigate } from "./router.js";
 import { clearSession, state, storage } from "./state.js";
 import { errorText, normalizeUsage, setStored } from "./utils.js";
 
+const VALID_USAGE_RANGE_MODES = new Set(["24h", "7d", "all"]);
+
 export async function onSubmit(event) {
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) return;
@@ -297,6 +299,14 @@ export async function onClick(event) {
   } else if (action === "refresh") {
     await loadRouteData();
     render();
+  } else if (action === "usage-range") {
+    const nextUsageRangeMode = actionEl.dataset.range;
+    if (!VALID_USAGE_RANGE_MODES.has(nextUsageRangeMode) || state.sinceMode === nextUsageRangeMode) {
+      return;
+    }
+    state.sinceMode = nextUsageRangeMode;
+    await loadRouteData();
+    render();
   } else if (action === "expand-usage-activity") {
     state.usageActivityCompact = false;
     render();
@@ -365,6 +375,9 @@ export async function onChange(event) {
     const checkbox = target;
     await updateKeyEnabled(checkbox.dataset.keyToggle, checkbox.checked);
   } else if (target.id === "usage-key-select") {
+    if (state.selectedKeyID === target.value) {
+      return;
+    }
     state.selectedKeyID = target.value;
     await loadRouteData();
     render();
