@@ -59,8 +59,6 @@ function renderUsageFilters() {
 function renderUsageKeyPicker() {
   const selectedUsageKey = findSelectedUsageKey();
   const selectedUsageKeySummary = selectedUsageKey ? usageKeyDisplayName(selectedUsageKey) : "All Keys";
-  const selectedUsageKeyMeta = renderUsageKeyMeta(selectedUsageKey);
-  const usageKeyDescriptionAttribute = selectedUsageKeyMeta ? ` aria-describedby="usage-key-summary"` : "";
 
   return `
         <div class="usage-filter-card usage-key-card">
@@ -68,10 +66,9 @@ function renderUsageKeyPicker() {
             <span class="usage-filter-label">API Key</span>
             <span class="usage-filter-summary" title="${escapeAttr(selectedUsageKeySummary)}">${escapeHTML(selectedUsageKeySummary)}</span>
           </div>
-          <select class="select usage-key-select" id="usage-key-select" aria-label="Choose API key for usage stats"${usageKeyDescriptionAttribute}>
+          <select class="select usage-key-select" id="usage-key-select" aria-label="Choose API key for usage stats">
             ${renderUsageKeyOptions()}
           </select>
-          ${selectedUsageKeyMeta ? `<div class="usage-filter-meta" id="usage-key-summary">${selectedUsageKeyMeta}</div>` : ""}
         </div>`;
 }
 
@@ -87,21 +84,6 @@ function renderUsageKeyOptions() {
     `<option value="all" ${allKeysSelected ? "selected" : ""}>All Keys (${formatNumber(totalKeysCount)})</option>`,
     ...keyOptions
   ].join("");
-}
-
-function renderUsageKeyMeta(selectedUsageKey) {
-  if (!selectedUsageKey) {
-    return "";
-  }
-
-  const keyStatusClass = selectedUsageKey.enabled ? "enabled" : "disabled";
-  const keyStatusLabel = selectedUsageKey.enabled ? "Enabled" : "Disabled";
-  const keyPrefixLabel = selectedUsageKey.key_prefix || "No prefix";
-
-  return `
-              <span class="usage-key-status ${keyStatusClass}">${keyStatusLabel}</span>
-              <span class="mono" title="${escapeAttr(keyPrefixLabel)}">${escapeHTML(keyPrefixLabel)}</span>
-              <span>${formatNumber(selectedUsageKey.total_calls)} total calls</span>`;
 }
 
 function renderUsageRangeTabs() {
