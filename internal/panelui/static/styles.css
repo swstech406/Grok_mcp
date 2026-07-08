@@ -607,7 +607,7 @@ a {
 
 .usage-filter-card {
   min-width: 0;
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-lg);
   background: var(--surface-lowest);
@@ -619,7 +619,7 @@ a {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .usage-filter-label {
@@ -691,15 +691,15 @@ a {
 .usage-range-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-  padding: 4px;
+  gap: 3px;
+  padding: 3px;
   border-radius: var(--radius);
   background: var(--surface-highest);
 }
 
 .usage-range-option {
   min-width: 76px;
-  min-height: 50px;
+  min-height: 42px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -740,9 +740,9 @@ a {
 
 .usage-range-option small {
   color: currentColor;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
-  line-height: 14px;
+  line-height: 12px;
   opacity: 0.74;
 }
 
@@ -753,17 +753,20 @@ a {
 }
 
 .usage-refresh-button {
-  width: 42px;
-  height: 42px;
-  min-height: 42px;
+  min-height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
+  gap: 6px;
+  padding: 0 10px;
   border: 1px solid var(--outline-variant);
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: var(--surface-lowest);
   color: var(--on-surface-variant);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
   box-shadow: var(--shadow-sm);
   transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
@@ -784,7 +787,7 @@ a {
 }
 
 .usage-refresh-button .material-symbols-outlined {
-  font-size: 20px;
+  font-size: 18px;
 }
 
 @media (max-width: 1180px) {
@@ -809,13 +812,11 @@ a {
   }
 
   .usage-refresh-button {
-    width: 40px;
-    height: 40px;
-    min-height: 40px;
+    min-height: 34px;
   }
 
   .usage-range-option {
-    min-height: 44px;
+    min-height: 40px;
   }
 }
 

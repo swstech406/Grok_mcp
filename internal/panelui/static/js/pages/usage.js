@@ -50,6 +50,7 @@ function renderUsageFilters() {
         <div class="usage-filter-actions">
           <button class="usage-refresh-button" data-action="refresh" type="button" aria-label="Refresh usage stats" title="Refresh usage stats">
             <span class="material-symbols-outlined">refresh</span>
+            <span>Refresh</span>
           </button>
         </div>
       </div>`;
@@ -58,6 +59,8 @@ function renderUsageFilters() {
 function renderUsageKeyPicker() {
   const selectedUsageKey = findSelectedUsageKey();
   const selectedUsageKeySummary = selectedUsageKey ? usageKeyDisplayName(selectedUsageKey) : "All Keys";
+  const selectedUsageKeyMeta = renderUsageKeyMeta(selectedUsageKey);
+  const usageKeyDescriptionAttribute = selectedUsageKeyMeta ? ` aria-describedby="usage-key-summary"` : "";
 
   return `
         <div class="usage-filter-card usage-key-card">
@@ -65,12 +68,10 @@ function renderUsageKeyPicker() {
             <span class="usage-filter-label">API Key</span>
             <span class="usage-filter-summary" title="${escapeAttr(selectedUsageKeySummary)}">${escapeHTML(selectedUsageKeySummary)}</span>
           </div>
-          <select class="select usage-key-select" id="usage-key-select" aria-label="Choose API key for usage stats" aria-describedby="usage-key-summary">
+          <select class="select usage-key-select" id="usage-key-select" aria-label="Choose API key for usage stats"${usageKeyDescriptionAttribute}>
             ${renderUsageKeyOptions()}
           </select>
-          <div class="usage-filter-meta" id="usage-key-summary">
-            ${renderUsageKeyMeta(selectedUsageKey)}
-          </div>
+          ${selectedUsageKeyMeta ? `<div class="usage-filter-meta" id="usage-key-summary">${selectedUsageKeyMeta}</div>` : ""}
         </div>`;
 }
 
@@ -90,11 +91,7 @@ function renderUsageKeyOptions() {
 
 function renderUsageKeyMeta(selectedUsageKey) {
   if (!selectedUsageKey) {
-    const totalKeysCount = state.keys.length;
-    const activeKeysCount = state.keys.filter((key) => key.enabled).length;
-    return `
-              <span>${formatNumber(totalKeysCount)} total keys</span>
-              <span>${formatNumber(activeKeysCount)} active</span>`;
+    return "";
   }
 
   const keyStatusClass = selectedUsageKey.enabled ? "enabled" : "disabled";
