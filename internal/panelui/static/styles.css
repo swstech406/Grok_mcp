@@ -1363,6 +1363,13 @@ summary.debug-json-panel-head {
   font-weight: 500;
 }
 
+.metric-note-trailing {
+  margin-left: auto;
+  color: var(--on-surface-variant);
+  text-align: right;
+  white-space: nowrap;
+}
+
 .metric-note.good {
   color: var(--success);
 }

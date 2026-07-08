@@ -3,6 +3,9 @@ import { bucketRecords, clamp, escapeAttr, escapeHTML, formatNumber, percentOf, 
 
 export function metricCard(title, value, icon, note, tone, progress, options = {}) {
   const shouldReserveProgressSpace = options.reserveProgressSpace === true;
+  const trailingNoteMarkup = options.trailingNote
+    ? `<span class="metric-note-trailing">${escapeHTML(options.trailingNote)}</span>`
+    : "";
   const progressMarkup = progress === null
     ? (shouldReserveProgressSpace ? `<div class="progress metric-progress-placeholder" style="margin-top: 16px;" aria-hidden="true"></div>` : "")
     : `<div class="progress" style="margin-top: 16px;"><div class="progress-bar" style="width: ${clamp(progress, 0, 100)}%;"></div></div>`;
@@ -19,6 +22,7 @@ export function metricCard(title, value, icon, note, tone, progress, options = {
         <div class="metric-note ${tone || ""}">
           <span class="material-symbols-outlined" style="font-size: 16px;">${tone === "bad" ? "trending_up" : "trending_flat"}</span>
           <span>${escapeHTML(note || "Stable")}</span>
+          ${trailingNoteMarkup}
         </div>
       </div>
     </div>`;
