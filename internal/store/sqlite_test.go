@@ -238,6 +238,16 @@ func TestUpdateUserTokenVersionSemantics(t *testing.T) {
 		t.Fatalf("tier change must not revoke JWTs, token_version=%d want %d", updated.TokenVersion, initialTokenVersion)
 	}
 
+	unchangedEnabled := updated.Enabled
+	unchangedRole := updated.Role
+	updated, err = s.UpdateUser(ctx, user.ID, UserUpdates{Enabled: &unchangedEnabled, Role: &unchangedRole})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TokenVersion != initialTokenVersion {
+		t.Fatalf("unchanged enabled/role must not revoke JWTs, token_version=%d want %d", updated.TokenVersion, initialTokenVersion)
+	}
+
 	disabled := false
 	updated, err = s.UpdateUser(ctx, user.ID, UserUpdates{Enabled: &disabled})
 	if err != nil {

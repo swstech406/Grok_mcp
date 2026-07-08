@@ -236,23 +236,27 @@ func (s *SQLiteStore) UpdateUser(ctx context.Context, id string, updates UserUpd
 	updatedRole := existingUser.Role
 	updatedEnabled := existingUser.Enabled
 	if updates.Enabled != nil {
-		en := 0
-		if *updates.Enabled {
-			en = 1
+		if *updates.Enabled != existingUser.Enabled {
+			en := 0
+			if *updates.Enabled {
+				en = 1
+			}
+			sets = append(sets, "enabled = ?")
+			args = append(args, en)
+			bumpTokenVersion = true
+			updatedEnabled = *updates.Enabled
 		}
-		sets = append(sets, "enabled = ?")
-		args = append(args, en)
-		bumpTokenVersion = true
-		updatedEnabled = *updates.Enabled
 	}
 	if updates.Role != nil {
 		if *updates.Role != RoleAdmin && *updates.Role != RoleUser {
 			return nil, fmt.Errorf("invalid role")
 		}
-		sets = append(sets, "role = ?")
-		args = append(args, string(*updates.Role))
-		bumpTokenVersion = true
-		updatedRole = *updates.Role
+		if *updates.Role != existingUser.Role {
+			sets = append(sets, "role = ?")
+			args = append(args, string(*updates.Role))
+			bumpTokenVersion = true
+			updatedRole = *updates.Role
+		}
 	}
 	if updates.TierID != nil {
 		tierID := strings.TrimSpace(*updates.TierID)
