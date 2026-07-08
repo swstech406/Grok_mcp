@@ -48,9 +48,8 @@ function renderUsageFilters() {
         ${renderUsageKeyPicker()}
         ${renderUsageRangeTabs()}
         <div class="usage-filter-actions">
-          <button class="button secondary usage-refresh-button" data-action="refresh" type="button" aria-label="Refresh usage stats">
+          <button class="usage-refresh-button" data-action="refresh" type="button" aria-label="Refresh usage stats" title="Refresh usage stats">
             <span class="material-symbols-outlined">refresh</span>
-            <span>Refresh</span>
           </button>
         </div>
       </div>`;
