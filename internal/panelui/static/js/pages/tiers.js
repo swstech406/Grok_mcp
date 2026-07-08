@@ -1,6 +1,6 @@
 import { renderEmptyRow } from "../components/metric-card.js";
 import { isAdmin, state } from "../state.js";
-import { escapeAttr, escapeHTML, formatNumber, limitText, rpmText, shortID } from "../utils.js";
+import { escapeAttr, escapeHTML, formatNumber, limitText, rpmText } from "../utils.js";
 
 export function renderTiers() {
   if (!isAdmin()) {
@@ -53,12 +53,9 @@ export function renderTiers() {
 }
 
 export function renderTierRow(tier) {
-  const shouldShowTierID = String(tier.name || "").toLowerCase() !== "tier0";
-  const tierIDHint = shouldShowTierID ? `<div class="hint mono">${escapeHTML(shortID(tier.id))}</div>` : "";
-
   return `
     <tr>
-      <td><strong>${escapeHTML(tier.name)}</strong>${tierIDHint}</td>
+      <td><strong>${escapeHTML(tier.name)}</strong></td>
       <td><span class="badge off">L${tier.level}</span></td>
       <td class="mono">${rpmText(tier.rpm)}</td>
       <td class="mono">${limitText(tier.success_limit)}</td>
