@@ -140,6 +140,13 @@ export function quotaNote(pct) {
   return `${Math.round(pct)}% used`;
 }
 
+export function nextNaturalMonthResetText(referenceDate = new Date()) {
+  const resetDate = new Date(referenceDate.getFullYear(), referenceDate.getMonth() + 1, 1);
+  const resetMonth = String(resetDate.getMonth() + 1).padStart(2, "0");
+  const resetDay = String(resetDate.getDate()).padStart(2, "0");
+  return `在${resetMonth}.${resetDay}进行重置`;
+}
+
 export function percentOf(value, limit) {
   const n = Number(value) || 0;
   const l = Number(limit) || 0;
