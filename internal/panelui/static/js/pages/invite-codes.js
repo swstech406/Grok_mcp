@@ -45,8 +45,6 @@ export function renderInviteCodes() {
       </div>
     </section>
 
-    ${state.createdInviteCode ? renderCreatedInviteCodeNotice(state.createdInviteCode) : ""}
-
     <section class="card table-card">
       <div class="table-wrap">
         <table>
@@ -64,30 +62,6 @@ export function renderInviteCodes() {
             ${inviteCodes.length ? inviteCodes.map(renderInviteCodeRow).join("") : renderEmptyRow("confirmation_number", "No invite codes", "Create an invite code when invite-only registration is needed.")}
           </tbody>
         </table>
-      </div>
-    </section>`;
-}
-
-function renderCreatedInviteCodeNotice(createdInviteCode) {
-  return `
-    <section class="card settings-card" style="margin-bottom: 18px;">
-      <div class="warning-box">
-        <span class="material-symbols-outlined">info</span>
-        <div>
-          <strong>Invite code created.</strong>
-          <p>邀请码已保存，之后也可以在列表中随时复制。</p>
-        </div>
-      </div>
-      <div class="key-copy" style="margin-top: 16px;">
-        <label class="field-label" for="created-invite-code">Invite Code</label>
-        <div class="copy-shell">
-          <input id="created-invite-code" class="input mono subtle" value="${escapeAttr(createdInviteCode.code || "")}" readonly>
-          <button class="mini-icon" data-action="copy-created-invite-code" title="Copy" type="button"><span class="material-symbols-outlined">content_copy</span></button>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="button secondary" data-action="dismiss-created-invite-code" type="button">Dismiss</button>
-        <button class="button" data-action="copy-created-invite-code" type="button"><span class="material-symbols-outlined">content_copy</span><span>Copy Invite Code</span></button>
       </div>
     </section>`;
 }

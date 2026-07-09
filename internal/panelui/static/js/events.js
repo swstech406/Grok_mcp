@@ -290,15 +290,11 @@ export async function submitCreateInviteCode(form) {
       method: "POST",
       body: { registration_limit: Number(data.get("registration_limit") || 0) }
     });
+    const createdInviteCode = response.invite_code || response;
     state.modal = null;
-    state.createdInviteCode = response.invite_code || response;
-    if (response.code && !state.createdInviteCode.code) {
-      state.createdInviteCode = { ...state.createdInviteCode, code: response.code };
-    }
     await loadInviteCodes();
-    notify("邀请码已创建。", "success");
+    notify(createdInviteCode.code ? "邀请码已创建，可在列表中复制。" : "邀请码已创建。", "success");
     render();
-    await copyCreatedInviteCode({ automatic: true });
   } catch (err) {
     notify(errorText(err), "error");
     render();
