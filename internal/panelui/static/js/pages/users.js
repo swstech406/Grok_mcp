@@ -1,6 +1,6 @@
 import { renderEmptyRow } from "../components/metric-card.js";
 import { filteredUsers, isAdmin, state } from "../state.js";
-import { escapeAttr, escapeHTML, formatNumber, limitText, rpmText, shortID } from "../utils.js";
+import { escapeAttr, escapeHTML, formatDateMinute, formatNumber, limitText, rpmText, shortID } from "../utils.js";
 
 export function renderUsers() {
   if (!isAdmin()) {
@@ -36,6 +36,7 @@ export function renderUsers() {
               <th>Username</th>
               <th>Role</th>
               <th>Tier</th>
+              <th>Registered</th>
               <th>Status</th>
               <th>RPM</th>
               <th>Success Limit</th>
@@ -65,6 +66,7 @@ export function renderUserRow(user) {
       </td>
       <td><span class="badge ${user.role === "admin" ? "" : "off"}">${escapeHTML(user.role)}</span></td>
       <td>${tierBadge}</td>
+      <td class="mono">${escapeHTML(formatDateMinute(user.created_at))}</td>
       <td><span class="badge ${user.enabled ? "" : "error"}">${user.enabled ? "Enabled" : "Disabled"}</span></td>
       <td class="mono">${rpmText(user.rpm, { unavailable: Boolean(user.limits_unavailable) })}</td>
       <td>${formatNumber(user.success_calls)} <span class="muted">/ ${limitText(user.success_limit, { unavailable: Boolean(user.limits_unavailable) })}</span></td>
