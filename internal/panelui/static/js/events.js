@@ -521,6 +521,12 @@ export async function onClick(event) {
     if (!inviteCode) return;
     state.modal = { type: "edit-invite-code", inviteCode };
     render();
+  } else if (action === "submit-edit-invite-code") {
+    event.preventDefault();
+    const form = actionEl.closest("form");
+    if (form instanceof HTMLFormElement) {
+      await submitEditInviteCode(form);
+    }
   } else if (action === "delete-invite-code") {
     openDeleteInviteCodeModal(actionEl.dataset.inviteCodeId);
   } else if (action === "confirm-delete-invite-code") {

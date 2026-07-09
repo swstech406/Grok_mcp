@@ -422,7 +422,7 @@ export function renderEditInviteCodeModal(inviteCode) {
             </div>
             <div class="modal-actions">
               <button class="button secondary" data-action="close-modal" type="button">Cancel</button>
-              <button class="button" type="submit"><span class="material-symbols-outlined">save</span><span>Save</span></button>
+              <button class="button" data-action="submit-edit-invite-code" type="button"><span class="material-symbols-outlined">save</span><span>Save</span></button>
             </div>
           </form>
         </div>
