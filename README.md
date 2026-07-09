@@ -1,11 +1,12 @@
 # grok-mcp
 
-`grok-mcp` 是一个 HTTP-only 的 MCP（Model Context Protocol）服务端。它把 Grok 的实时联网搜索能力封装成两个 MCP 工具：
+`grok-mcp` 是一个 HTTP-only 的 MCP（Model Context Protocol）服务端。它把 Grok 的实时联网搜索与模型列举能力封装成 MCP 工具：
 
 - `grok_web_search`：实时网页搜索
 - `grok_x_search`：实时 X / Twitter 搜索
+- `grok_list_models`：列举上游 CPA 可用的 Grok 模型（过滤 `imagine` / `video`）
 
-本项目不直接对接 xAI 官方 API，而是作为已部署的 CLIProxyAPI（CPA）客户端工作：所有搜索请求都会转发到 CPA 的 `POST /v1/responses`，CPA 负责处理到 xAI 的认证。
+本项目不直接对接 xAI 官方 API，而是作为已部署的 CLIProxyAPI（CPA）客户端工作：搜索请求转发到 CPA 的 `POST /v1/responses`，模型列表来自 CPA 的 `GET /v1/models`；CPA 负责到 xAI 的认证。
 
 ```text
 支持 Streamable HTTP 的 MCP 客户端
@@ -13,9 +14,9 @@
         |  POST /mcp
         |  Authorization: Bearer <grok-mcp 客户端 API Key>
         v
-grok-mcp
+grok-mcp  (cmd/grok-mcp → internal/app 组合根)
         |
-        |  POST /v1/responses
+        |  POST /v1/responses  ·  GET /v1/models
         |  Authorization: Bearer <CPA_API_KEY>
         v
 CLIProxyAPI
@@ -24,17 +25,21 @@ CLIProxyAPI
 xAI / Grok
 ```
 
-项目现在只保留 HTTP 模式，运行时不再提供传输模式开关。
+项目只保留 HTTP 模式（Streamable HTTP），运行时不再提供传输模式开关。
 
 ## 功能
 
 - Streamable HTTP MCP 端点：`/mcp`
-- 管理面板 API：`/panel/v1/*`（空库启动自动创建 `admin`；注册/登录开放；其他接口需 JWT；管理员接口需 `role=admin`）
-- 客户端 API Key 鉴权（Key 归属用户）
-- 按用户汇总的 RPM 与 success limit
-- SQLite 持久化 API Key 与调用明细
-- 仅统计真实 `tools/call` 调用，握手和工具列表请求不计入用量
-- 上游 SSE 流式解析，并把搜索轮次转成 MCP progress 通知
+- 管理面板前端：`/panel/`；REST API：`/panel/v1/*`
+  - 空库启动自动创建 `admin`（日志输出一次性随机密码）
+  - 注册/登录开放；其余接口需面板 JWT；`/panel/v1/admin/*` 需 `role=admin`
+- 客户端 API Key 鉴权（Key 归属用户；支持短 TTL 缓存，用户/tier 限额每次重新加载）
+- 用户限额以 **tier** 为唯一来源（RPM、当月 success limit）；请求链路上为 `auth.AuthenticatedUser` 运行时视图
+- SQLite 持久化用户、Key、tier、用量明细与可热更的上游服务器设置
+- 仅统计真实 `tools/call`：握手 / `tools/list` 等不计入 RPM、配额与用量
+- 上游 SSE 流式解析；搜索轮次可转成 MCP progress 通知
+- `/mcp` 链路中间件顺序（由外到内生效）：  
+  `MaxBody → IP RPM → API Key → ExtractToolName → User RPM → Quota → Usage → MCP handler`
 
 ## Linux 快速开始
 
@@ -58,7 +63,7 @@ go build -ldflags "-X github.com/grok-mcp/internal/version.Version=1.2.3" -o gro
 
 ### 2. 配置并启动
 
-复制 Linux 本地配置模板，并填入真实值：
+复制配置模板并填入真实值：
 
 ```bash
 cp .env.example .env
@@ -97,7 +102,7 @@ curl -sS -X POST "http://127.0.0.1:8080/panel/v1/keys" \
   -d '{"name":"local-client"}'
 ```
 
-上面的示例使用 `jq` 提取登录 token；如果你的 Linux 环境没有安装 `jq`，也可以从登录响应中手动复制 `token` 字段。
+上面的示例使用 `jq` 提取登录 token；如果环境没有 `jq`，可从登录响应中手动复制 `token` 字段。
 
 响应里的 `api_key` 只返回一次。后续 MCP 客户端访问 `/mcp` 时使用：
 
@@ -128,6 +133,7 @@ claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
 
 - `grok_web_search`
 - `grok_x_search`
+- `grok_list_models`
 
 实际使用时可以直接在 Claude Code 中提出搜索需求，Claude Code 会按需调用对应 MCP 工具。例如：
 
@@ -189,7 +195,7 @@ location = /mcp {
 }
 ```
 
-如果反向代理与应用不在同一信任边界内，请在代理层完成限流，不要直接信任客户端伪造的 `X-Forwarded-For`。内置限流默认按 TCP 连接的 `RemoteAddr` 识别 IP。
+如果反向代理与应用不在同一信任边界内，请在代理层完成限流，不要直接信任客户端伪造的 `X-Forwarded-For`。内置 IP 限流默认按 TCP 连接的 `RemoteAddr` 识别 IP；仅当设置了 `GROK_TRUSTED_PROXIES` 且对端命中时，才解析 `X-Forwarded-For` / `X-Real-IP`。
 
 ## Docker Compose
 
@@ -229,18 +235,25 @@ docker compose up -d --build
 
 | 环境变量 | 必填 | 默认值 | 说明 |
 |---|:---:|---|---|
-| `CPA_API_KEY` | 是 | 无 | 调用 CPA 的 Bearer Key |
-| `GROK_JWT_SECRET` | 是 | 无 | 面板 JWT HS256 签名密钥 |
-| `GROK_DEFAULT_USER_RPM` | 否 | `60` | 内存限流器的兜底 RPM；用户实际 RPM 由 tier 决定 |
-| `GROK_MCP_IP_RPM` | 否 | `300` | `/mcp` API key 鉴权前按 TCP 来源 IP 限流的 RPM |
+| `CPA_API_KEY` | 是* | 无 | 调用 CPA 的 Bearer Key（*启动时可由 DB 中已保存的服务器设置覆盖/补全） |
+| `GROK_JWT_SECRET` | 是 | 无 | 面板 JWT HS256 签名密钥（至少 32 字节） |
 | `CPA_BASE_URL` | 否 | `http://127.0.0.1:8317` | CPA 根地址，不含尾部 `/` |
 | `GROK_MODEL` | 否 | `grok-4.3` | 默认模型，可被工具参数 `model` 覆盖 |
 | `GROK_HTTP_TIMEOUT` | 否 | `120` | 上游 HTTP 超时，单位秒 |
-| `GROK_MCP_DEBUG` | 否 | 无 | 设为 `1`、`true` 或 `yes` 时输出调试日志 |
+| `GROK_MCP_DEBUG` | 否 | 无 | 设为 `1`、`true` 或 `yes` 时输出调试日志，并可能在用量记录中捕获 debug 上下文 |
 | `GROK_HTTP_ADDR` | 否 | `:8080` | HTTP 监听地址；直接公网暴露明文 HTTP 会泄露 JWT/API key |
 | `GROK_DB_PATH` | 否 | `./grok-mcp.db` | SQLite 数据库路径 |
+| `GROK_DEFAULT_USER_RPM` | 否 | 未设置时为 `-1` | 仅作为内存 `UserLimiter` 构造参数；用户实际 RPM **始终来自 tier**。未设置时无正数兜底（`rpm==0` 表示不限）。设为非 0 整数可作兜底；`0` 非法 |
+| `GROK_MCP_IP_RPM` | 否 | `300` | `/mcp` 在 API Key 鉴权前按来源 IP 限流的 RPM |
+| `GROK_TRUSTED_PROXIES` | 否 | 空 | 可信反向代理 CIDR/IP（逗号分隔）；命中时才解析转发头 |
+| `GROK_PROXY_URL` | 否 | 空 | 上游请求显式 HTTP(S) 代理 |
+| `GROK_PROXY_ENABLED` | 否 | 见说明 | 是否启用 `GROK_PROXY_URL`；未设显式代理时仍可回退 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` |
 
-（已移除 `GROK_ADMIN_TOKEN` 与 `/admin/v1`；请使用 `/panel/v1`。）
+说明：
+
+- 用户限额（RPM / 当月 success limit）**只**由 tier 决定，在面板 Tier Management 维护。
+- CPA URL/Key、模型、超时、代理、debug 等可在管理员面板 **Server Settings** 中热更新并写回 SQLite；监听地址、DB 路径、JWT 密钥仍需改环境变量后重启。
+- （已移除 `GROK_ADMIN_TOKEN` 与 `/admin/v1`；请使用 `/panel/v1`。）
 
 ## MCP 工具
 
@@ -268,9 +281,23 @@ docker compose up -d --build
 | `query` | string | 是 | 搜索问题 |
 | `model` | string | 否 | 覆盖默认模型 |
 
-## 返回结构
+### `grok_list_models`
 
-两个工具都返回同一类结构：
+无入参。从上游 CPA `GET /v1/models` 拉取模型列表，服务端只保留 ID 中包含 `grok`、且不包含 `imagine` / `video` 的模型。
+
+成功时大致结构：
+
+```json
+{
+  "models": [
+    {"id": "grok-4.3"}
+  ]
+}
+```
+
+## 返回结构（搜索类工具）
+
+`grok_web_search` 与 `grok_x_search` 返回同一类结构：
 
 ```json
 {
@@ -290,15 +317,17 @@ docker compose up -d --build
 }
 ```
 
+搜索失败时以 MCP 工具结果 `isError=true` 返回错误文案，会话保持连接（不作为传输层 Go error 断开）。
+
 ## 面板 API（`/panel/v1`）
 
-后端内置一个无构建步骤的管理面板前端，访问：
+后端内置无构建步骤的管理面板前端，访问：
 
 ```text
 GET /panel/
 ```
 
-前端页面会在浏览器本地保存登录 JWT，用于调用 `/panel/v1`。
+前端在浏览器本地保存登录 JWT，用于调用 `/panel/v1`。
 
 除注册/登录外，请求需携带：
 
@@ -317,6 +346,7 @@ POST   /panel/v1/keys
 PATCH  /panel/v1/keys/{id}
 DELETE /panel/v1/keys/{id}
 GET    /panel/v1/keys/{id}/usage
+GET    /panel/v1/usage
 ```
 
 管理员（`role=admin`）：
@@ -325,31 +355,50 @@ GET    /panel/v1/keys/{id}/usage
 GET    /panel/v1/admin/users
 GET    /panel/v1/admin/users/{id}
 PATCH  /panel/v1/admin/users/{id}
+DELETE /panel/v1/admin/users/{id}
 GET    /panel/v1/admin/users/{id}/usage
+GET    /panel/v1/admin/tiers
+POST   /panel/v1/admin/tiers
+PATCH  /panel/v1/admin/tiers/{id}
+DELETE /panel/v1/admin/tiers/{id}
+GET    /panel/v1/admin/settings
+PATCH  /panel/v1/admin/settings
+GET    /panel/v1/admin/models
 ```
 
-空库启动时会自动创建 `admin` 管理员并在启动日志输出一次性随机 12 位密码；自助注册接口创建的用户始终为普通用户。用户限额（`rpm`、`success_limit`）以 tier 为唯一来源，管理员通过 Tier Management 页维护 tier 预设，并在用户编辑页为用户指定 tier。
+空库启动时会自动创建 `admin` 管理员并在启动日志输出一次性随机 12 位密码；自助注册始终创建普通用户。用户限额（`rpm`、当月 `success_limit`）以 tier 为唯一来源：管理员在 Tier Management 维护预设，在用户编辑页为用户指定 tier。当月成功调用额度在 `tools/call` 前原子预留，失败时回滚。
 
 ## 代码结构
 
 ```text
 cmd/grok-mcp/
-  main.go                 进程入口
-  http.go                 /mcp 与 /panel 路由组装
+  main.go                 薄入口：配置、MCP 注册、信号、调用 app.Run
 
+internal/app/             HTTP 组合根：DB/bootstrap、中间件链、路由、优雅退出
+internal/config/          环境变量加载、校验、ServerSettings 与 store 映射
+internal/auth/            API Key / 面板 JWT；AuthenticatedUser（含 tier 生效限额）
 internal/panel/           面板 REST API（/panel/v1）
 internal/panelui/         面板前端静态资源（embed）
-internal/quota/           用户成功请求额度（tools/call 的 success 预留与失败回滚）
-internal/auth/            MCP API Key 与面板 JWT（HS256，含 iss/aud 校验）
-internal/ratelimit/       按用户和来源 IP 的内存 RPM 限流（令牌桶）
-internal/usage/           MCP tools/call 用量与 success 标记，含 panic 回滚
-internal/store/           SQLite、迁移、用户与 Key CRUD、异步用量写入
-internal/grok/            上游 CPA /v1/responses 客户端与 SSE 解析
-internal/mcp/             MCP 工具注册（grok_web_search、grok_x_search）
-internal/config/          环境变量加载与校验
-internal/logx/            调试日志器 + slog 包级实例
+internal/quota/           tools/call 成功额度预留（小接口 SuccessQuotaReserver）
+internal/ratelimit/       用户 RPM 与来源 IP RPM（令牌桶）
+internal/usage/           tools/call 用量、debug 捕获、失败时 success 回滚
+internal/store/           SQLite、迁移、用户/Key/tier/设置、异步用量写入
+internal/grok/            上游 CPA 客户端、SSE、模型列表过滤
+internal/mcp/             MCP 工具注册与 ServerInstructions
+internal/keyhash/         API Key 哈希
+internal/logx/            调试日志
 internal/version/         构建时注入的版本号
+
+test/http/                HTTP 集成与防护测试
+test/grok/                上游集成测试（需显式开关）
 ```
+
+设计要点（近期结构调整）：
+
+- **`cmd` 薄、`app` 厚**：进程入口与 HTTP 装配分离，便于测试 bootstrap / 安全头等组合逻辑。
+- **持久化用户 vs 运行时用户**：`store.User` 不含 RPM/SuccessLimit；鉴权后写入 `auth.AuthenticatedUser`。
+- **消费方小接口**：`auth` / `quota` / `usage` 只依赖各自需要的 store 方法，而不是处处绑定完整 `store.Store`。
+- **ServerSettings 单一映射**：`config.ServerSettingsFromStore` / `StoreServerSettings` 集中转换，避免字段拷贝散落。
 
 ## 测试
 
