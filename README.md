@@ -422,3 +422,10 @@ export CPA_API_KEY="replace-with-your-cpa-api-key"
 export CPA_BASE_URL="http://127.0.0.1:8317"
 go test ./test/grok -run TestIntegrationSearchLiveCPA -v
 ```
+
+## 许可证
+
+本项目采用 [Creative Commons Attribution-NonCommercial 4.0 International](./LICENSE)
+许可证（CC BY-NC 4.0）。你可以在非商业用途下复制、分发和修改本项目，但未经版权持有人书面许可，不得用于商业用途。
+
+注意：CC BY-NC 4.0 不是 OSI 认可的软件开源许可证；这里选择它是为了明确保留“允许自由修改，但禁止商用”的限制。
