@@ -2466,7 +2466,7 @@ svg {
   white-space: nowrap;
 }
 
-.invite-code-copy span {
+.invite-code-copy > span {
   display: block;
   margin-top: 4px;
   color: var(--ink-faint);
