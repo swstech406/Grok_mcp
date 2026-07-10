@@ -344,8 +344,9 @@ func isSensitiveHeader(name string) bool {
 	}
 }
 
-// mcpToolResultIsError 解析 Streamable HTTP 响应中的 tools/call 结果是否带 isError。
-// 支持 application/json 单条/批量响应，以及 text/event-stream 中 data: 行内的 JSON-RPC 消息。
+// mcpToolResultIsError 解析 Streamable HTTP 响应中的 tools/call 是否失败。
+// JSON-RPC 顶层 error 与 result.isError 都表示调用失败；支持 application/json
+// 单条/批量响应，以及 text/event-stream 中 data: 行内的 JSON-RPC 消息。
 func mcpToolResultIsError(body []byte) bool {
 	if len(body) == 0 {
 		return false
@@ -402,6 +403,7 @@ func sseDataPayloads(body []byte) [][]byte {
 
 func toolCallResultIsError(raw json.RawMessage) bool {
 	var envelope struct {
+		Error  json.RawMessage `json:"error"`
 		Result struct {
 			IsError bool `json:"isError"`
 		} `json:"result"`
@@ -409,7 +411,10 @@ func toolCallResultIsError(raw json.RawMessage) bool {
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return false
 	}
-	return envelope.Result.IsError
+
+	jsonRPCError := bytes.TrimSpace(envelope.Error)
+	hasJSONRPCError := len(jsonRPCError) > 0 && !bytes.Equal(jsonRPCError, []byte("null"))
+	return hasJSONRPCError || envelope.Result.IsError
 }
 
 // maxParseBody 限制解析工具名时读入内存的字节数；超出则跳过解析（请求照常放行，Body 完整透传）。

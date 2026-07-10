@@ -143,22 +143,57 @@ func TestExtractToolNameOversizedBodyStillRestored(t *testing.T) {
 }
 
 func TestMCPToolResultIsError(t *testing.T) {
-	okBody := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`
-	if mcpToolResultIsError([]byte(okBody)) {
-		t.Fatal("expected success result")
-	}
-	errBody := `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"fail"}]}}`
-	if !mcpToolResultIsError([]byte(errBody)) {
-		t.Fatal("expected tool error")
-	}
-	sse := "event: message\r\ndata: " + errBody + "\r\n\r\n"
-	if !mcpToolResultIsError([]byte(sse)) {
-		t.Fatal("expected tool error in SSE payload")
+	testCases := []struct {
+		name         string
+		responseBody string
+		expectsError bool
+	}{
+		{
+			name:         "successful result",
+			responseBody: `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`,
+		},
+		{
+			name:         "successful result containing error text",
+			responseBody: `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"the word error is not a JSON-RPC error"}]}}`,
+		},
+		{
+			name:         "tool result isError",
+			responseBody: `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"fail"}]}}`,
+			expectsError: true,
+		},
+		{
+			name:         "unknown tool JSON-RPC error",
+			responseBody: `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unknown tool"}}`,
+			expectsError: true,
+		},
+		{
+			name:         "invalid parameters JSON-RPC error",
+			responseBody: `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params"}}`,
+			expectsError: true,
+		},
+		{
+			name:         "null JSON-RPC error",
+			responseBody: `{"jsonrpc":"2.0","id":1,"error":null,"result":{"content":[]}}`,
+		},
+		{
+			name:         "JSON-RPC error in SSE payload",
+			responseBody: "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32602,\"message\":\"Invalid params\"}}\r\n\r\n",
+			expectsError: true,
+		},
+		{
+			name:         "JSON-RPC error in batch payload",
+			responseBody: `[{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}},{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"unknown tool"}}]`,
+			expectsError: true,
+		},
 	}
 
-	batch := `[{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}},{"jsonrpc":"2.0","id":2,"result":{"isError":true,"content":[{"type":"text","text":"fail"}]}}]`
-	if !mcpToolResultIsError([]byte(batch)) {
-		t.Fatal("expected tool error in JSON-RPC batch payload")
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			actualError := mcpToolResultIsError([]byte(testCase.responseBody))
+			if actualError != testCase.expectsError {
+				t.Fatalf("mcpToolResultIsError() = %t, want %t", actualError, testCase.expectsError)
+			}
+		})
 	}
 }
 
@@ -235,6 +270,12 @@ func TestMCPMiddlewareReleasesAndRecordsFailureOnToolErrorAndHTTPError(t *testin
 			name: "mcp tool isError",
 			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"failed"}]}}`))
+			}),
+		},
+		{
+			name: "JSON-RPC top-level error",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params"}}`))
 			}),
 		},
 		{

@@ -273,6 +273,76 @@ func TestHTTPToolCallUpstreamFailureRecordsUnsuccessfulUsage(t *testing.T) {
 	}
 }
 
+func TestHTTPJSONRPCErrorsReleaseSuccessQuota(t *testing.T) {
+	testCases := []struct {
+		name           string
+		invalidPayload string
+	}{
+		{
+			name:           "unknown tool",
+			invalidPayload: `{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"grok_unknown_tool","arguments":{"query":"must not reach upstream"}}}`,
+		},
+		{
+			name:           "invalid tool parameters",
+			invalidPayload: `{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":123}}}`,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var upstreamCalls atomic.Int64
+			cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := validateCPAMockRequest(r, newWebSearchCPAExpectation("quota release check")); err != nil {
+					t.Errorf("CPA mock received invalid request: %v", err)
+					http.Error(w, "invalid CPA mock request", http.StatusBadRequest)
+					return
+				}
+				upstreamCalls.Add(1)
+				writeCPAMockSSEResponse(w, "quota released answer")
+			}))
+			defer cpa.Close()
+
+			env := bootIntegrationEnv(t, cpa)
+			requestContext := context.Background()
+			tier0, err := env.st.GetTierByName(requestContext, "tier0")
+			if err != nil || tier0 == nil {
+				t.Fatalf("tier0 should be seeded by migration: %v", err)
+			}
+			singleSuccessLimit := 1
+			if _, err := env.st.UpdateTier(requestContext, tier0.ID, store.TierUpdates{SuccessLimit: &singleSuccessLimit}); err != nil {
+				t.Fatal(err)
+			}
+
+			invalidStatus, invalidBody := callMCPTool(t, env, testCase.invalidPayload)
+			if invalidStatus != http.StatusOK {
+				t.Fatalf("expected JSON-RPC failure over HTTP 200, status=%d body=%s", invalidStatus, truncate(invalidBody, 512))
+			}
+			requireJSONRPCTopLevelError(t, invalidBody)
+			if upstreamCalls.Load() != 0 {
+				t.Fatalf("invalid tools/call must not reach upstream; upstream calls=%d", upstreamCalls.Load())
+			}
+
+			validPayload := `{"jsonrpc":"2.0","id":103,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"quota release check"}}}`
+			validStatus, validBody := callMCPTool(t, env, validPayload)
+			if validStatus != http.StatusOK || !strings.Contains(validBody, "quota released answer") {
+				t.Fatalf("expected valid call after JSON-RPC failure to use released quota, status=%d body=%s", validStatus, truncate(validBody, 512))
+			}
+			if upstreamCalls.Load() != 1 {
+				t.Fatalf("expected only the valid call to reach upstream; upstream calls=%d", upstreamCalls.Load())
+			}
+
+			env.writer.Close()
+			stats, err := env.st.GetUsageStats(requestContext, env.created.Key.ID, time.Now().UTC().Add(-time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats.TotalCalls != 2 || stats.SuccessCalls != 1 {
+				t.Fatalf("expected one failed and one successful usage record, got %+v", stats)
+			}
+		})
+	}
+}
+
 func TestHTTPMCPQuotaExhaustionSkipsUpstreamAndUsage(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -356,4 +426,34 @@ func callMCPTool(t *testing.T, env *integrationEnv, payload string) (int, string
 	body, _ := io.ReadAll(response.Body)
 	response.Body.Close()
 	return response.StatusCode, string(body)
+}
+
+func requireJSONRPCTopLevelError(t *testing.T, responseBody string) {
+	t.Helper()
+
+	jsonPayload := []byte(strings.TrimSpace(responseBody))
+	if len(jsonPayload) == 0 || jsonPayload[0] != '{' {
+		jsonPayload = nil
+		for responseLine := range strings.SplitSeq(responseBody, "\n") {
+			responseLine = strings.TrimSpace(responseLine)
+			if !strings.HasPrefix(responseLine, "data:") {
+				continue
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(responseLine, "data:"))
+			if payload != "" {
+				jsonPayload = []byte(payload)
+			}
+		}
+	}
+
+	var responseEnvelope struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(jsonPayload, &responseEnvelope); err != nil {
+		t.Fatalf("expected a JSON-RPC response, got %s: %v", truncate(responseBody, 512), err)
+	}
+	jsonRPCError := bytes.TrimSpace(responseEnvelope.Error)
+	if len(jsonRPCError) == 0 || bytes.Equal(jsonRPCError, []byte("null")) {
+		t.Fatalf("expected top-level JSON-RPC error, got %s", truncate(responseBody, 512))
+	}
 }
