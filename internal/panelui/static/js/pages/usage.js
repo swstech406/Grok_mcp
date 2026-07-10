@@ -30,7 +30,7 @@ export function renderUsage() {
           <h3>Traffic Volume</h3>
           <span class="mono muted">${escapeHTML(rangeLabel(state.sinceMode))}</span>
         </div>
-        ${renderBars(usage.records, state.sinceMode)}
+        ${renderBars(usage.traffic_buckets, state.sinceMode)}
       </div>
       ${renderToolUsage(usage)}
     </section>

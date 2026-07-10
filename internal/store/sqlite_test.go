@@ -182,6 +182,55 @@ func TestUsageStatsSinceFilterAndUserScope(t *testing.T) {
 	}
 }
 
+func TestUsageStatsAggregatesTrafficAndRPMBeyondRecordLimit(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	userID := testUserID(t, s)
+	key, _, err := s.CreateKey(ctx, userID, "high-volume")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const recordCount = 650
+	recordTimestamp := time.Now().UTC().Truncate(time.Second).Add(-10 * time.Second)
+	for recordIndex := 0; recordIndex < recordCount; recordIndex++ {
+		if err := s.RecordUsage(ctx, UsageRecord{
+			KeyID:      key.ID,
+			ToolName:   "grok_web_search",
+			Timestamp:  recordTimestamp,
+			DurationMs: int64(recordIndex),
+			Success:    true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := s.GetUserUsageStats(ctx, userID, recordTimestamp.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalCalls != recordCount || stats.SuccessCalls != recordCount {
+		t.Fatalf("expected complete aggregate counts of %d, got %+v", recordCount, stats)
+	}
+	if len(stats.Records) != 500 {
+		t.Fatalf("expected recent activity to remain limited to 500 records, got %d", len(stats.Records))
+	}
+	if stats.CurrentRPM != recordCount {
+		t.Fatalf("expected current RPM to count all %d records, got %d", recordCount, stats.CurrentRPM)
+	}
+	if len(stats.TrafficBuckets) != usageTrafficBucketCount {
+		t.Fatalf("expected %d traffic buckets, got %d", usageTrafficBucketCount, len(stats.TrafficBuckets))
+	}
+
+	var bucketCallCount int64
+	for _, bucket := range stats.TrafficBuckets {
+		bucketCallCount += bucket.Calls
+	}
+	if bucketCallCount != recordCount {
+		t.Fatalf("expected traffic buckets to count all %d records, got %d", recordCount, bucketCallCount)
+	}
+}
+
 func TestAsyncUsageWriterCloseFlushesUsageAndTouch(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

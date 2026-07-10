@@ -9,14 +9,29 @@ export function rpmText(limit, options = {}) {
 }
 
 export function emptyUsage() {
-  return { total_calls: 0, success_calls: 0, by_tool: {}, records: [] };
+  return {
+    total_calls: 0,
+    success_calls: 0,
+    current_rpm: 0,
+    by_tool: {},
+    traffic_buckets: [],
+    records: []
+  };
 }
 
 export function normalizeUsage(data) {
   return {
     total_calls: Number(data && data.total_calls) || 0,
     success_calls: Number(data && data.success_calls) || 0,
+    current_rpm: Number(data && data.current_rpm) || 0,
     by_tool: data && data.by_tool ? data.by_tool : {},
+    traffic_buckets: Array.isArray(data && data.traffic_buckets)
+      ? data.traffic_buckets.map((bucket) => ({
+        start: bucket && bucket.start ? bucket.start : "",
+        end: bucket && bucket.end ? bucket.end : "",
+        calls: Number(bucket && bucket.calls) || 0
+      }))
+      : [],
     records: Array.isArray(data && data.records) ? data.records : []
   };
 }
@@ -26,8 +41,16 @@ export function aggregateUsage(parts) {
   for (const part of parts.map(normalizeUsage)) {
     usage.total_calls += part.total_calls;
     usage.success_calls += part.success_calls;
+    usage.current_rpm += part.current_rpm;
     for (const [tool, count] of Object.entries(part.by_tool || {})) {
       usage.by_tool[tool] = (usage.by_tool[tool] || 0) + Number(count || 0);
+    }
+    for (const [bucketIndex, bucket] of part.traffic_buckets.entries()) {
+      if (!usage.traffic_buckets[bucketIndex]) {
+        usage.traffic_buckets[bucketIndex] = { ...bucket };
+        continue;
+      }
+      usage.traffic_buckets[bucketIndex].calls += bucket.calls;
     }
     usage.records.push(...(part.records || []));
   }
@@ -48,52 +71,12 @@ export function rangeLabel(mode) {
   return "Last 24 Hours";
 }
 
-export function bucketRecords(records, mode = "24h") {
-  const buckets = new Array(8).fill(0);
-  const now = Date.now();
-  const validTimestamps = (records || [])
-    .map((record) => new Date(record.timestamp).getTime())
-    .filter((timestamp) => Number.isFinite(timestamp));
-  const bucketWindow = resolveBucketWindow(validTimestamps, mode, now);
-  const bucketWindowDuration = Math.max(1, bucketWindow.end - bucketWindow.start);
-
-  for (const timestamp of validTimestamps) {
-    if (timestamp < bucketWindow.start || timestamp > bucketWindow.end) continue;
-    const bucketIndex = Math.min(7, Math.max(0, Math.floor(((timestamp - bucketWindow.start) / bucketWindowDuration) * 8)));
-    buckets[bucketIndex] += 1;
-  }
-  return buckets;
-}
-
-function resolveBucketWindow(timestamps, mode, now) {
-  if (mode === "7d") {
-    return { start: now - 7 * 24 * 60 * 60 * 1000, end: now };
-  }
-  if (mode === "all") {
-    return resolveAllTimeBucketWindow(timestamps, now);
-  }
-  return { start: now - 24 * 60 * 60 * 1000, end: now };
-}
-
-function resolveAllTimeBucketWindow(timestamps, now) {
-  const historicalTimestamps = timestamps.filter((timestamp) => timestamp <= now);
-  if (!historicalTimestamps.length) {
-    return { start: now - 24 * 60 * 60 * 1000, end: now };
-  }
-
-  const oldestTimestamp = Math.min(...historicalTimestamps);
-  return {
-    start: oldestTimestamp < now ? oldestTimestamp : now - 24 * 60 * 60 * 1000,
-    end: now
-  };
-}
-
-export function buildDashboardAlert(records) {
+export function buildDashboardAlert(currentRPM) {
   const successLimitAlert = buildSuccessQuotaDashboardAlert();
   if (successLimitAlert) {
     return successLimitAlert;
   }
-  return buildRPMDashboardAlert(records);
+  return buildRPMDashboardAlert(currentRPM);
 }
 
 export function buildSuccessQuotaDashboardAlert() {
@@ -114,7 +97,7 @@ export function buildSuccessQuotaDashboardAlert() {
   };
 }
 
-export function buildRPMDashboardAlert(records) {
+export function buildRPMDashboardAlert(currentRPM) {
   if (state.user.limits_unavailable) {
     return null;
   }
@@ -122,7 +105,7 @@ export function buildRPMDashboardAlert(records) {
   if (rpmLimit <= 0) {
     return null;
   }
-  const recentMinuteCalls = countRecordsInWindow(records, 60 * 1000);
+  const recentMinuteCalls = Math.max(0, Number(currentRPM) || 0);
   const rpmWarningThreshold = Math.max(1, Math.ceil(rpmLimit * 0.9));
   if (recentMinuteCalls < rpmWarningThreshold) {
     return null;
@@ -131,18 +114,6 @@ export function buildRPMDashboardAlert(records) {
     title: "Rate Limit Near Capacity",
     body: `${formatNumber(recentMinuteCalls)} calls in the last 60 seconds are approaching the configured user-level RPM limit.`
   };
-}
-
-export function countRecordsInWindow(records, windowMs) {
-  const now = Date.now();
-  const earliestAllowedTimestamp = now - windowMs;
-  return (records || []).reduce((count, record) => {
-    const timestamp = new Date(record.timestamp).getTime();
-    if (!Number.isFinite(timestamp) || timestamp < earliestAllowedTimestamp || timestamp > now) {
-      return count;
-    }
-    return count + 1;
-  }, 0);
 }
 
 export function quotaNote(pct) {

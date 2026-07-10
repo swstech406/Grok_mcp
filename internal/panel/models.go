@@ -170,10 +170,18 @@ type UpdateInviteCodeRequest struct {
 }
 
 type UsageStatsResponse struct {
-	TotalCalls   int64            `json:"total_calls"`
-	SuccessCalls int64            `json:"success_calls"`
-	ByTool       map[string]int64 `json:"by_tool"`
-	Records      []UsageRecordDTO `json:"records,omitempty"`
+	TotalCalls     int64            `json:"total_calls"`
+	SuccessCalls   int64            `json:"success_calls"`
+	CurrentRPM     int64            `json:"current_rpm"`
+	ByTool         map[string]int64 `json:"by_tool"`
+	TrafficBuckets []UsageBucketDTO `json:"traffic_buckets"`
+	Records        []UsageRecordDTO `json:"records,omitempty"`
+}
+
+type UsageBucketDTO struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+	Calls int64     `json:"calls"`
 }
 
 type UsageRecordDTO struct {
@@ -285,7 +293,13 @@ func toKeyResponse(k *store.APIKey) KeyResponse {
 
 func toUsageStatsResponse(s *store.UsageStats) UsageStatsResponse {
 	out := UsageStatsResponse{
-		TotalCalls: s.TotalCalls, SuccessCalls: s.SuccessCalls, ByTool: s.ByTool,
+		TotalCalls: s.TotalCalls, SuccessCalls: s.SuccessCalls, CurrentRPM: s.CurrentRPM,
+		ByTool: s.ByTool,
+	}
+	for _, bucket := range s.TrafficBuckets {
+		out.TrafficBuckets = append(out.TrafficBuckets, UsageBucketDTO{
+			Start: bucket.Start, End: bucket.End, Calls: bucket.Calls,
+		})
 	}
 	for _, r := range s.Records {
 		out.Records = append(out.Records, UsageRecordDTO{

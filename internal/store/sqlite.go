@@ -315,7 +315,10 @@ func (s *SQLiteStore) GetGlobalStats(ctx context.Context, since time.Time) (*Usa
 	return s.queryUsageStats(ctx, usageStatsGlobal, nil, since)
 }
 
+const usageTrafficBucketCount = 8
+
 // queryUsageStats 按条件聚合 usage_log，并拉取最近 500 条明细（按时间倒序）。
+// 流量桶与最近一分钟调用数均直接由 SQLite 对完整数据集聚合，避免被明细上限截断。
 func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope, whereArgs []any, since time.Time) (*UsageStats, error) {
 	where, ok := usageStatsWhere[scope]
 	if !ok {
@@ -323,8 +326,10 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	}
 	stats := &UsageStats{ByTool: make(map[string]int64)}
 
-	sinceStr := formatTime(since.UTC())
-	args := append(whereArgs, sinceStr)
+	queryEnd := time.Now().UTC().Truncate(time.Second)
+	sinceUTC := since.UTC().Truncate(time.Second)
+	sinceStr := formatTime(sinceUTC)
+	args := appendUsageStatsArgs(whereArgs, sinceStr)
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tool_name, COUNT(*) FROM usage_log WHERE `+where+` AND timestamp >= ? GROUP BY tool_name`,
@@ -371,6 +376,9 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	if err := recRows.Err(); err != nil {
 		return nil, err
 	}
+	if err := recRows.Close(); err != nil {
+		return nil, err
+	}
 
 	var succCount int64
 	if err := s.db.QueryRowContext(ctx,
@@ -380,7 +388,159 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 		return nil, err
 	}
 	stats.SuccessCalls = succCount
+
+	currentRPM, err := s.queryCurrentRPM(ctx, where, whereArgs, queryEnd)
+	if err != nil {
+		return nil, err
+	}
+	stats.CurrentRPM = currentRPM
+
+	trafficRangeStart, err := s.resolveUsageTrafficRangeStart(ctx, where, whereArgs, sinceUTC, queryEnd)
+	if err != nil {
+		return nil, err
+	}
+	trafficBuckets, err := s.queryUsageTrafficBuckets(ctx, where, whereArgs, trafficRangeStart, queryEnd)
+	if err != nil {
+		return nil, err
+	}
+	stats.TrafficBuckets = trafficBuckets
 	return stats, nil
+}
+
+func appendUsageStatsArgs(whereArgs []any, trailingArgs ...any) []any {
+	queryArgs := make([]any, 0, len(whereArgs)+len(trailingArgs))
+	queryArgs = append(queryArgs, whereArgs...)
+	queryArgs = append(queryArgs, trailingArgs...)
+	return queryArgs
+}
+
+func (s *SQLiteStore) queryCurrentRPM(ctx context.Context, where string, whereArgs []any, queryEnd time.Time) (int64, error) {
+	queryStart := queryEnd.Add(-time.Minute)
+	queryArgs := appendUsageStatsArgs(whereArgs, formatTime(queryStart), formatTime(queryEnd))
+
+	var currentRPM int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM usage_log WHERE `+where+` AND timestamp >= ? AND timestamp <= ?`,
+		queryArgs...,
+	).Scan(&currentRPM)
+	return currentRPM, err
+}
+
+func (s *SQLiteStore) resolveUsageTrafficRangeStart(
+	ctx context.Context,
+	where string,
+	whereArgs []any,
+	since time.Time,
+	queryEnd time.Time,
+) (time.Time, error) {
+	if !since.IsZero() {
+		if since.Before(queryEnd) {
+			return since, nil
+		}
+		return queryEnd.Add(-24 * time.Hour), nil
+	}
+
+	var earliestTimestamp sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT MIN(timestamp) FROM usage_log WHERE `+where,
+		whereArgs...,
+	).Scan(&earliestTimestamp); err != nil {
+		return time.Time{}, err
+	}
+	if !earliestTimestamp.Valid || earliestTimestamp.String == "" {
+		return queryEnd.Add(-24 * time.Hour), nil
+	}
+
+	parsedTimestamp, err := parseTime(earliestTimestamp.String)
+	if err != nil {
+		return time.Time{}, err
+	}
+	parsedTimestamp = parsedTimestamp.UTC().Truncate(time.Second)
+	if !parsedTimestamp.Before(queryEnd) {
+		return queryEnd.Add(-24 * time.Hour), nil
+	}
+	return parsedTimestamp, nil
+}
+
+func (s *SQLiteStore) queryUsageTrafficBuckets(
+	ctx context.Context,
+	where string,
+	whereArgs []any,
+	rangeStart time.Time,
+	rangeEnd time.Time,
+) ([]UsageBucket, error) {
+	rangeStart = rangeStart.UTC().Truncate(time.Second)
+	rangeEnd = rangeEnd.UTC().Truncate(time.Second)
+	if !rangeStart.Before(rangeEnd) {
+		rangeStart = rangeEnd.Add(-24 * time.Hour)
+	}
+
+	rangeDurationSeconds := int64(rangeEnd.Sub(rangeStart) / time.Second)
+	if rangeDurationSeconds < 1 {
+		rangeDurationSeconds = 1
+	}
+
+	buckets := createEmptyUsageTrafficBuckets(rangeStart, rangeEnd, rangeDurationSeconds)
+	queryArgs := make([]any, 0, 2+len(whereArgs)+2)
+	queryArgs = append(queryArgs, rangeStart.Unix(), rangeDurationSeconds)
+	queryArgs = append(queryArgs, whereArgs...)
+	queryArgs = append(queryArgs, formatTime(rangeStart), formatTime(rangeEnd))
+
+	rows, err := s.db.QueryContext(ctx,
+		`WITH bucket_window(start_unix, duration_seconds) AS (VALUES (?, ?))
+		 SELECT MIN(7, CAST(((CAST(strftime('%s', usage_log.timestamp) AS INTEGER) - bucket_window.start_unix) * 8) / bucket_window.duration_seconds AS INTEGER)) AS bucket_index,
+		        COUNT(*)
+		 FROM usage_log
+		 CROSS JOIN bucket_window
+		 WHERE `+where+` AND timestamp >= ? AND timestamp <= ?
+		 GROUP BY bucket_index
+		 ORDER BY bucket_index`,
+		queryArgs...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var bucketIndex int
+		var callCount int64
+		if err := rows.Scan(&bucketIndex, &callCount); err != nil {
+			return nil, err
+		}
+		if bucketIndex < 0 || bucketIndex >= len(buckets) {
+			return nil, fmt.Errorf("invalid usage traffic bucket index %d", bucketIndex)
+		}
+		buckets[bucketIndex].Calls = callCount
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return buckets, nil
+}
+
+func createEmptyUsageTrafficBuckets(rangeStart, rangeEnd time.Time, rangeDurationSeconds int64) []UsageBucket {
+	buckets := make([]UsageBucket, usageTrafficBucketCount)
+	for bucketIndex := 0; bucketIndex < usageTrafficBucketCount; bucketIndex++ {
+		bucketStartOffset := divideCeiling(
+			rangeDurationSeconds*int64(bucketIndex),
+			usageTrafficBucketCount,
+		)
+		bucketEndOffset := divideCeiling(
+			rangeDurationSeconds*int64(bucketIndex+1),
+			usageTrafficBucketCount,
+		)
+		buckets[bucketIndex] = UsageBucket{
+			Start: rangeStart.Add(time.Duration(bucketStartOffset) * time.Second),
+			End:   rangeStart.Add(time.Duration(bucketEndOffset) * time.Second),
+		}
+	}
+	buckets[len(buckets)-1].End = rangeEnd
+	return buckets
+}
+
+func divideCeiling(numerator int64, denominator int) int64 {
+	return (numerator + int64(denominator) - 1) / int64(denominator)
 }
 
 const serverSettingsID = "default"

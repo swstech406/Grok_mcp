@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/grok-mcp/internal/ratelimit"
 	"golang.org/x/time/rate"
 )
 
@@ -52,6 +53,7 @@ type AuthProtectorConfig struct {
 	LoginIPBurst                int
 	RegisterIPRequestsPerMinute int
 	RegisterIPBurst             int
+	TrustedProxies              []*net.IPNet
 	LoginFailureThreshold       int
 	LoginFailureWindow          time.Duration
 	LoginBaseLockout            time.Duration
@@ -63,7 +65,8 @@ type AuthProtectorConfig struct {
 type AuthProtector struct {
 	mu sync.Mutex
 
-	now func() time.Time
+	now              func() time.Time
+	clientIPResolver *ratelimit.ClientIPResolver
 
 	endpointLimits map[authEndpoint]authEndpointLimit
 	limiters       map[string]*authRateLimitEntry
@@ -109,7 +112,8 @@ func NewAuthProtector(config AuthProtectorConfig) *AuthProtector {
 
 	now := time.Now
 	return &AuthProtector{
-		now: now,
+		now:              now,
+		clientIPResolver: ratelimit.NewClientIPResolver(config.TrustedProxies),
 		endpointLimits: map[authEndpoint]authEndpointLimit{
 			authEndpointLogin: {
 				requestsPerMinute: config.LoginIPRequestsPerMinute,
@@ -132,7 +136,11 @@ func NewAuthProtector(config AuthProtectorConfig) *AuthProtector {
 
 func (h *Handler) authProtector() *AuthProtector {
 	if h.AuthProtector == nil {
-		h.AuthProtector = NewAuthProtector(AuthProtectorConfig{})
+		protectorConfig := AuthProtectorConfig{}
+		if h.Config != nil {
+			protectorConfig.TrustedProxies = h.Config.TrustedProxies
+		}
+		h.AuthProtector = NewAuthProtector(protectorConfig)
 	}
 	return h.AuthProtector
 }
@@ -140,7 +148,7 @@ func (h *Handler) authProtector() *AuthProtector {
 // RateLimitAuthEndpoint applies an IP-scoped token bucket to login/register.
 func (p *AuthProtector) RateLimitAuthEndpoint(endpoint authEndpoint, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		allowed, retryAfter := p.allowAuthRequest(endpoint, clientIPForRateLimit(r))
+		allowed, retryAfter := p.allowAuthRequest(endpoint, p.clientIP(r))
 		if !allowed {
 			writeRetryAfter(w, retryAfter)
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
@@ -148,6 +156,10 @@ func (p *AuthProtector) RateLimitAuthEndpoint(endpoint authEndpoint, next http.H
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (p *AuthProtector) clientIP(request *http.Request) string {
+	return p.clientIPResolver.Resolve(request)
 }
 
 func (p *AuthProtector) allowAuthRequest(endpoint authEndpoint, clientIP string) (bool, time.Duration) {
@@ -282,20 +294,6 @@ func validatePanelAuthCredentials(rawUsername, password string) (string, error) 
 
 func loginFailureKey(username, clientIP string) string {
 	return strings.ToLower(strings.TrimSpace(username)) + "\x00" + clientIP
-}
-
-func clientIPForRateLimit(r *http.Request) string {
-	if r == nil || strings.TrimSpace(r.RemoteAddr) == "" {
-		return "unknown"
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return strings.TrimSpace(r.RemoteAddr)
-	}
-	if host == "" {
-		return "unknown"
-	}
-	return host
 }
 
 func writeRetryAfter(w http.ResponseWriter, retryAfter time.Duration) {

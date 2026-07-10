@@ -282,7 +282,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authProtector := h.authProtector()
-	clientIP := clientIPForRateLimit(r)
+	clientIP := authProtector.clientIP(r)
 	if locked, retryAfter := authProtector.LoginLocked(username, clientIP); locked {
 		writeRetryAfter(w, retryAfter)
 		writeError(w, http.StatusTooManyRequests, "too many failed login attempts")

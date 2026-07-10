@@ -159,12 +159,22 @@ type UsageRecord struct {
 	TouchKey bool
 }
 
-// UsageStats 聚合某段时间内的调用统计；Records 最多返回最近 500 条明细。
+// UsageBucket 表示流量图中的一个时间桶；Start 包含，End 除最后一个桶外不包含。
+type UsageBucket struct {
+	Start time.Time
+	End   time.Time
+	Calls int64
+}
+
+// UsageStats 聚合某段时间内的调用统计；Records 最多返回最近 500 条明细，
+// CurrentRPM 与 TrafficBuckets 始终基于完整的 usage_log 数据集聚合。
 type UsageStats struct {
-	TotalCalls   int64
-	SuccessCalls int64
-	ByTool       map[string]int64
-	Records      []UsageRecord
+	TotalCalls     int64
+	SuccessCalls   int64
+	CurrentRPM     int64
+	ByTool         map[string]int64
+	TrafficBuckets []UsageBucket
+	Records        []UsageRecord
 }
 
 // ServerSettings stores runtime-tunable upstream configuration for the MCP

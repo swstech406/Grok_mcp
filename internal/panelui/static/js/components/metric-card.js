@@ -1,5 +1,5 @@
 import { filteredRecords } from "../state.js";
-import { bucketRecords, clamp, escapeAttr, escapeHTML, formatDate, formatNumber, percentOf, relativeTime, trimToolName } from "../utils.js";
+import { clamp, escapeAttr, escapeHTML, formatDate, formatNumber, percentOf, relativeTime, trimToolName } from "../utils.js";
 
 const DEFAULT_ACTIVITY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
@@ -43,13 +43,15 @@ export function renderDashboardAlert(alert) {
     </section>`;
 }
 
-export function renderBars(records, mode = "24h") {
-  const sourceRecords = records || [];
-  const buckets = bucketRecords(sourceRecords, mode);
-  const maximumBucketValue = Math.max(0, ...buckets);
+export function renderBars(trafficBuckets, mode = "24h") {
+  const sourceBuckets = Array.isArray(trafficBuckets) ? trafficBuckets : [];
+  const bucketValues = sourceBuckets.length
+    ? sourceBuckets.map((bucket) => Math.max(0, Number(bucket && bucket.calls) || 0))
+    : new Array(8).fill(0);
+  const maximumBucketValue = Math.max(0, ...bucketValues);
   const verticalAxisValues = createChartAxisValues(maximumBucketValue);
   const verticalAxisMaximum = verticalAxisValues[0] || 1;
-  const horizontalAxisLabels = createChartTimeLabels(mode, sourceRecords);
+  const horizontalAxisLabels = createChartTimeLabels(mode, sourceBuckets);
 
   return `
     <div class="bar-chart-shell" role="img" aria-label="流量柱状图">
@@ -58,7 +60,7 @@ export function renderBars(records, mode = "24h") {
       </div>
       <div class="chart-body">
         <div class="bar-chart">
-          ${buckets.map((value) => `<div class="bar" title="${formatNumber(value)} calls" style="height: ${createBarHeightPercent(value, verticalAxisMaximum)}%;"></div>`).join("")}
+          ${bucketValues.map((value) => `<div class="bar" title="${formatNumber(value)} calls" style="height: ${createBarHeightPercent(value, verticalAxisMaximum)}%;"></div>`).join("")}
         </div>
         <div class="chart-axis">${horizontalAxisLabels.map((label) => `<span>${escapeHTML(label)}</span>`).join("")}</div>
       </div>
@@ -80,25 +82,28 @@ function createBarHeightPercent(value, maximumValue) {
   return clamp(Math.round((safeValue / Math.max(1, maximumValue)) * 100), 0, 100);
 }
 
-function createChartTimeLabels(mode, records = []) {
+function createChartTimeLabels(mode, trafficBuckets = []) {
   if (mode === "7d") {
     return ["7d ago", "5d ago", "3d ago", "1d ago", "Now"];
   }
   if (mode === "all") {
-    return createAllTimeChartDateLabels(records);
+    return createAllTimeChartDateLabels(trafficBuckets);
   }
   return ["24h ago", "18h ago", "12h ago", "6h ago", "Now"];
 }
 
-function createAllTimeChartDateLabels(records) {
+function createAllTimeChartDateLabels(trafficBuckets) {
   const now = Date.now();
-  const historicalTimestamps = (records || [])
-    .map((record) => new Date(record.timestamp).getTime())
-    .filter((timestamp) => Number.isFinite(timestamp) && timestamp <= now);
   const oneDayInMilliseconds = 24 * 60 * 60 * 1000;
-  const oldestTimestamp = historicalTimestamps.length ? Math.min(...historicalTimestamps) : now - oneDayInMilliseconds;
-  const chartStartTimestamp = oldestTimestamp < now ? oldestTimestamp : now - oneDayInMilliseconds;
-  const chartEndTimestamp = now;
+  const firstBucket = trafficBuckets[0];
+  const lastBucket = trafficBuckets[trafficBuckets.length - 1];
+  const serverStartTimestamp = new Date(firstBucket && firstBucket.start).getTime();
+  const serverEndTimestamp = new Date(lastBucket && lastBucket.end).getTime();
+  const hasValidServerRange = Number.isFinite(serverStartTimestamp)
+    && Number.isFinite(serverEndTimestamp)
+    && serverStartTimestamp < serverEndTimestamp;
+  const chartStartTimestamp = hasValidServerRange ? serverStartTimestamp : now - oneDayInMilliseconds;
+  const chartEndTimestamp = hasValidServerRange ? serverEndTimestamp : now;
   const chartDuration = Math.max(1, chartEndTimestamp - chartStartTimestamp);
 
   return [0, 0.25, 0.5, 0.75, 1].map((datePositionRatio) => {

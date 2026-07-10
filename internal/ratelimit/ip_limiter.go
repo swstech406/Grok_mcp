@@ -20,7 +20,7 @@ type ipEntry struct {
 // 当配置了可信反代 CIDR 且 RemoteAddr 落在其中时，才解析 X-Real-IP / X-Forwarded-For。
 type IPLimiter struct {
 	requestsPerMinute int
-	trustedProxies    []*net.IPNet
+	clientIPResolver  *ClientIPResolver
 	mu                sync.Mutex
 	entries           map[string]*ipEntry
 	closeOnce         sync.Once
@@ -34,6 +34,7 @@ func NewIPLimiter(requestsPerMinute int) *IPLimiter {
 	}
 	limiter := &IPLimiter{
 		requestsPerMinute: requestsPerMinute,
+		clientIPResolver:  NewClientIPResolver(nil),
 		entries:           make(map[string]*ipEntry),
 		stop:              make(chan struct{}),
 	}
@@ -45,23 +46,7 @@ func NewIPLimiter(requestsPerMinute int) *IPLimiter {
 func (limiter *IPLimiter) SetTrustedProxies(networks []*net.IPNet) {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
-	if len(networks) == 0 {
-		limiter.trustedProxies = nil
-		return
-	}
-	copied := make([]*net.IPNet, 0, len(networks))
-	for _, network := range networks {
-		if network == nil {
-			continue
-		}
-		// Clone IPNet so callers cannot mutate the limiter after Set.
-		ipCopy := make(net.IP, len(network.IP))
-		copy(ipCopy, network.IP)
-		maskCopy := make(net.IPMask, len(network.Mask))
-		copy(maskCopy, network.Mask)
-		copied = append(copied, &net.IPNet{IP: ipCopy, Mask: maskCopy})
-	}
-	limiter.trustedProxies = copied
+	limiter.clientIPResolver = NewClientIPResolver(networks)
 }
 
 func (limiter *IPLimiter) allow(clientAddress string) bool {
@@ -128,76 +113,8 @@ func (limiter *IPLimiter) Middleware() func(http.Handler) http.Handler {
 }
 
 func (limiter *IPLimiter) clientIP(r *http.Request) string {
-	remoteHost := clientAddressForLimit(r.RemoteAddr)
 	limiter.mu.Lock()
-	trusted := limiter.trustedProxies
+	resolver := limiter.clientIPResolver
 	limiter.mu.Unlock()
-
-	if len(trusted) == 0 || !ipHostInNetworks(remoteHost, trusted) {
-		return remoteHost
-	}
-
-	// Immediate peer is a trusted reverse proxy: resolve the original client.
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		if host := normalizeIPHost(realIP); host != "" {
-			return host
-		}
-	}
-	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		// Prefer the rightmost untrusted hop so intermediate trusted proxies are skipped.
-		parts := strings.Split(forwarded, ",")
-		for index := len(parts) - 1; index >= 0; index-- {
-			host := normalizeIPHost(parts[index])
-			if host == "" {
-				continue
-			}
-			if !ipHostInNetworks(host, trusted) {
-				return host
-			}
-		}
-		// All hops trusted: fall back to leftmost (original client).
-		for _, part := range parts {
-			if host := normalizeIPHost(part); host != "" {
-				return host
-			}
-		}
-	}
-	return remoteHost
-}
-
-func clientAddressForLimit(remoteAddress string) string {
-	host, _, err := net.SplitHostPort(remoteAddress)
-	if err != nil || host == "" {
-		return remoteAddress
-	}
-	return host
-}
-
-func normalizeIPHost(raw string) string {
-	host := strings.TrimSpace(raw)
-	if host == "" {
-		return ""
-	}
-	// X-Forwarded-For entries are usually bare IPs; tolerate host:port.
-	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
-		host = parsedHost
-	}
-	host = strings.Trim(host, "[]")
-	if ip := net.ParseIP(host); ip == nil {
-		return ""
-	}
-	return host
-}
-
-func ipHostInNetworks(host string, networks []*net.IPNet) bool {
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	if ip == nil {
-		return false
-	}
-	for _, network := range networks {
-		if network != nil && network.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return resolver.Resolve(r)
 }

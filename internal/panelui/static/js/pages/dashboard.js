@@ -1,13 +1,13 @@
 import { metricCard, renderBars, renderDashboardAlert, renderRecentActivity, renderToolUsage } from "../components/metric-card.js";
 import { state } from "../state.js";
-import { buildDashboardAlert, countRecordsInWindow, escapeHTML, formatNumber, limitText, nextNaturalMonthResetText, percentOf, quotaNote, rangeLabel, rpmText } from "../utils.js";
+import { buildDashboardAlert, escapeHTML, formatNumber, limitText, nextNaturalMonthResetText, percentOf, quotaNote, rangeLabel, rpmText } from "../utils.js";
 
 export function renderDashboard() {
   const usage = state.usage;
   const limitsUnavailable = Boolean(state.user.limits_unavailable);
   const limitOpts = { unavailable: limitsUnavailable };
   const successPct = limitsUnavailable ? 0 : percentOf(state.user.success_calls, state.user.success_limit);
-  const recentMinuteCalls = countRecordsInWindow(usage.records, 60 * 1000);
+  const recentMinuteCalls = Math.max(0, Number(usage.current_rpm) || 0);
   const rpmPct = limitsUnavailable ? 0 : percentOf(recentMinuteCalls, state.user.rpm);
   const rpmProgress = !limitsUnavailable && state.user.rpm > 0 ? rpmPct : null;
   const successRate = usage.total_calls > 0 ? Math.round((usage.success_calls / usage.total_calls) * 1000) / 10 : 100;
@@ -16,7 +16,7 @@ export function renderDashboard() {
   const successLimitResetText = !limitsUnavailable && state.user.success_limit > 0 ? nextNaturalMonthResetText() : "";
   const dashboardAlert = limitsUnavailable
     ? { title: "Limits Unavailable", body: "User tier could not be resolved; RPM and success limits are not shown as unlimited." }
-    : buildDashboardAlert(usage.records);
+    : buildDashboardAlert(recentMinuteCalls);
   const successNote = limitsUnavailable ? "Limits unavailable" : quotaNote(successPct);
   const rpmTone = limitsUnavailable ? "bad" : (rpmPct >= 90 ? "bad" : "good");
   const successTone = limitsUnavailable ? "bad" : (successPct >= 90 ? "bad" : "good");
@@ -34,7 +34,7 @@ export function renderDashboard() {
           <h3>Traffic Volume</h3>
           <span class="mono muted">${escapeHTML(rangeLabel(state.sinceMode))}</span>
         </div>
-        ${renderBars(usage.records, state.sinceMode)}
+        ${renderBars(usage.traffic_buckets, state.sinceMode)}
       </div>
       ${renderToolUsage(usage)}
     </section>
