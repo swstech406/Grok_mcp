@@ -13,15 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/grok-mcp/internal/app"
 	"github.com/grok-mcp/internal/auth"
 	"github.com/grok-mcp/internal/config"
 	"github.com/grok-mcp/internal/grok"
 	mcpserver "github.com/grok-mcp/internal/mcp"
 	"github.com/grok-mcp/internal/panel"
-	"github.com/grok-mcp/internal/quota"
 	"github.com/grok-mcp/internal/ratelimit"
 	"github.com/grok-mcp/internal/store"
-	"github.com/grok-mcp/internal/usage"
 	"github.com/grok-mcp/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -192,49 +191,39 @@ func TestHTTPPanelAndMCPFlow(t *testing.T) {
 	usageWriter := store.NewAsyncUsageWriter(st, 64)
 
 	cfg := &config.Config{
-		CPABaseURL:     cpa.URL,
-		CPAAPIKey:      "cpa-mock-key",
-		Model:          "grok-4.3",
-		JWTSecret:      "jwt-secret-must-be-at-least-32-bytes!",
-		DefaultUserRPM: 1000,
-		Timeout:        30 * time.Second,
+		CPABaseURL: cpa.URL,
+		CPAAPIKey:  "cpa-mock-key",
+		Model:      "grok-4.3",
+		JWTSecret:  "jwt-secret-must-be-at-least-32-bytes!",
+		Timeout:    30 * time.Second,
 	}
 	client := grok.NewClient(cfg)
 	server := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, nil)
 	mcpserver.RegisterTools(server, client, false)
 
-	userLim := ratelimit.NewUserLimiter(cfg.DefaultUserRPM)
-	defer userLim.Close()
+	userLimiter := ratelimit.NewUserLimiter()
+	defer userLimiter.Close()
+	mcpIPLimiter := ratelimit.NewIPLimiter(10000)
+	defer mcpIPLimiter.Close()
 
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
-
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true})
-
-	var mcpChain http.Handler = mcpHandler
-	mcpChain = usage.MCPMiddleware(st, usageWriter)(mcpChain)
-	mcpChain = quota.MCPMiddleware(st)(mcpChain)
-	mcpChain = userLim.UserMiddleware()(mcpChain)
-	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
-	mcpChain = auth.APIKeyMiddleware(authResolver)(mcpChain)
-	mcpChain = panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(mcpChain)
-
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpChain)
-
-	ph := &panel.Handler{Store: st, Config: cfg, AuthCache: authResolver}
-	pm := panel.NewMux(ph)
-	skip := map[string]struct{}{
-		"/panel/v1/auth/register": {},
-		"/panel/v1/auth/login":    {},
+	panelHandler := &panel.Handler{
+		Store:                 st,
+		JWTSecret:             cfg.JWTSecret,
+		InitialServerSettings: cfg.ServerSettings(),
+		AuthCache:             authResolver,
 	}
-	var panelChain http.Handler = pm
-	panelChain = panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(panelChain)
-	panelChain = auth.JWTMiddleware(cfg.JWTSecret, st, skip)(panelChain)
-	mux.Handle("/panel/", panelChain)
+	handler := app.BuildHTTPHandler(app.HTTPDependencies{
+		Store:          st,
+		MCPServer:      server,
+		UsageWriter:    usageWriter,
+		UserLimiter:    userLimiter,
+		MCPIPLimiter:   mcpIPLimiter,
+		APIKeyResolver: authResolver,
+		PanelHandler:   panelHandler,
+	})
 
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
 	regBody := `{"username":"intuser","password":"password123"}`

@@ -13,7 +13,7 @@ import (
 )
 
 func TestUserMiddlewareRejectsNegativeRPM(t *testing.T) {
-	l := NewUserLimiter(60)
+	l := NewUserLimiter()
 	defer l.Close()
 
 	var called bool
@@ -39,7 +39,7 @@ func TestUserMiddlewareRejectsNegativeRPM(t *testing.T) {
 }
 
 func TestUserMiddlewareSkipsNonToolCallTraffic(t *testing.T) {
-	l := NewUserLimiter(1)
+	l := NewUserLimiter()
 	defer l.Close()
 
 	var called int
@@ -65,8 +65,8 @@ func TestUserMiddlewareSkipsNonToolCallTraffic(t *testing.T) {
 	}
 }
 
-func TestUserLimiterRebuildsWhenRPMFallsBackToDefault(t *testing.T) {
-	l := NewUserLimiter(60)
+func TestUserLimiterRebuildsWhenRPMChanges(t *testing.T) {
+	l := NewUserLimiter()
 	defer l.Close()
 
 	custom := 120
@@ -81,15 +81,16 @@ func TestUserLimiterRebuildsWhenRPMFallsBackToDefault(t *testing.T) {
 		t.Fatalf("custom limit want %d got %v", custom, customLimit)
 	}
 
-	if !l.allow("u1", 0) {
-		t.Fatal("expected allow under default rpm")
+	updatedRPM := 60
+	if !l.allow("u1", updatedRPM) {
+		t.Fatal("expected allow under updated rpm")
 	}
 	l.mu.Lock()
 	entry = l.entries["u1"]
-	defaultLimit := entry.limiter.Limit()
+	updatedLimit := entry.limiter.Limit()
 	l.mu.Unlock()
 	want := rate.Every(time.Minute / 60)
-	if entry.limiter.Limit() != want || defaultLimit != want {
-		t.Fatalf("expected default limiter %v got %v", want, entry.limiter.Limit())
+	if entry.limiter.Limit() != want || updatedLimit != want {
+		t.Fatalf("expected updated limiter %v got %v", want, entry.limiter.Limit())
 	}
 }

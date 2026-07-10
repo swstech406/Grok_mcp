@@ -18,12 +18,16 @@ import (
 
 	"github.com/grok-mcp/internal/auth"
 	"github.com/grok-mcp/internal/config"
+	"github.com/grok-mcp/internal/grok"
+	"github.com/grok-mcp/internal/logx"
+	mcpserver "github.com/grok-mcp/internal/mcp"
 	"github.com/grok-mcp/internal/panel"
 	"github.com/grok-mcp/internal/panelui"
 	"github.com/grok-mcp/internal/quota"
 	"github.com/grok-mcp/internal/ratelimit"
 	"github.com/grok-mcp/internal/store"
 	"github.com/grok-mcp/internal/usage"
+	"github.com/grok-mcp/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -48,17 +52,40 @@ type BootstrapAdminCredentials struct {
 	Password string
 }
 
+// HTTPDependencies contains the initialized resources needed to build the
+// production HTTP routing tree. Resource ownership remains with the caller.
+type HTTPDependencies struct {
+	Store          store.Store
+	MCPServer      *mcp.Server
+	UsageWriter    *store.AsyncUsageWriter
+	UserLimiter    *ratelimit.UserLimiter
+	MCPIPLimiter   *ratelimit.IPLimiter
+	APIKeyResolver auth.APIKeyResolver
+	PanelHandler   *panel.Handler
+}
+
 // Run starts the HTTP server (MCP + panel) and blocks until ctx is cancelled or ListenAndServe fails.
-func Run(ctx context.Context, cfg *config.Config, server *mcp.Server, settingsApplier panel.ServerSettingsApplier) error {
+func Run(ctx context.Context, cfg *config.Config) error {
 	st, err := store.OpenSQLite(cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
 
-	if err := InitializeServerSettings(ctx, st, cfg, settingsApplier); err != nil {
+	serverSettings, err := InitializeServerSettings(ctx, st, cfg)
+	if err != nil {
 		return fmt.Errorf("initialize server settings: %w", err)
 	}
+
+	debugState := logx.NewDebugState(serverSettings.Debug)
+	grokClient, err := grok.NewClientWithServerSettings(serverSettings, debugState)
+	if err != nil {
+		return fmt.Errorf("create grok client: %w", err)
+	}
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, &mcp.ServerOptions{
+		Instructions: mcpserver.ServerInstructions,
+	})
+	mcpserver.RegisterToolsWithLogger(mcpServer, grokClient, logx.NewWithDebugState("mcp", debugState))
 
 	bootstrapCredentials, err := EnsureBootstrapAdmin(ctx, st)
 	if err != nil {
@@ -71,64 +98,42 @@ func Run(ctx context.Context, cfg *config.Config, server *mcp.Server, settingsAp
 	usageWriter := store.NewAsyncUsageWriter(st, 256)
 	defer usageWriter.Close()
 
-	userLim := ratelimit.NewUserLimiter(cfg.DefaultUserRPM)
-	defer userLim.Close()
+	userLimiter := ratelimit.NewUserLimiter()
+	defer userLimiter.Close()
 	mcpIPLimiter := ratelimit.NewIPLimiter(cfg.MCPIPRPM)
 	mcpIPLimiter.SetTrustedProxies(cfg.TrustedProxies)
 	defer mcpIPLimiter.Close()
 
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
-
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true})
-
-	// MCP 中间件由内到外包装；请求实际顺序为：
-	// MaxBody → IP RPM → API Key → ExtractToolName → User RPM(tools/call) → Quota → Usage → MCP handler
-	// MaxBody 必须在 Extract/Usage 读 Body 之前生效，避免中间件路径绕过体积上限。
-	var mcpChain http.Handler = mcpHandler
-	mcpChain = usage.MCPMiddleware(st, usageWriter)(mcpChain)
-	mcpChain = quota.MCPMiddleware(st)(mcpChain)
-	mcpChain = userLim.UserMiddleware()(mcpChain)
-	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
-	mcpChain = auth.APIKeyMiddleware(authResolver)(mcpChain)
-	mcpChain = mcpIPLimiter.Middleware()(mcpChain)
-	mcpChain = panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(mcpChain)
-
-	rootMux := http.NewServeMux()
-	rootMux.Handle("/mcp/", mcpChain)
-	rootMux.Handle("/mcp", mcpChain)
-
-	panelHandler := &panel.Handler{Store: st, Config: cfg, SettingsApplier: settingsApplier, AuthCache: authResolver}
-	if modelLister, ok := settingsApplier.(panel.ModelLister); ok {
-		panelHandler.ModelLister = modelLister
+	panelHandler := &panel.Handler{
+		Store:                 st,
+		JWTSecret:             cfg.JWTSecret,
+		TrustedProxies:        cfg.TrustedProxies,
+		InitialServerSettings: serverSettings,
+		SettingsApplier:       grokClient,
+		ModelLister:           grokClient,
+		AuthCache:             authResolver,
 	}
-	panelMux := panel.NewMux(panelHandler)
-	jwtSkip := map[string]struct{}{
-		"/panel/v1/auth/register":              {},
-		"/panel/v1/auth/login":                 {},
-		"/panel/v1/auth/registration-settings": {},
-	}
-	var panelChain http.Handler = panelMux
-	panelChain = panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(panelChain)
-	panelChain = auth.JWTMiddleware(cfg.JWTSecret, st, jwtSkip)(panelChain)
-	rootMux.Handle("/panel/v1/", panelChain)
-	rootMux.Handle("/panel/v1", panelChain)
-
-	panelUI := panelui.Handler()
-	rootMux.Handle("/panel/", panelUI)
-	rootMux.Handle("/panel", panelUI)
+	httpHandler := BuildHTTPHandler(HTTPDependencies{
+		Store:          st,
+		MCPServer:      mcpServer,
+		UsageWriter:    usageWriter,
+		UserLimiter:    userLimiter,
+		MCPIPLimiter:   mcpIPLimiter,
+		APIKeyResolver: authResolver,
+		PanelHandler:   panelHandler,
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           SecurityHeadersMiddleware(rootMux),
+		Handler:           httpHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		// MaxBytesReader only caps request size. ReadTimeout also bounds how long a
 		// client may take to send the body after headers, mitigating slow-body DoS.
 		ReadTimeout: 30 * time.Second,
-		// SSE 流式响应（/mcp tools/call）是长连接，WriteTimeout 不能短于上游超时；
-		// 设为略大于 cfg.Timeout 兜底，避免在合法的长时间搜索中被中断。
-		WriteTimeout: cfg.Timeout + 30*time.Second,
+		// Streaming MCP responses can outlive any startup timeout value, and the
+		// upstream timeout is hot-reloadable. Keep the server write timeout off.
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -154,11 +159,44 @@ func Run(ctx context.Context, cfg *config.Config, server *mcp.Server, settingsAp
 	}
 }
 
-// InitializeServerSettings loads DB settings (or env defaults), normalizes, persists, and applies them.
-func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.Config, settingsApplier panel.ServerSettingsApplier) error {
+// BuildHTTPHandler creates the single production routing and middleware tree
+// shared by the real server and HTTP integration tests.
+func BuildHTTPHandler(dependencies HTTPDependencies) http.Handler {
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
+		return dependencies.MCPServer
+	}, &mcp.StreamableHTTPOptions{Stateless: true})
+
+	// MCP middleware is wrapped from inside out. The effective request order is:
+	// MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM -> Quota -> Usage -> MCP.
+	var mcpChain http.Handler = mcpHandler
+	mcpChain = usage.MCPMiddleware(dependencies.Store, dependencies.UsageWriter)(mcpChain)
+	mcpChain = quota.MCPMiddleware(dependencies.Store)(mcpChain)
+	mcpChain = dependencies.UserLimiter.UserMiddleware()(mcpChain)
+	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
+	mcpChain = auth.APIKeyMiddleware(dependencies.APIKeyResolver)(mcpChain)
+	mcpChain = dependencies.MCPIPLimiter.Middleware()(mcpChain)
+	mcpChain = panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(mcpChain)
+
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/mcp/", mcpChain)
+	rootMux.Handle("/mcp", mcpChain)
+
+	panelChain := panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(panel.NewMux(dependencies.PanelHandler))
+	rootMux.Handle("/panel/v1/", panelChain)
+	rootMux.Handle("/panel/v1", panelChain)
+
+	panelUI := panelui.Handler()
+	rootMux.Handle("/panel/", panelUI)
+	rootMux.Handle("/panel", panelUI)
+	return SecurityHeadersMiddleware(rootMux)
+}
+
+// InitializeServerSettings loads DB settings (or environment defaults),
+// validates the effective settings, persists them, and returns the sole runtime view.
+func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.Config) (config.ServerSettings, error) {
 	storedSettings, err := st.GetServerSettings(ctx)
 	if err != nil {
-		return fmt.Errorf("load settings: %w", err)
+		return config.ServerSettings{}, fmt.Errorf("load settings: %w", err)
 	}
 
 	settings := cfg.ServerSettings()
@@ -168,19 +206,12 @@ func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.C
 
 	normalizedSettings, err := config.NormalizeServerSettings(settings)
 	if err != nil {
-		return err
+		return config.ServerSettings{}, err
 	}
 	if _, err := st.UpsertServerSettings(ctx, config.StoreServerSettings(normalizedSettings)); err != nil {
-		return fmt.Errorf("persist settings: %w", err)
+		return config.ServerSettings{}, fmt.Errorf("persist settings: %w", err)
 	}
-
-	cfg.ApplyServerSettings(normalizedSettings)
-	if settingsApplier != nil {
-		if err := settingsApplier.ApplyServerSettings(normalizedSettings); err != nil {
-			return fmt.Errorf("apply settings: %w", err)
-		}
-	}
-	return nil
+	return normalizedSettings, nil
 }
 
 // EnsureBootstrapAdmin creates a default admin when no enabled admin exists.
@@ -282,9 +313,4 @@ func isWildcardHTTPAddr(httpAddr string) bool {
 		return false
 	}
 	return host == "" || host == "0.0.0.0" || host == "::" || host == "[::]"
-}
-
-// BootstrapAdminUsername is the reserved username created when no enabled admin exists.
-func BootstrapAdminUsername() string {
-	return bootstrapAdminUsername
 }

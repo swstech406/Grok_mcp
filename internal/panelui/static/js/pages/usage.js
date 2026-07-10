@@ -1,5 +1,5 @@
 import { metricCard, renderBars, renderRecentActivity, renderToolUsage } from "../components/metric-card.js";
-import { filteredRecords, state } from "../state.js";
+import { state } from "../state.js";
 import { escapeAttr, escapeHTML, formatNumber, rangeLabel, successPercent } from "../utils.js";
 
 const USAGE_RANGE_OPTIONS = [
@@ -34,15 +34,12 @@ export function renderUsage() {
       </div>
       ${renderToolUsage(usage)}
     </section>
-    ${renderRecentActivity(filteredRecords(usage.records), state.usageActivityCompact, {
-      showViewAllButton: state.usageActivityCompact,
+    ${renderRecentActivity(usage.records, state.usageActivityCompact, {
       viewAllAction: "expand-usage-activity",
       viewAllRoute: "",
-      viewAllLabel: "View All Activity",
       showPagination: true,
       page: state.usageActivityPage,
-      pageSize: state.usageActivityPageSize,
-      pageSizeOptions: [10, 20, 50, 100]
+      pageSize: state.usageActivityPageSize
     })}`;
 }
 

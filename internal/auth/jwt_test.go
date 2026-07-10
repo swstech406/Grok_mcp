@@ -36,7 +36,7 @@ func jwtTestStore(t *testing.T) (*store.SQLiteStore, *store.User) {
 
 // guardedHandler 返回一个固定返回 200 的 handler，用于断言中间件是否放行。
 func guardedHandler(secret string, st store.Store) http.Handler {
-	return JWTMiddleware(secret, st, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return JWTMiddleware(secret, st)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 }
@@ -89,28 +89,6 @@ func TestJWTRejectsMalformedWrongSecretAndExpiredTokens(t *testing.T) {
 	time.Sleep(time.Millisecond)
 	if code := do(t, h, expiringToken); code != http.StatusUnauthorized {
 		t.Fatalf("expired token should be rejected with 401, got %d", code)
-	}
-}
-
-func TestJWTMiddlewareSkipsConfiguredPublicPaths(t *testing.T) {
-	st, _ := jwtTestStore(t)
-	called := false
-	h := JWTMiddleware(testSecret, st, map[string]struct{}{
-		"/panel/v1/auth/login": {},
-	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/login", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if !called {
-		t.Fatal("expected skipped path to reach downstream handler")
-	}
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 }
 

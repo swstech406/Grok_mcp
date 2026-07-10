@@ -21,26 +21,19 @@ const (
 	defaultDBPath   = "./grok-mcp.db"
 	// defaultMCPIPRPM 在 API key 鉴权前按来源 IP 限制 /mcp 请求，保护认证存储免受暴力探测和 DoS。
 	defaultMCPIPRPM = 300
-	// defaultLimiterRPM 是 UserLimiter 构造参数。限额始终来自 tier；-1 表示不提供
-	// 内置正数兜底（middleware 在 rpm==0 时直接不限流，不会用到该值）。
-	defaultLimiterRPM = -1
 )
 
 // Config 保存进程启动所需的全部配置项。
-//
-// 用户限额（RPM / success limit）不再可配置，统一由 tier 决定；
-// DefaultUserRPM 仅传给内存限流器构造函数，默认 -1（无正数兜底）。
 type Config struct {
-	CPABaseURL     string
-	CPAAPIKey      string
-	Model          string
-	Timeout        time.Duration
-	Debug          bool
-	HTTPAddr       string
-	DBPath         string
-	JWTSecret      string
-	DefaultUserRPM int
-	MCPIPRPM       int
+	CPABaseURL string
+	CPAAPIKey  string
+	Model      string
+	Timeout    time.Duration
+	Debug      bool
+	HTTPAddr   string
+	DBPath     string
+	JWTSecret  string
+	MCPIPRPM   int
 	// TrustedProxies 为可信反向代理 CIDR；仅当 RemoteAddr 命中时才解析 X-Forwarded-For / X-Real-IP。
 	// 空表示永不信任转发头（公网直连安全默认）。
 	TrustedProxies   []*net.IPNet
@@ -67,18 +60,17 @@ type ServerSettings struct {
 func Load() (*Config, error) {
 	proxyURL := strings.TrimSpace(os.Getenv("GROK_PROXY_URL"))
 	cfg := &Config{
-		CPABaseURL:     strings.TrimRight(envOrDefault("CPA_BASE_URL", defaultBaseURL), "/"),
-		CPAAPIKey:      strings.TrimSpace(os.Getenv("CPA_API_KEY")),
-		Model:          envOrDefault("GROK_MODEL", defaultModel),
-		Timeout:        defaultTimeout,
-		Debug:          parseBoolEnv("GROK_MCP_DEBUG"),
-		HTTPAddr:       envOrDefault("GROK_HTTP_ADDR", defaultHTTPAddr),
-		DBPath:         envOrDefault("GROK_DB_PATH", defaultDBPath),
-		JWTSecret:      strings.TrimSpace(os.Getenv("GROK_JWT_SECRET")),
-		DefaultUserRPM: defaultLimiterRPM,
-		MCPIPRPM:       defaultMCPIPRPM,
-		ProxyURL:       proxyURL,
-		ProxyEnabled:   resolveProxyEnabledFromEnv(proxyURL),
+		CPABaseURL:   strings.TrimRight(envOrDefault("CPA_BASE_URL", defaultBaseURL), "/"),
+		CPAAPIKey:    strings.TrimSpace(os.Getenv("CPA_API_KEY")),
+		Model:        envOrDefault("GROK_MODEL", defaultModel),
+		Timeout:      defaultTimeout,
+		Debug:        parseBoolEnv("GROK_MCP_DEBUG"),
+		HTTPAddr:     envOrDefault("GROK_HTTP_ADDR", defaultHTTPAddr),
+		DBPath:       envOrDefault("GROK_DB_PATH", defaultDBPath),
+		JWTSecret:    strings.TrimSpace(os.Getenv("GROK_JWT_SECRET")),
+		MCPIPRPM:     defaultMCPIPRPM,
+		ProxyURL:     proxyURL,
+		ProxyEnabled: resolveProxyEnabledFromEnv(proxyURL),
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("GROK_HTTP_TIMEOUT")); raw != "" {
@@ -87,16 +79,6 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("GROK_HTTP_TIMEOUT must be a positive integer (seconds), got %q", raw)
 		}
 		cfg.Timeout = time.Duration(seconds) * time.Second
-	}
-
-	// GROK_DEFAULT_USER_RPM 仅传给 UserLimiter；用户实际 RPM 始终取自 tier。
-	// 默认 -1（无正数兜底）。允许任意非零整数；0 无意义（与 tier「0=不限」混淆）故拒绝。
-	if raw := strings.TrimSpace(os.Getenv("GROK_DEFAULT_USER_RPM")); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n == 0 {
-			return nil, fmt.Errorf("GROK_DEFAULT_USER_RPM must be a non-zero integer, got %q", raw)
-		}
-		cfg.DefaultUserRPM = n
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("GROK_MCP_IP_RPM")); raw != "" {
@@ -117,20 +99,21 @@ func Load() (*Config, error) {
 		cfg.TrustedProxies = networks
 	}
 
-	if cfg.CPAAPIKey == "" {
-		return nil, fmt.Errorf("CPA_API_KEY is required")
-	}
-	if cfg.CPABaseURL == "" {
-		return nil, fmt.Errorf("CPA_BASE_URL must not be empty")
-	}
-	if cfg.Model == "" {
-		return nil, fmt.Errorf("GROK_MODEL must not be empty")
-	}
-	serverSettings, err := NormalizeServerSettings(cfg.ServerSettings())
+	// Validate and canonicalize environment defaults without requiring the CPA
+	// key yet. An existing database may provide the complete runtime settings.
+	environmentSettings, err := normalizeServerSettings(cfg.ServerSettings(), false)
 	if err != nil {
 		return nil, err
 	}
-	cfg.ApplyServerSettings(serverSettings)
+	cfg.CPABaseURL = environmentSettings.CPABaseURL
+	cfg.CPAAPIKey = environmentSettings.CPAAPIKey
+	cfg.Model = environmentSettings.Model
+	cfg.Timeout = time.Duration(environmentSettings.TimeoutSeconds) * time.Second
+	cfg.ProxyURL = environmentSettings.ProxyURL
+	cfg.ProxyEnabled = environmentSettings.ProxyEnabled
+	cfg.RegistrationMode = environmentSettings.RegistrationMode
+	cfg.Debug = environmentSettings.Debug
+
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("GROK_JWT_SECRET is required")
 	}
@@ -162,21 +145,13 @@ func (c *Config) ServerSettings() ServerSettings {
 	}
 }
 
-// ApplyServerSettings updates the runtime-tunable fields on the config object.
-func (c *Config) ApplyServerSettings(settings ServerSettings) {
-	c.CPABaseURL = settings.CPABaseURL
-	c.CPAAPIKey = settings.CPAAPIKey
-	c.Model = settings.Model
-	c.Timeout = time.Duration(settings.TimeoutSeconds) * time.Second
-	c.ProxyURL = settings.ProxyURL
-	c.ProxyEnabled = settings.ProxyEnabled
-	c.RegistrationMode = settings.RegistrationMode
-	c.Debug = settings.Debug
-}
-
 // NormalizeServerSettings trims, validates, and canonicalizes settings that can
 // be edited from the admin panel.
 func NormalizeServerSettings(settings ServerSettings) (ServerSettings, error) {
+	return normalizeServerSettings(settings, true)
+}
+
+func normalizeServerSettings(settings ServerSettings, requireAPIKey bool) (ServerSettings, error) {
 	settings.CPABaseURL = strings.TrimRight(strings.TrimSpace(settings.CPABaseURL), "/")
 	settings.CPAAPIKey = strings.TrimSpace(settings.CPAAPIKey)
 	settings.Model = strings.TrimSpace(settings.Model)
@@ -187,7 +162,7 @@ func NormalizeServerSettings(settings ServerSettings) (ServerSettings, error) {
 	}
 	settings.RegistrationMode = registrationMode
 
-	if settings.CPAAPIKey == "" {
+	if requireAPIKey && settings.CPAAPIKey == "" {
 		return settings, fmt.Errorf("CPA_API_KEY is required")
 	}
 	if settings.CPABaseURL == "" {

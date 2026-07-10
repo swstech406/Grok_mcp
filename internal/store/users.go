@@ -473,11 +473,3 @@ func validateAssignableTierID(ctx context.Context, executor queryRowContextExecu
 	}
 	return nil
 }
-
-// nullableString 将空串转为 sql.NullString（NULL），非空串保留。
-func nullableString(s string) sql.NullString {
-	if s == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: s, Valid: true}
-}

@@ -13,15 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/grok-mcp/internal/app"
 	"github.com/grok-mcp/internal/auth"
 	"github.com/grok-mcp/internal/config"
 	"github.com/grok-mcp/internal/grok"
 	mcpserver "github.com/grok-mcp/internal/mcp"
 	"github.com/grok-mcp/internal/panel"
-	"github.com/grok-mcp/internal/quota"
 	"github.com/grok-mcp/internal/ratelimit"
 	"github.com/grok-mcp/internal/store"
-	"github.com/grok-mcp/internal/usage"
 	"github.com/grok-mcp/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -43,44 +42,38 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 	}
 	writer := store.NewAsyncUsageWriter(st, 64)
 	cfg := &config.Config{
-		CPABaseURL:     cpa.URL,
-		CPAAPIKey:      "cpa-mock-key",
-		Model:          "grok-4.3",
-		JWTSecret:      "jwt-secret-must-be-at-least-32-bytes!",
-		DefaultUserRPM: 1000,
-		Timeout:        30 * time.Second,
+		CPABaseURL: cpa.URL,
+		CPAAPIKey:  "cpa-mock-key",
+		Model:      "grok-4.3",
+		JWTSecret:  "jwt-secret-must-be-at-least-32-bytes!",
+		Timeout:    30 * time.Second,
 	}
 	client := grok.NewClient(cfg)
 	server := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, nil)
 	mcpserver.RegisterTools(server, client, false)
-	userLim := ratelimit.NewUserLimiter(cfg.DefaultUserRPM)
+	userLimiter := ratelimit.NewUserLimiter()
+	mcpIPLimiter := ratelimit.NewIPLimiter(10000)
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
-	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true})
-	var mcpChain http.Handler = mcpHandler
-	mcpChain = usage.MCPMiddleware(st, writer)(mcpChain)
-	mcpChain = quota.MCPMiddleware(st)(mcpChain)
-	mcpChain = userLim.UserMiddleware()(mcpChain)
-	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
-	mcpChain = auth.APIKeyMiddleware(authResolver)(mcpChain)
-	mcpChain = panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(mcpChain)
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpChain)
-	ph := &panel.Handler{Store: st, Config: cfg, AuthCache: authResolver}
-	pm := panel.NewMux(ph)
-	skip := map[string]struct{}{
-		"/panel/v1/auth/register": {},
-		"/panel/v1/auth/login":    {},
+	panelHandler := &panel.Handler{
+		Store:                 st,
+		JWTSecret:             cfg.JWTSecret,
+		InitialServerSettings: cfg.ServerSettings(),
+		AuthCache:             authResolver,
 	}
-	var panelChain http.Handler = pm
-	panelChain = panel.MaxBodyMiddleware(panel.MaxPanelBodyBytes())(panelChain)
-	panelChain = auth.JWTMiddleware(cfg.JWTSecret, st, skip)(panelChain)
-	mux.Handle("/panel/", panelChain)
-	ts := httptest.NewServer(mux)
+	handler := app.BuildHTTPHandler(app.HTTPDependencies{
+		Store:          st,
+		MCPServer:      server,
+		UsageWriter:    writer,
+		UserLimiter:    userLimiter,
+		MCPIPLimiter:   mcpIPLimiter,
+		APIKeyResolver: authResolver,
+		PanelHandler:   panelHandler,
+	})
+	ts := httptest.NewServer(handler)
 	t.Cleanup(func() {
 		ts.Close()
-		userLim.Close()
+		userLimiter.Close()
+		mcpIPLimiter.Close()
 		writer.Close()
 		st.Close()
 	})
@@ -117,7 +110,7 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 	if keyResp.StatusCode != http.StatusCreated {
 		t.Fatalf("create key %d", keyResp.StatusCode)
 	}
-	return &integrationEnv{ts: ts, st: st, writer: writer, userLim: userLim, created: created, login: login}
+	return &integrationEnv{ts: ts, st: st, writer: writer, userLim: userLimiter, created: created, login: login}
 }
 
 func TestHTTPPanelKeysRequireJWT(t *testing.T) {
@@ -133,6 +126,39 @@ func TestHTTPPanelKeysRequireJWT(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without JWT, got %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPPanelRegistrationSettingsDoesNotRequireJWT(t *testing.T) {
+	cpa := cpaMockSSE(t)
+	defer cpa.Close()
+	env := bootIntegrationEnv(t, cpa)
+
+	request, _ := http.NewRequest(http.MethodGet, env.ts.URL+"/panel/v1/auth/registration-settings", nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected public registration settings to return 200, got %d", response.StatusCode)
+	}
+}
+
+func TestHTTPPanelAdminRoutesRequireAdminRole(t *testing.T) {
+	cpa := cpaMockSSE(t)
+	defer cpa.Close()
+	env := bootIntegrationEnv(t, cpa)
+
+	request, _ := http.NewRequest(http.MethodGet, env.ts.URL+"/panel/v1/admin/users", nil)
+	request.Header.Set("Authorization", "Bearer "+env.login.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected regular user to receive 403 for admin route, got %d", response.StatusCode)
 	}
 }
 

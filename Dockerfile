@@ -42,8 +42,7 @@ COPY --from=builder /out/grok-mcp /app/grok-mcp
 USER app
 
 ENV GROK_HTTP_ADDR=:8080 \
-    GROK_DB_PATH=/app/data/grok-mcp.db \
-    GROK_DEFAULT_USER_RPM=60
+    GROK_DB_PATH=/app/data/grok-mcp.db
 
 EXPOSE 8080
 VOLUME ["/app/data"]

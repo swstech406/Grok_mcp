@@ -53,9 +53,6 @@ func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if h.Config != nil {
-		h.Config.ApplyServerSettings(normalizedSettings)
-	}
 	if h.SettingsApplier != nil {
 		if err := h.SettingsApplier.ApplyServerSettings(normalizedSettings); err != nil {
 			log.Printf("admin apply server settings failed: %v", err)
@@ -96,10 +93,10 @@ func (h *Handler) loadEffectiveServerSettings(r *http.Request) (config.ServerSet
 		updatedAt := storedSettings.UpdatedAt
 		return config.ServerSettingsFromStore(storedSettings), &updatedAt, nil
 	}
-	if h.Config == nil {
+	if h.InitialServerSettings == (config.ServerSettings{}) {
 		return config.ServerSettings{}, nil, nil
 	}
-	settings, err := config.NormalizeServerSettings(h.Config.ServerSettings())
+	settings, err := config.NormalizeServerSettings(h.InitialServerSettings)
 	if err != nil {
 		return config.ServerSettings{}, nil, err
 	}

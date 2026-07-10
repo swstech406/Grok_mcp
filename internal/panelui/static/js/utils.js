@@ -36,28 +36,6 @@ export function normalizeUsage(data) {
   };
 }
 
-export function aggregateUsage(parts) {
-  const usage = emptyUsage();
-  for (const part of parts.map(normalizeUsage)) {
-    usage.total_calls += part.total_calls;
-    usage.success_calls += part.success_calls;
-    usage.current_rpm += part.current_rpm;
-    for (const [tool, count] of Object.entries(part.by_tool || {})) {
-      usage.by_tool[tool] = (usage.by_tool[tool] || 0) + Number(count || 0);
-    }
-    for (const [bucketIndex, bucket] of part.traffic_buckets.entries()) {
-      if (!usage.traffic_buckets[bucketIndex]) {
-        usage.traffic_buckets[bucketIndex] = { ...bucket };
-        continue;
-      }
-      usage.traffic_buckets[bucketIndex].calls += bucket.calls;
-    }
-    usage.records.push(...(part.records || []));
-  }
-  usage.records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  return usage;
-}
-
 export function sinceQuery(mode) {
   if (mode === "all") return "";
   const now = Date.now();

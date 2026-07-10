@@ -136,10 +136,7 @@ func NewAuthProtector(config AuthProtectorConfig) *AuthProtector {
 
 func (h *Handler) authProtector() *AuthProtector {
 	if h.AuthProtector == nil {
-		protectorConfig := AuthProtectorConfig{}
-		if h.Config != nil {
-			protectorConfig.TrustedProxies = h.Config.TrustedProxies
-		}
+		protectorConfig := AuthProtectorConfig{TrustedProxies: h.TrustedProxies}
 		h.AuthProtector = NewAuthProtector(protectorConfig)
 	}
 	return h.AuthProtector

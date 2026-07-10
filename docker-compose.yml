@@ -16,11 +16,10 @@ services:
       - "8080:8080"
     environment:
       CPA_BASE_URL: "${CPA_BASE_URL:-http://host.docker.internal:8317}"
-      CPA_API_KEY: "${CPA_API_KEY:?CPA_API_KEY is required}"
+      CPA_API_KEY: "${CPA_API_KEY:-}"
       GROK_JWT_SECRET: "${GROK_JWT_SECRET:?GROK_JWT_SECRET is required}"
       GROK_HTTP_ADDR: ":8080"
       GROK_DB_PATH: "/app/data/grok-mcp.db"
-      GROK_DEFAULT_USER_RPM: "${GROK_DEFAULT_USER_RPM:-60}"
       GROK_MCP_IP_RPM: "${GROK_MCP_IP_RPM:-300}"
       GROK_MODEL: "${GROK_MODEL:-grok-4.3}"
       GROK_HTTP_TIMEOUT: "${GROK_HTTP_TIMEOUT:-120}"

@@ -3,21 +3,8 @@ package logx
 
 import (
 	"log"
-	"log/slog"
-	"os"
 	"sync/atomic"
 )
-
-// defaultLogger 是包级 slog 实例，输出到 stderr，级别 Info，
-// 供需要结构化日志的调用方使用；debug 路径仍走传统 log.Printf（见 Logger）。
-var defaultLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-	Level: slog.LevelInfo,
-}))
-
-// DefaultLogger 返回包级 slog.Logger，供面板/进程入口等做结构化日志。
-func DefaultLogger() *slog.Logger {
-	return defaultLogger
-}
 
 // DebugState 保存可在运行时安全切换的共享调试状态。
 type DebugState struct {

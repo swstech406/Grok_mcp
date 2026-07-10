@@ -30,19 +30,14 @@ func panelTestServerWithAuthProtector(t *testing.T, authProtector *AuthProtector
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cfg := &config.Config{
-		JWTSecret:      "jwt-secret-must-be-at-least-32-bytes!",
-		DefaultUserRPM: 60,
+		JWTSecret: "jwt-secret-must-be-at-least-32-bytes!",
 	}
-	h := &Handler{Store: st, Config: cfg, AuthProtector: authProtector}
-	mux := NewMux(h)
-	skip := map[string]struct{}{
-		"/panel/v1/auth/register":              {},
-		"/panel/v1/auth/login":                 {},
-		"/panel/v1/auth/registration-settings": {},
+	h := &Handler{
+		Store:         st,
+		JWTSecret:     cfg.JWTSecret,
+		AuthProtector: authProtector,
 	}
-	var chain http.Handler = mux
-	chain = auth.JWTMiddleware(cfg.JWTSecret, st, skip)(chain)
-	return httptest.NewServer(chain), st, cfg
+	return httptest.NewServer(NewMux(h)), st, cfg
 }
 
 func panelTestServerWithModelLister(t *testing.T, modelLister ModelLister) (*httptest.Server, *store.SQLiteStore, *config.Config) {
@@ -53,19 +48,14 @@ func panelTestServerWithModelLister(t *testing.T, modelLister ModelLister) (*htt
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cfg := &config.Config{
-		JWTSecret:      "jwt-secret-must-be-at-least-32-bytes!",
-		DefaultUserRPM: 60,
+		JWTSecret: "jwt-secret-must-be-at-least-32-bytes!",
 	}
-	h := &Handler{Store: st, Config: cfg, ModelLister: modelLister}
-	mux := NewMux(h)
-	skip := map[string]struct{}{
-		"/panel/v1/auth/register":              {},
-		"/panel/v1/auth/login":                 {},
-		"/panel/v1/auth/registration-settings": {},
+	h := &Handler{
+		Store:       st,
+		JWTSecret:   cfg.JWTSecret,
+		ModelLister: modelLister,
 	}
-	var chain http.Handler = mux
-	chain = auth.JWTMiddleware(cfg.JWTSecret, st, skip)(chain)
-	return httptest.NewServer(chain), st, cfg
+	return httptest.NewServer(NewMux(h)), st, cfg
 }
 
 type staticModelLister struct {

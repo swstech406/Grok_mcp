@@ -224,10 +224,12 @@ CPA_BASE_URL=http://host.docker.internal:8317
 docker compose up -d --build
 ```
 
-`.env` 至少需要设置：
+空数据库首次启动时，`.env` 至少需要设置：
 
 - `CPA_API_KEY`
 - `GROK_JWT_SECRET`
+
+如果命名卷中的数据库已经保存了完整 Server Settings，`CPA_API_KEY` 可不再通过环境变量提供；`GROK_JWT_SECRET` 始终必须由环境变量提供。
 
 容器内默认监听 `:8080`，Compose 示例默认映射宿主机 `8080`。如需公网访问，请通过 HTTPS 反向代理暴露服务。SQLite 数据保存到命名卷 `grok-mcp-data`。
 
@@ -243,7 +245,6 @@ docker compose up -d --build
 | `GROK_MCP_DEBUG` | 否 | 无 | 设为 `1`、`true` 或 `yes` 时输出调试日志，并可能在用量记录中捕获 debug 上下文 |
 | `GROK_HTTP_ADDR` | 否 | `:8080` | HTTP 监听地址；直接公网暴露明文 HTTP 会泄露 JWT/API key |
 | `GROK_DB_PATH` | 否 | `./grok-mcp.db` | SQLite 数据库路径 |
-| `GROK_DEFAULT_USER_RPM` | 否 | 未设置时为 `-1` | 仅作为内存 `UserLimiter` 构造参数；用户实际 RPM **始终来自 tier**。未设置时无正数兜底（`rpm==0` 表示不限）。设为非 0 整数可作兜底；`0` 非法 |
 | `GROK_MCP_IP_RPM` | 否 | `300` | `/mcp` 在 API Key 鉴权前按来源 IP 限流的 RPM |
 | `GROK_TRUSTED_PROXIES` | 否 | 空 | 可信反向代理 CIDR/IP（逗号分隔）；命中时才解析转发头 |
 | `GROK_PROXY_URL` | 否 | 空 | 上游请求显式 HTTP(S) 代理 |
@@ -372,9 +373,9 @@ GET    /panel/v1/admin/models
 
 ```text
 cmd/grok-mcp/
-  main.go                 薄入口：配置、MCP 注册、信号、调用 app.Run
+  main.go                 薄入口：配置、版本、信号、调用 app.Run
 
-internal/app/             HTTP 组合根：DB/bootstrap、中间件链、路由、优雅退出
+internal/app/             组合根：DB/运行时设置、Grok/MCP、bootstrap、HTTP 与优雅退出
 internal/config/          环境变量加载、校验、ServerSettings 与 store 映射
 internal/auth/            API Key / 面板 JWT；AuthenticatedUser（含 tier 生效限额）
 internal/panel/           面板 REST API（/panel/v1）

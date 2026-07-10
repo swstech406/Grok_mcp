@@ -37,12 +37,15 @@ func panelEnv(t *testing.T) {
 	setEnv(t, "GROK_JWT_SECRET", "jwt-secret-must-be-at-least-32-bytes!")
 }
 
-func TestLoadRequiresAPIKey(t *testing.T) {
+func TestLoadAllowsMissingAPIKeyForDatabaseFallback(t *testing.T) {
 	setEnv(t, "CPA_API_KEY", "")
-	setEnv(t, "GROK_JWT_SECRET", "jwt-secret")
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "CPA_API_KEY is required") {
-		t.Fatalf("expected CPA_API_KEY error, got %v", err)
+	setEnv(t, "GROK_JWT_SECRET", "jwt-secret-must-be-at-least-32-bytes!")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should allow a database to provide the CPA key: %v", err)
+	}
+	if cfg.CPAAPIKey != "" {
+		t.Fatalf("expected empty environment CPA key, got %q", cfg.CPAAPIKey)
 	}
 }
 
@@ -190,7 +193,6 @@ func TestLoadHTTPDefaults(t *testing.T) {
 	}
 	if cfg.HTTPAddr != ":8080" ||
 		cfg.DBPath != "./grok-mcp.db" ||
-		cfg.DefaultUserRPM != -1 ||
 		cfg.MCPIPRPM != 300 {
 		t.Fatalf("unexpected http defaults: %+v", cfg)
 	}

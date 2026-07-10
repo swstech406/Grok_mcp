@@ -123,12 +123,6 @@ func buildToolDef(req SearchRequest) toolDef {
 	return tool
 }
 
-// buildSearchRequestBody 组装 /v1/responses 请求体；未指定 model 时使用客户端默认模型。
-func (c *Client) buildSearchRequestBody(req SearchRequest) (string, []byte, error) {
-	snapshot := c.snapshot()
-	return buildSearchRequestBody(req, snapshot.defaultModel)
-}
-
 func buildSearchRequestBody(req SearchRequest, defaultModel string) (string, []byte, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" {

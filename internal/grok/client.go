@@ -41,21 +41,40 @@ func NewClient(cfg *config.Config) *Client {
 
 // NewClientWithDebugState 使用可共享的运行时调试状态构造上游客户端。
 func NewClientWithDebugState(cfg *config.Config, debugState *logx.DebugState) *Client {
+	client, err := NewClientWithServerSettings(cfg.ServerSettings(), debugState)
+	if err == nil {
+		return client
+	}
+
 	if debugState == nil {
 		debugState = logx.NewDebugState(cfg.Debug)
+	}
+	client = &Client{
+		debugState: debugState,
+		log:        logx.NewWithDebugState("grok", debugState),
+	}
+	client.log.Debugf("failed to apply initial server settings: %v", err)
+	client.baseURL = cfg.CPABaseURL
+	client.apiKey = cfg.CPAAPIKey
+	client.defaultModel = cfg.Model
+	client.httpClient = newHTTPClient(cfg.Timeout, "", false)
+	return client
+}
+
+// NewClientWithServerSettings constructs a client from validated runtime
+// settings. It returns configuration errors instead of silently falling back.
+func NewClientWithServerSettings(settings config.ServerSettings, debugState *logx.DebugState) (*Client, error) {
+	if debugState == nil {
+		debugState = logx.NewDebugState(settings.Debug)
 	}
 	client := &Client{
 		debugState: debugState,
 		log:        logx.NewWithDebugState("grok", debugState),
 	}
-	if err := client.ApplyServerSettings(cfg.ServerSettings()); err != nil {
-		client.log.Debugf("failed to apply initial server settings: %v", err)
-		client.baseURL = cfg.CPABaseURL
-		client.apiKey = cfg.CPAAPIKey
-		client.defaultModel = cfg.Model
-		client.httpClient = newHTTPClient(cfg.Timeout, "", false)
+	if err := client.ApplyServerSettings(settings); err != nil {
+		return nil, err
 	}
-	return client
+	return client, nil
 }
 
 // ApplyServerSettings atomically swaps the upstream connection settings used by

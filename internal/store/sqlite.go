@@ -332,7 +332,7 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	args := appendUsageStatsArgs(whereArgs, sinceStr)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tool_name, COUNT(*) FROM usage_log WHERE `+where+` AND timestamp >= ? GROUP BY tool_name`,
+		`SELECT tool_name, COUNT(*), COALESCE(SUM(success), 0) FROM usage_log WHERE `+where+` AND timestamp >= ? GROUP BY tool_name`,
 		args...,
 	)
 	if err != nil {
@@ -341,12 +341,18 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	for rows.Next() {
 		var tool string
 		var count int64
-		if err := rows.Scan(&tool, &count); err != nil {
+		var successCount int64
+		if err := rows.Scan(&tool, &count, &successCount); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		stats.ByTool[tool] = count
 		stats.TotalCalls += count
+		stats.SuccessCalls += successCount
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
 	rows.Close()
 
@@ -379,15 +385,6 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	if err := recRows.Close(); err != nil {
 		return nil, err
 	}
-
-	var succCount int64
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM usage_log WHERE `+where+` AND timestamp >= ? AND success = 1`,
-		args...,
-	).Scan(&succCount); err != nil {
-		return nil, err
-	}
-	stats.SuccessCalls = succCount
 
 	currentRPM, err := s.queryCurrentRPM(ctx, where, whereArgs, queryEnd)
 	if err != nil {

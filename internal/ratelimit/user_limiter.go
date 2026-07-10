@@ -17,32 +17,24 @@ type entry struct {
 
 // UserLimiter 按用户 ID 共享 RPM 令牌桶（用户下所有 API Key 共用）。
 type UserLimiter struct {
-	// defaultPerMin 仅在 limitFor 收到非正 rpm 时作为兜底；正常路径由 middleware
-	// 保证仅在 AuthenticatedUser.RPM > 0 时调用 allow。配置默认 -1 表示不提供正数兜底。
-	defaultPerMin int
-	mu            sync.Mutex
-	entries       map[string]*entry
-	closeOnce     sync.Once
-	stop          chan struct{}
+	mu        sync.Mutex
+	entries   map[string]*entry
+	closeOnce sync.Once
+	stop      chan struct{}
 }
 
-// NewUserLimiter 创建用户级限流器。
-// defaultPerMin <= 0 表示不提供正数兜底（不再静默改成 60）；实际限流速率来自请求上的 AuthenticatedUser.RPM。
-func NewUserLimiter(defaultPerMin int) *UserLimiter {
-	l := &UserLimiter{
-		defaultPerMin: defaultPerMin,
-		entries:       make(map[string]*entry),
-		stop:          make(chan struct{}),
+// NewUserLimiter 创建用户级限流器；实际限流速率来自请求上的 AuthenticatedUser.RPM。
+func NewUserLimiter() *UserLimiter {
+	limiter := &UserLimiter{
+		entries: make(map[string]*entry),
+		stop:    make(chan struct{}),
 	}
-	go l.cleanupLoop()
-	return l
+	go limiter.cleanupLoop()
+	return limiter
 }
 
 func (l *UserLimiter) limitFor(rpm int) *rate.Limiter {
 	perMin := rpm
-	if perMin <= 0 {
-		perMin = l.defaultPerMin
-	}
 	// 防御：middleware 不应在非正 rpm 时调用 allow；若仍落入此处，使用 1 RPM 避免 rate.Every 非法。
 	if perMin <= 0 {
 		perMin = 1

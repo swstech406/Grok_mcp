@@ -6,13 +6,11 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/grok-mcp/internal/config"
 )
 
 func TestHandlerAuthProtectorSeparatesTrustedProxyClientBuckets(t *testing.T) {
 	trustedProxyNetwork := mustParsePanelCIDR(t, "203.0.113.0/24")
-	handler := &Handler{Config: &config.Config{TrustedProxies: []*net.IPNet{trustedProxyNetwork}}}
+	handler := &Handler{TrustedProxies: []*net.IPNet{trustedProxyNetwork}}
 	authProtector := handler.authProtector()
 
 	allowedRequestCount := 0

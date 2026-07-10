@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -19,12 +20,14 @@ import (
 
 // Handler 实现面板 API；路由由 NewMux 注册。
 type Handler struct {
-	Store           store.Store
-	Config          *config.Config
-	SettingsApplier ServerSettingsApplier // 可选；保存服务器设置后热更新上游客户端
-	ModelLister     ModelLister           // 可选；管理员面板通过它从上游拉取可用 Grok 模型
-	AuthCache       AuthCacheInvalidator  // 可选；管理员变更用户/等级/密钥后清空 MCP 鉴权缓存
-	AuthProtector   *AuthProtector        // 可选；未设置时使用内置面板登录/注册防护
+	Store                 store.Store
+	JWTSecret             string
+	TrustedProxies        []*net.IPNet
+	InitialServerSettings config.ServerSettings
+	SettingsApplier       ServerSettingsApplier // 可选；保存服务器设置后热更新上游客户端
+	ModelLister           ModelLister           // 可选；管理员面板通过它从上游拉取可用 Grok 模型
+	AuthCache             AuthCacheInvalidator  // 可选；管理员变更用户/等级/密钥后清空 MCP 鉴权缓存
+	AuthProtector         *AuthProtector        // 可选；未设置时使用内置面板登录/注册防护
 }
 
 // ServerSettingsApplier 接收热更新后的上游连接设置。
@@ -32,34 +35,32 @@ type ServerSettingsApplier interface {
 	ApplyServerSettings(config.ServerSettings) error
 }
 
-// NewMux 注册 /panel/v1 路由。鉴权分两层：
-//   - 外层（cmd/grok-mcp/http.go）套 auth.JWTMiddleware，校验面板 JWT 并注入用户到 ctx，
-//     仅放行 register/login。
-//   - 管理员路由（/panel/v1/admin/*）在本方法内额外套 auth.RequireAdmin，要求 ctx 中的
-//     用户 role=admin。新增管理员路由必须经 RegisterAdminRoutes 挂载，才会被 RequireAdmin 包裹；
-//     直接挂到外层 mux 会绕过 admin 校验。
-func NewMux(h *Handler) *http.ServeMux {
+// NewMux 在一处组合公开、JWT 鉴权和管理员路由，避免调用方维护公开路径白名单。
+func NewMux(h *Handler) http.Handler {
 	mux := http.NewServeMux()
 	authProtector := h.authProtector()
 	mux.HandleFunc("GET /panel/v1/auth/registration-settings", h.registrationSettings)
 	mux.Handle("POST /panel/v1/auth/register", authProtector.RateLimitAuthEndpoint(authEndpointRegister, http.HandlerFunc(h.register)))
 	mux.Handle("POST /panel/v1/auth/login", authProtector.RateLimitAuthEndpoint(authEndpointLogin, http.HandlerFunc(h.login)))
-	mux.HandleFunc("GET /panel/v1/me", h.me)
 
-	mux.HandleFunc("GET /panel/v1/keys", h.listKeys)
-	mux.HandleFunc("POST /panel/v1/keys", h.createKey)
-	mux.HandleFunc("PATCH /panel/v1/keys/{id}", h.updateKey)
-	mux.HandleFunc("DELETE /panel/v1/keys/{id}", h.deleteKey)
-	mux.HandleFunc("GET /panel/v1/keys/{id}/usage", h.keyUsage)
-	mux.HandleFunc("GET /panel/v1/usage", h.userUsage)
+	authenticated := http.NewServeMux()
+	authenticated.HandleFunc("GET /panel/v1/me", h.me)
+	authenticated.HandleFunc("GET /panel/v1/keys", h.listKeys)
+	authenticated.HandleFunc("POST /panel/v1/keys", h.createKey)
+	authenticated.HandleFunc("PATCH /panel/v1/keys/{id}", h.updateKey)
+	authenticated.HandleFunc("DELETE /panel/v1/keys/{id}", h.deleteKey)
+	authenticated.HandleFunc("GET /panel/v1/keys/{id}/usage", h.keyUsage)
+	authenticated.HandleFunc("GET /panel/v1/usage", h.userUsage)
+	h.registerAdminRoutes(authenticated)
 
-	h.RegisterAdminRoutes(mux)
+	authenticatedHandler := auth.JWTMiddleware(h.JWTSecret, h.Store)(authenticated)
+	mux.Handle("/panel/v1/", authenticatedHandler)
+	mux.Handle("/panel/v1", authenticatedHandler)
 	return mux
 }
 
-// RegisterAdminRoutes 在给定 mux 上注册管理员路由，并套上 RequireAdmin 中间件。
-// 单独导出便于把管理员路由挂到独立的子路由器上；任何新增管理员路由只要走本方法即受保护。
-func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+// registerAdminRoutes 在给定 mux 上注册管理员路由，并套上 RequireAdmin 中间件。
+func (h *Handler) registerAdminRoutes(mux *http.ServeMux) {
 	admin := http.NewServeMux()
 	admin.HandleFunc("GET /panel/v1/admin/users", h.adminListUsers)
 	admin.HandleFunc("GET /panel/v1/admin/users/{id}", h.adminGetUser)
@@ -252,10 +253,10 @@ func (h *Handler) currentRegistrationMode(r *http.Request) (store.RegistrationMo
 	if storedSettings != nil {
 		return store.NormalizeRegistrationMode(storedSettings.RegistrationMode)
 	}
-	if h.Config == nil {
+	if h.InitialServerSettings.RegistrationMode == "" {
 		return store.RegistrationModeFree, nil
 	}
-	return store.NormalizeRegistrationMode(h.Config.RegistrationMode)
+	return store.NormalizeRegistrationMode(h.InitialServerSettings.RegistrationMode)
 }
 
 // dummyBcryptHash 是用于拉平登录时序的固定 bcrypt 哈希。
@@ -312,7 +313,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authProtector.RecordLoginSuccess(username, clientIP)
-	token, exp, err := auth.IssuePanelToken(h.Config.JWTSecret, user, 0)
+	token, exp, err := auth.IssuePanelToken(h.JWTSecret, user, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "token issue failed")
 		return
