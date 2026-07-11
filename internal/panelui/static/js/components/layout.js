@@ -46,6 +46,7 @@ function renderSidebar(state, isAdmin) {
           <nav class="nav-list" aria-label="工作台导航">
             ${renderNavigationItem("overview", "总览", "home")}
             ${renderNavigationItem("keys", "API 密钥", "key")}
+            ${renderNavigationItem("tutorial", "配置教程", "code")}
             ${renderNavigationItem("usage", "调用分析", "chart")}
           </nav>
         </section>

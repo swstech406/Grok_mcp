@@ -31,8 +31,23 @@ func TestHandlerServesAllowedStaticAsset(t *testing.T) {
 		t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusOK)
 	}
 	assertPanelUICacheHeaders(t, responseRecorder)
-	if body := responseRecorder.Body.String(); !strings.Contains(body, "document.addEventListener") {
+	if body := responseRecorder.Body.String(); !strings.Contains(body, "initializeApplication();") {
 		t.Fatalf("expected app.js response body to look like the frontend bundle, got %q", body)
+	}
+}
+
+func TestHandlerServesConfigurationGuideModule(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/panel/js/pages/configuration-guide.js", nil)
+	responseRecorder := httptest.NewRecorder()
+
+	Handler().ServeHTTP(responseRecorder, request)
+
+	if responseRecorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusOK)
+	}
+	assertPanelUICacheHeaders(t, responseRecorder)
+	if body := responseRecorder.Body.String(); !strings.Contains(body, "export function renderConfigurationGuidePage") {
+		t.Fatalf("expected configuration guide module, got %q", body)
 	}
 }
 
