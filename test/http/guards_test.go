@@ -48,6 +48,9 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 		JWTSecret:  "jwt-secret-must-be-at-least-32-bytes!",
 		Timeout:    30 * time.Second,
 	}
+	if err := st.ConfigureAPIKeyEncryption(cfg.JWTSecret); err != nil {
+		t.Fatal(err)
+	}
 	client := grok.NewClient(cfg)
 	server := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, nil)
 	mcpserver.RegisterTools(server, client, false)

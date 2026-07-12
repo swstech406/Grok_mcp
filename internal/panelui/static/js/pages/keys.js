@@ -26,6 +26,7 @@ export function renderKeysPage(state) {
                 <td>${escapeHTML(formatRelativeTime(apiKey.last_used_at))}</td>
                 <td>${escapeHTML(formatDateTime(apiKey.created_at))}</td>
                 <td><div class="table-actions">
+                  <button class="table-action" type="button" data-action="copy-key" data-id="${escapeHTML(apiKey.id)}" aria-label="复制密钥" title="复制完整密钥">${renderIcon("copy")}</button>
                   <button class="table-action" type="button" data-action="open-key-usage" data-id="${escapeHTML(apiKey.id)}" aria-label="查看用量">${renderIcon("chart")}</button>
                   <button class="table-action" type="button" data-action="open-edit-key" data-id="${escapeHTML(apiKey.id)}" aria-label="编辑密钥">${renderIcon("edit")}</button>
                   <button class="table-action is-danger" type="button" data-action="confirm-delete-key" data-id="${escapeHTML(apiKey.id)}" aria-label="删除密钥">${renderIcon("trash")}</button>

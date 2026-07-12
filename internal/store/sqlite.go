@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/grok-mcp/internal/keycrypt"
 	"github.com/grok-mcp/internal/keyhash"
 
 	_ "modernc.org/sqlite"
@@ -20,7 +21,8 @@ const timeLayout = "2006-01-02 15:04:05"
 
 // SQLiteStore 使用纯 Go 驱动 modernc.org/sqlite，MaxOpenConns=1 以配合 SQLite 写锁语义。
 type SQLiteStore struct {
-	db *sql.DB
+	db           *sql.DB
+	apiKeyCipher *keycrypt.Cipher
 }
 
 // OpenSQLite 打开数据库、执行嵌入迁移并返回可用的 Store。
@@ -41,6 +43,22 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// ConfigureAPIKeyEncryption derives the at-rest encryption key used for
+// recoverable API key material. Call this before creating, rotating, or
+// revealing API keys.
+func (s *SQLiteStore) ConfigureAPIKeyEncryption(applicationSecret string) error {
+	apiKeyCipher, err := keycrypt.New(applicationSecret)
+	if err != nil {
+		return err
+	}
+	s.apiKeyCipher = apiKeyCipher
+	return nil
+}
+
+func apiKeyRecordIdentity(keyID, userID string) string {
+	return "api-key:" + keyID + ":user:" + userID
 }
 
 // randomID 生成 UUID v4 风格的十六进制 ID（无第三方依赖）。
@@ -84,7 +102,8 @@ func scanAPIKey(row interface {
 	var lastUsed sql.NullString
 
 	err := row.Scan(
-		&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &enabled,
+		&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix,
+		&k.keyCiphertext, &k.keyNonce, &k.keyEncryptionVersion, &enabled,
 		&createdAt, &updatedAt, &lastUsed, &k.TotalCalls,
 	)
 	if err != nil {
@@ -110,9 +129,9 @@ func scanAPIKey(row interface {
 	return &k, nil
 }
 
-const keyColumns = `id, user_id, name, key_hash, key_prefix, enabled, created_at, updated_at, last_used_at, total_calls`
+const keyColumns = `id, user_id, name, key_hash, key_prefix, key_ciphertext, key_nonce, key_encryption_version, enabled, created_at, updated_at, last_used_at, total_calls`
 
-// CreateKey 插入新密钥并返回元数据与一次性明文 raw（调用方须妥善保存）。
+// CreateKey 插入新密钥并返回元数据与初始明文 raw；后续可通过 RevealKey 按需恢复。
 func (s *SQLiteStore) CreateKey(ctx context.Context, userID, name string) (*APIKey, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -137,11 +156,15 @@ func (s *SQLiteStore) CreateKey(ctx context.Context, userID, name string) (*APIK
 	if len(prefix) > 8 {
 		prefix = prefix[:8]
 	}
+	ciphertext, nonce, encryptionVersion, err := s.apiKeyCipher.Encrypt(raw, apiKeyRecordIdentity(id, userID))
+	if err != nil {
+		return nil, "", err
+	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO apikeys (id, user_id, name, key_hash, key_prefix, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-		id, userID, name, keyhash.HashAPIKey(raw), prefix, formatTime(now), formatTime(now),
+		`INSERT INTO apikeys (id, user_id, name, key_hash, key_prefix, key_ciphertext, key_nonce, key_encryption_version, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		id, userID, name, keyhash.HashAPIKey(raw), prefix, ciphertext, nonce, encryptionVersion, formatTime(now), formatTime(now),
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("insert apikey: %w", err)
@@ -152,6 +175,116 @@ func (s *SQLiteStore) CreateKey(ctx context.Context, userID, name string) (*APIK
 		return nil, "", err
 	}
 	return k, raw, nil
+}
+
+// RevealKey decrypts a stored API key. Ownership must be checked by the caller
+// before returning the secret to a panel client.
+func (s *SQLiteStore) RevealKey(ctx context.Context, id string) (string, error) {
+	apiKey, err := s.GetKeyByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if apiKey.keyCiphertext == "" || apiKey.keyNonce == "" || apiKey.keyEncryptionVersion == 0 {
+		return "", fmt.Errorf("api key secret is unavailable")
+	}
+	return s.apiKeyCipher.Decrypt(
+		apiKey.keyCiphertext,
+		apiKey.keyNonce,
+		apiKeyRecordIdentity(apiKey.ID, apiKey.UserID),
+		apiKey.keyEncryptionVersion,
+	)
+}
+
+// RotateLegacyAPIKeys replaces hash-only or no-longer-decryptable keys with
+// recoverable encrypted keys. The record identity, metadata, and usage history
+// are preserved, while the old bearer token stops authenticating immediately.
+func (s *SQLiteStore) RotateLegacyAPIKeys(ctx context.Context) (int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, key_ciphertext, key_nonce, key_encryption_version FROM apikeys ORDER BY created_at ASC`)
+	if err != nil {
+		return 0, err
+	}
+
+	type legacyAPIKey struct {
+		id                   string
+		userID               string
+		keyCiphertext        string
+		keyNonce             string
+		keyEncryptionVersion int
+	}
+	legacyKeys := make([]legacyAPIKey, 0)
+	for rows.Next() {
+		var legacyKey legacyAPIKey
+		if err := rows.Scan(
+			&legacyKey.id,
+			&legacyKey.userID,
+			&legacyKey.keyCiphertext,
+			&legacyKey.keyNonce,
+			&legacyKey.keyEncryptionVersion,
+		); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		secretUnavailable := legacyKey.keyCiphertext == "" || legacyKey.keyNonce == "" || legacyKey.keyEncryptionVersion == 0
+		if !secretUnavailable {
+			_, decryptErr := s.apiKeyCipher.Decrypt(
+				legacyKey.keyCiphertext,
+				legacyKey.keyNonce,
+				apiKeyRecordIdentity(legacyKey.id, legacyKey.userID),
+				legacyKey.keyEncryptionVersion,
+			)
+			secretUnavailable = decryptErr != nil
+		}
+		if secretUnavailable {
+			legacyKeys = append(legacyKeys, legacyKey)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(legacyKeys) == 0 {
+		return 0, nil
+	}
+
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	updatedAt := formatTime(time.Now().UTC())
+	for _, legacyKey := range legacyKeys {
+		rawKey, err := generateRawKey()
+		if err != nil {
+			return 0, err
+		}
+		keyPrefix := rawKey
+		if len(keyPrefix) > 8 {
+			keyPrefix = keyPrefix[:8]
+		}
+		ciphertext, nonce, encryptionVersion, err := s.apiKeyCipher.Encrypt(
+			rawKey,
+			apiKeyRecordIdentity(legacyKey.id, legacyKey.userID),
+		)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := transaction.ExecContext(ctx,
+			`UPDATE apikeys
+			 SET key_hash = ?, key_prefix = ?, key_ciphertext = ?, key_nonce = ?, key_encryption_version = ?, updated_at = ?
+			 WHERE id = ?`,
+			keyhash.HashAPIKey(rawKey), keyPrefix, ciphertext, nonce, encryptionVersion, updatedAt, legacyKey.id,
+		); err != nil {
+			return 0, err
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return 0, err
+	}
+	return len(legacyKeys), nil
 }
 
 // GetKeyByHash 供鉴权使用；未找到时返回 (nil, nil)。

@@ -55,7 +55,7 @@ xAI / Grok
 | Credential | Used between | Purpose |
 |---|---|---|
 | CPA API key | `grok-mcp` -> CPA | Authenticates upstream `/v1/responses` and `/v1/models` requests. |
-| MCP client API key | MCP client -> `/mcp` | Created in the panel and shown only once. Stored as a hash. |
+| MCP client API key | MCP client -> `/mcp` | Created and copied on demand in the panel. The database stores an authentication hash plus recoverable ciphertext encrypted with a key derived from `GROK_JWT_SECRET`. |
 | Panel JWT | Browser/API client -> `/panel/v1` | Returned by panel login. It cannot authenticate `/mcp`. |
 
 ## Requirements
@@ -311,6 +311,7 @@ Authenticated user routes cover profile information, API-key management, and usa
 GET    /panel/v1/me
 GET    /panel/v1/keys
 POST   /panel/v1/keys
+POST   /panel/v1/keys/{id}/reveal
 PATCH  /panel/v1/keys/{id}
 DELETE /panel/v1/keys/{id}
 GET    /panel/v1/keys/{id}/usage

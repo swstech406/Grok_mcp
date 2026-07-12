@@ -52,6 +52,11 @@ func (TestStore) CountUsersByTier(context.Context, string) (int64, error) { retu
 func (TestStore) CreateKey(context.Context, string, string) (*APIKey, string, error) {
 	return nil, "", nil
 }
+func (TestStore) ConfigureAPIKeyEncryption(string) error { return nil }
+func (TestStore) RotateLegacyAPIKeys(context.Context) (int, error) {
+	return 0, nil
+}
+func (TestStore) RevealKey(context.Context, string) (string, error)     { return "", nil }
 func (TestStore) GetKeyByHash(context.Context, string) (*APIKey, error) { return nil, nil }
 func (TestStore) ListKeys(context.Context) ([]*APIKey, error)           { return nil, nil }
 func (TestStore) ListKeysByUser(context.Context, string) ([]*APIKey, error) {

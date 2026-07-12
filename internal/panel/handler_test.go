@@ -32,6 +32,9 @@ func panelTestServerWithAuthProtector(t *testing.T, authProtector *AuthProtector
 	cfg := &config.Config{
 		JWTSecret: "jwt-secret-must-be-at-least-32-bytes!",
 	}
+	if err := st.ConfigureAPIKeyEncryption(cfg.JWTSecret); err != nil {
+		t.Fatal(err)
+	}
 	h := &Handler{
 		Store:         st,
 		JWTSecret:     cfg.JWTSecret,
@@ -49,6 +52,9 @@ func panelTestServerWithModelLister(t *testing.T, modelLister ModelLister) (*htt
 	t.Cleanup(func() { _ = st.Close() })
 	cfg := &config.Config{
 		JWTSecret: "jwt-secret-must-be-at-least-32-bytes!",
+	}
+	if err := st.ConfigureAPIKeyEncryption(cfg.JWTSecret); err != nil {
+		t.Fatal(err)
 	}
 	h := &Handler{
 		Store:       st,
@@ -388,7 +394,7 @@ func TestRegisterRejectsDuplicateUsernameAndInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestKeyLifecycleOnlyReturnsRawKeyOnCreate(t *testing.T) {
+func TestKeyLifecycleSupportsOwnedRevealWithoutListingSecret(t *testing.T) {
 	ts, _, _ := panelTestServer(t)
 	defer ts.Close()
 
@@ -431,6 +437,37 @@ func TestKeyLifecycleOnlyReturnsRawKeyOnCreate(t *testing.T) {
 	}
 	if listed.Keys[0].ID != created.Key.ID || listed.Keys[0].Name != "primary" {
 		t.Fatalf("unexpected listed key: %+v", listed.Keys[0])
+	}
+
+	revealRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/keys/"+created.Key.ID+"/reveal", nil)
+	revealRequest = withJWT(revealRequest, loginResponse.Token)
+	revealResponse, err := http.DefaultClient.Do(revealRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer revealResponse.Body.Close()
+	if revealResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected reveal key status 200, got %d", revealResponse.StatusCode)
+	}
+	var revealed RevealKeyResponse
+	if err := json.NewDecoder(revealResponse.Body).Decode(&revealed); err != nil {
+		t.Fatal(err)
+	}
+	if revealed.APIKey != created.APIKey {
+		t.Fatalf("revealed key does not match the created key")
+	}
+
+	registerPanelUser(t, ts, "other-key-user", "password123")
+	otherLoginResponse := loginPanelUser(t, ts, "other-key-user", "password123")
+	otherRevealRequest, _ := http.NewRequest(http.MethodPost, ts.URL+"/panel/v1/keys/"+created.Key.ID+"/reveal", nil)
+	otherRevealRequest = withJWT(otherRevealRequest, otherLoginResponse.Token)
+	otherRevealResponse, err := http.DefaultClient.Do(otherRevealRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer otherRevealResponse.Body.Close()
+	if otherRevealResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected another user to receive 404 when revealing the key, got %d", otherRevealResponse.StatusCode)
 	}
 
 	updatedName := "renamed"

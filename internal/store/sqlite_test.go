@@ -18,6 +18,9 @@ func openTestDB(t *testing.T) *SQLiteStore {
 	if err != nil {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
+	if err := s.ConfigureAPIKeyEncryption("test-api-key-encryption-secret-at-least-32-bytes"); err != nil {
+		t.Fatalf("ConfigureAPIKeyEncryption: %v", err)
+	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
@@ -50,6 +53,62 @@ func TestCreateAndGetKeyByHash(t *testing.T) {
 	found, err := s.GetKeyByHash(ctx, keyhash.HashAPIKey(raw))
 	if err != nil || found == nil || found.ID != k.ID {
 		t.Fatalf("GetKeyByHash: err=%v found=%v", err, found)
+	}
+
+	revealed, err := s.RevealKey(ctx, k.ID)
+	if err != nil {
+		t.Fatalf("RevealKey: %v", err)
+	}
+	if revealed != raw {
+		t.Fatalf("revealed API key does not match created key")
+	}
+}
+
+func TestRotateLegacyAPIKeysPreservesRecordAndInvalidatesOldSecret(t *testing.T) {
+	s := openTestDB(t)
+	ctx := context.Background()
+	userID := testUserID(t, s)
+	legacyKeyID, err := randomID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRawKey := "grok_legacy_key_that_cannot_be_recovered_after_rotation"
+	now := formatTime(time.Now().UTC())
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO apikeys (id, user_id, name, key_hash, key_prefix, enabled, created_at, updated_at, total_calls)
+		 VALUES (?, ?, ?, ?, ?, 1, ?, ?, 17)`,
+		legacyKeyID, userID, "legacy", keyhash.HashAPIKey(legacyRawKey), legacyRawKey[:8], now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	rotatedCount, err := s.RotateLegacyAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("RotateLegacyAPIKeys: %v", err)
+	}
+	if rotatedCount != 1 {
+		t.Fatalf("rotated key count = %d, want 1", rotatedCount)
+	}
+	if legacyLookup, err := s.GetKeyByHash(ctx, keyhash.HashAPIKey(legacyRawKey)); err != nil || legacyLookup != nil {
+		t.Fatalf("legacy key must stop authenticating, lookup=%v err=%v", legacyLookup, err)
+	}
+
+	rotatedKey, err := s.GetKeyByID(ctx, legacyKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotatedKey.Name != "legacy" || rotatedKey.TotalCalls != 17 || !rotatedKey.Enabled {
+		t.Fatalf("rotation must preserve metadata and usage, got %+v", rotatedKey)
+	}
+	replacementRawKey, err := s.RevealKey(ctx, legacyKeyID)
+	if err != nil {
+		t.Fatalf("RevealKey after rotation: %v", err)
+	}
+	if replacementRawKey == legacyRawKey || replacementRawKey == "" {
+		t.Fatalf("rotation must generate a distinct replacement key")
+	}
+	if replacementLookup, err := s.GetKeyByHash(ctx, keyhash.HashAPIKey(replacementRawKey)); err != nil || replacementLookup == nil {
+		t.Fatalf("replacement key must authenticate, lookup=%v err=%v", replacementLookup, err)
 	}
 }
 

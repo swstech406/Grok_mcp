@@ -71,6 +71,16 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+	if err := st.ConfigureAPIKeyEncryption(cfg.JWTSecret); err != nil {
+		return fmt.Errorf("configure API key encryption: %w", err)
+	}
+	rotatedAPIKeyCount, err := st.RotateLegacyAPIKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("rotate legacy API keys: %w", err)
+	}
+	if rotatedAPIKeyCount > 0 {
+		log.Printf("rotated %d legacy API key(s); clients must copy the replacement keys from the panel", rotatedAPIKeyCount)
+	}
 
 	serverSettings, err := InitializeServerSettings(ctx, st, cfg)
 	if err != nil {

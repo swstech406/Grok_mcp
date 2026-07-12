@@ -55,7 +55,7 @@ xAI / Grok
 | 凭证 | 使用位置 | 用途 |
 |---|---|---|
 | CPA API Key | `grok-mcp` -> CPA | 认证上游 `/v1/responses` 和 `/v1/models` 请求。 |
-| MCP 客户端 API Key | MCP 客户端 -> `/mcp` | 在面板创建，仅显示一次，数据库只保存哈希。 |
+| MCP 客户端 API Key | MCP 客户端 -> `/mcp` | 在面板创建并可按需复制；数据库保存鉴权哈希和由 `GROK_JWT_SECRET` 派生密钥加密的可恢复密文。 |
 | 面板 JWT | 浏览器/API 客户端 -> `/panel/v1` | 登录面板后返回，不能用于认证 `/mcp`。 |
 
 ## 环境要求
@@ -134,7 +134,7 @@ curl -sS -X POST "http://127.0.0.1:8080/panel/v1/keys" \
   -d '{"name":"local-client"}'
 ```
 
-响应中的 `api_key` 只返回一次，请安全保存。
+响应中的 `api_key` 可立即使用；之后也可以在 **API 密钥** 页面按需复制。
 
 ### 4. 连接 Claude Code
 
@@ -311,6 +311,7 @@ POST /panel/v1/auth/login
 GET    /panel/v1/me
 GET    /panel/v1/keys
 POST   /panel/v1/keys
+POST   /panel/v1/keys/{id}/reveal
 PATCH  /panel/v1/keys/{id}
 DELETE /panel/v1/keys/{id}
 GET    /panel/v1/keys/{id}/usage
@@ -357,7 +358,8 @@ Compose 默认没有转发所有可选代理和可信代理变量。如需 `GROK
 - `GROK_TRUSTED_PROXIES` 只应包含信任边界内的反向代理。
 - 建议在代理层对 `/mcp`、面板登录和注册接口增加限流。
 - 除排障外保持 debug 关闭。即使认证 Header 会脱敏，debug 上下文仍可能保留请求或响应正文。
-- MCP 客户端 API Key 仅显示一次，数据库只保存哈希；丢失明文后需要创建新 Key。
+- MCP 客户端 API Key 的鉴权使用不可逆哈希；可复制内容以 AES-256-GCM 密文保存，并绑定密钥记录和所属用户。
+- 更换 `GROK_JWT_SECRET` 或升级旧版 hash-only 数据库时，无法解密的 API Key 会自动轮换；客户端需要从面板复制替代密钥并更新配置。
 
 ## 开发与测试
 

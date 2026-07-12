@@ -2256,6 +2256,13 @@ svg {
   color: var(--ink);
 }
 
+.table-action:disabled {
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: wait;
+  opacity: 0.5;
+}
+
 .table-action.is-danger:hover {
   background: var(--danger-soft);
   color: var(--danger);

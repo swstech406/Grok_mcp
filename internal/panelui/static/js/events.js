@@ -12,6 +12,7 @@ import {
   login,
   panelAPI,
   register,
+  revealKey,
   updateAdminUser,
   updateInviteCode,
   updateKey,
@@ -89,6 +90,9 @@ export function createApplicationEvents({
         break;
       case "open-edit-key":
         openEditKeyModal(actionElement.dataset.id);
+        break;
+      case "copy-key":
+        await copyAPIKey(actionElement.dataset.id, actionElement);
         break;
       case "open-key-usage":
         await openKeyUsageModal(actionElement.dataset.id);
@@ -404,6 +408,25 @@ export function createApplicationEvents({
       if (!handleSessionError(error)) {
         setModalBusy(false, getErrorMessage(error));
       }
+    }
+  }
+
+  async function copyAPIKey(keyIdentifier, actionElement) {
+    if (!keyIdentifier) {
+      showToast("无法复制密钥", "密钥标识缺失，请刷新页面后重试。", "error");
+      return;
+    }
+
+    actionElement.disabled = true;
+    try {
+      const revealResponse = await revealKey(keyIdentifier);
+      await copyValue(String(revealResponse?.api_key || ""));
+    } catch (error) {
+      if (!handleSessionError(error)) {
+        showToast("无法复制密钥", getErrorMessage(error), "error");
+      }
+    } finally {
+      actionElement.disabled = false;
     }
   }
 

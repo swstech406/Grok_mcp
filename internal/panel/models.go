@@ -53,6 +53,10 @@ type CreateKeyResponse struct {
 	APIKey string      `json:"api_key"`
 }
 
+type RevealKeyResponse struct {
+	APIKey string `json:"api_key"`
+}
+
 type UpdateKeyRequest struct {
 	Name    *string `json:"name,omitempty"`
 	Enabled *bool   `json:"enabled,omitempty"`

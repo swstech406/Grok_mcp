@@ -183,6 +183,10 @@ export function createKey(keyData) {
   return panelAPI.request("/panel/v1/keys", { method: "POST", body: keyData });
 }
 
+export function revealKey(keyIdentifier) {
+  return panelAPI.request(`/panel/v1/keys/${encodeURIComponent(keyIdentifier)}/reveal`, { method: "POST" });
+}
+
 export function updateKey(keyIdentifier, keyData) {
   return panelAPI.request(`/panel/v1/keys/${encodeURIComponent(keyIdentifier)}`, {
     method: "PATCH",

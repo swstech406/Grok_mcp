@@ -47,6 +47,7 @@ func NewMux(h *Handler) http.Handler {
 	authenticated.HandleFunc("GET /panel/v1/me", h.me)
 	authenticated.HandleFunc("GET /panel/v1/keys", h.listKeys)
 	authenticated.HandleFunc("POST /panel/v1/keys", h.createKey)
+	authenticated.HandleFunc("POST /panel/v1/keys/{id}/reveal", h.revealKey)
 	authenticated.HandleFunc("PATCH /panel/v1/keys/{id}", h.updateKey)
 	authenticated.HandleFunc("DELETE /panel/v1/keys/{id}", h.deleteKey)
 	authenticated.HandleFunc("GET /panel/v1/keys/{id}/usage", h.keyUsage)
@@ -378,6 +379,27 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, CreateKeyResponse{Key: toKeyResponse(k), APIKey: raw})
+}
+
+func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id := r.PathValue("id")
+	apiKey, err := h.Store.GetKeyByID(r.Context(), id)
+	if err != nil || apiKey.UserID != user.ID {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	rawKey, err := h.Store.RevealKey(r.Context(), id)
+	if err != nil {
+		log.Printf("reveal key %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to reveal key")
+		return
+	}
+	writeJSON(w, http.StatusOK, RevealKeyResponse{APIKey: rawKey})
 }
 
 func (h *Handler) updateKey(w http.ResponseWriter, r *http.Request) {

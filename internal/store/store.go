@@ -117,7 +117,7 @@ type Tier struct {
 	UpdatedAt    time.Time
 }
 
-// APIKey 表示一条已发放的客户端密钥。数据库只存 keyhash.HashAPIKey 结果；明文仅在 CreateKey 时返回一次。
+// APIKey 表示一条已发放的客户端密钥。KeyHash 用于鉴权，可恢复内容以 AEAD 密文保存。
 type APIKey struct {
 	ID         string
 	UserID     string
@@ -129,6 +129,10 @@ type APIKey struct {
 	UpdatedAt  time.Time
 	LastUsedAt *time.Time
 	TotalCalls int64
+
+	keyCiphertext        string
+	keyNonce             string
+	keyEncryptionVersion int
 }
 
 // InviteCode 表示一条注册邀请码。管理员需要在创建后继续复制邀请码，因此数据库保存明文；哈希用于注册时查找。
@@ -256,6 +260,9 @@ type Store interface {
 	CountUsersByTier(ctx context.Context, tierID string) (int64, error)
 
 	CreateKey(ctx context.Context, userID, name string) (*APIKey, string, error)
+	ConfigureAPIKeyEncryption(applicationSecret string) error
+	RotateLegacyAPIKeys(ctx context.Context) (int, error)
+	RevealKey(ctx context.Context, id string) (string, error)
 	GetKeyByHash(ctx context.Context, hash string) (*APIKey, error)
 	ListKeys(ctx context.Context) ([]*APIKey, error)
 	ListKeysByUser(ctx context.Context, userID string) ([]*APIKey, error)
