@@ -37,16 +37,19 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 
 CREATE TABLE IF NOT EXISTS apikeys (
-    id           TEXT PRIMARY KEY,
-    user_id      TEXT REFERENCES users(id) ON DELETE CASCADE,
-    name         TEXT NOT NULL,
-    key_hash     TEXT NOT NULL UNIQUE,
-    key_prefix   TEXT NOT NULL,
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL,
-    last_used_at TEXT,
-    total_calls  INTEGER NOT NULL DEFAULT 0
+    id                     TEXT PRIMARY KEY,
+    user_id                TEXT REFERENCES users(id) ON DELETE CASCADE,
+    name                   TEXT NOT NULL,
+    key_hash               TEXT NOT NULL UNIQUE,
+    key_prefix             TEXT NOT NULL,
+    key_ciphertext         TEXT NOT NULL DEFAULT '',
+    key_nonce              TEXT NOT NULL DEFAULT '',
+    key_encryption_version INTEGER NOT NULL DEFAULT 0,
+    enabled                INTEGER NOT NULL DEFAULT 1,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL,
+    last_used_at           TEXT,
+    total_calls            INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_apikeys_key_hash ON apikeys(key_hash);
@@ -65,18 +68,34 @@ CREATE TABLE IF NOT EXISTS usage_log (
 CREATE INDEX IF NOT EXISTS idx_usage_log_key_id ON usage_log(key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_timestamp ON usage_log(timestamp);
 
+CREATE TABLE IF NOT EXISTS usage_log_debug_body_chunks (
+    usage_id    INTEGER NOT NULL,
+    body_kind   TEXT NOT NULL CHECK (body_kind IN ('request', 'response')),
+    chunk_index INTEGER NOT NULL,
+    body_data   BLOB NOT NULL,
+    PRIMARY KEY (usage_id, body_kind, chunk_index),
+    FOREIGN KEY (usage_id) REFERENCES usage_log(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_debug_body_chunks_usage_id
+    ON usage_log_debug_body_chunks(usage_id);
+
 CREATE TABLE IF NOT EXISTS server_settings (
-    id                TEXT PRIMARY KEY,
-    cpa_base_url      TEXT NOT NULL,
-    cpa_api_key       TEXT NOT NULL,
-    model             TEXT NOT NULL,
-    timeout_seconds   INTEGER NOT NULL,
-    proxy_url         TEXT NOT NULL DEFAULT '',
-    proxy_enabled     INTEGER NOT NULL DEFAULT 0,
-    registration_mode TEXT NOT NULL DEFAULT 'free',
-    debug             INTEGER NOT NULL DEFAULT 0,
-    created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL
+    id                             TEXT PRIMARY KEY,
+    cpa_base_url                   TEXT NOT NULL,
+    cpa_api_key                    TEXT NOT NULL,
+    cpa_api_key_ciphertext         TEXT NOT NULL DEFAULT '',
+    cpa_api_key_nonce              TEXT NOT NULL DEFAULT '',
+    cpa_api_key_encryption_version INTEGER NOT NULL DEFAULT 0,
+    upstream_protocol              TEXT NOT NULL DEFAULT 'responses',
+    model                          TEXT NOT NULL,
+    timeout_seconds                INTEGER NOT NULL,
+    proxy_url                      TEXT NOT NULL DEFAULT '',
+    proxy_enabled                  INTEGER NOT NULL DEFAULT 0,
+    registration_mode              TEXT NOT NULL DEFAULT 'free',
+    debug                          INTEGER NOT NULL DEFAULT 0,
+    created_at                     TEXT NOT NULL,
+    updated_at                     TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS invite_codes (

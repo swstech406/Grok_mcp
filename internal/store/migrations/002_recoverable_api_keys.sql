@@ -1,3 +1,0 @@
-ALTER TABLE apikeys ADD COLUMN key_ciphertext TEXT NOT NULL DEFAULT '';
-ALTER TABLE apikeys ADD COLUMN key_nonce TEXT NOT NULL DEFAULT '';
-ALTER TABLE apikeys ADD COLUMN key_encryption_version INTEGER NOT NULL DEFAULT 0;
