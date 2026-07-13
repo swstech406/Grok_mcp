@@ -9,6 +9,18 @@
 > [!IMPORTANT]
 > 本项目仅支持 **Streamable HTTP**，不提供 stdio 传输，也不内置 TLS 终止。
 
+- `grok-mcp` 必须作为独立 HTTP 服务启动，MCP 客户端通过 `http://<host>:<port>/mcp` 连接。
+- 不能将本项目配置为由 MCP 客户端通过命令启动、再使用标准输入和标准输出通信的 stdio 服务。
+- 服务自身只监听普通 HTTP，不读取 HTTPS 证书或私钥，也不负责 TLS 握手。
+- 公网部署时，应在 `grok-mcp` 前放置 Nginx、Caddy、Traefik、Kubernetes Ingress 或云负载均衡器等可信反向代理，由代理对外提供 HTTPS，再通过内部 HTTP 转发到 `grok-mcp`。
+
+典型的生产请求链路如下：
+
+```text
+MCP 客户端 -- HTTPS --> 反向代理 / 负载均衡器 -- HTTP --> grok-mcp /mcp
+                         （TLS 在此终止）
+```
+
 ## 功能特性
 
 - `/mcp` Streamable HTTP MCP 端点

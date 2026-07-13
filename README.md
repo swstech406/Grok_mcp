@@ -9,6 +9,18 @@ It does **not** call the official xAI API directly. Instead, it connects to an e
 > [!IMPORTANT]
 > This project supports **Streamable HTTP only**. It does not provide a stdio transport or built-in TLS termination.
 
+- `grok-mcp` must run as a standalone HTTP service, and MCP clients connect to `http://<host>:<port>/mcp`.
+- It cannot be configured as a stdio server that an MCP client launches and communicates with over standard input and output.
+- The service listens for plain HTTP and does not load HTTPS certificates or private keys or perform TLS handshakes.
+- For an internet-facing deployment, place a trusted reverse proxy such as Nginx, Caddy, Traefik, Kubernetes Ingress, or a cloud load balancer in front of `grok-mcp`. The proxy should expose HTTPS and forward requests to `grok-mcp` over internal HTTP.
+
+A typical production request path is:
+
+```text
+MCP client -- HTTPS --> reverse proxy / load balancer -- HTTP --> grok-mcp /mcp
+                       (TLS terminates here)
+```
+
 ## Features
 
 - Streamable HTTP MCP endpoint at `/mcp`
