@@ -17,6 +17,7 @@ func scanInviteCode(row interface {
 }) (*InviteCode, error) {
 	var inviteCode InviteCode
 	var enabled int
+	var createdByUserID sql.NullString
 	var createdAt string
 	var updatedAt string
 
@@ -28,7 +29,7 @@ func scanInviteCode(row interface {
 		&inviteCode.RegistrationLimit,
 		&inviteCode.RegistrationCount,
 		&enabled,
-		&inviteCode.CreatedByUserID,
+		&createdByUserID,
 		&createdAt,
 		&updatedAt,
 	)
@@ -37,6 +38,9 @@ func scanInviteCode(row interface {
 	}
 
 	inviteCode.Enabled = enabled != 0
+	if createdByUserID.Valid {
+		inviteCode.CreatedByUserID = createdByUserID.String
+	}
 	var parseErr error
 	inviteCode.CreatedAt, parseErr = parseTime(createdAt)
 	if parseErr != nil {

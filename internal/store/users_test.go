@@ -258,6 +258,43 @@ func TestDeleteUserRemovesUserKeysAndUsage(t *testing.T) {
 	}
 }
 
+func TestDeleteUserClearsInviteCodeCreatorReference(t *testing.T) {
+	store := openTestDB(t)
+	ctx := context.Background()
+
+	creator, err := store.CreateUser(ctx, "invite-creator", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inviteCode, _, err := store.CreateInviteCode(ctx, creator.ID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteUser(ctx, creator.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	inviteCodes, err := store.ListInviteCodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inviteCodes) != 1 || inviteCodes[0].ID != inviteCode.ID {
+		t.Fatalf("invite code should remain after creator deletion, got %+v", inviteCodes)
+	}
+	if inviteCodes[0].CreatedByUserID != "" {
+		t.Fatalf("deleted creator reference should be cleared, got %q", inviteCodes[0].CreatedByUserID)
+	}
+}
+
+func TestCreateInviteCodeRejectsMissingCreator(t *testing.T) {
+	store := openTestDB(t)
+
+	if _, _, err := store.CreateInviteCode(context.Background(), "missing-creator", 1); err == nil {
+		t.Fatal("expected missing invite-code creator to violate the foreign key")
+	}
+}
+
 func TestDeleteUserRejectsLastAdmin(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

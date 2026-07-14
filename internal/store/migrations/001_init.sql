@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS invite_codes (
     registration_limit INTEGER NOT NULL,
     registration_count INTEGER NOT NULL DEFAULT 0,
     enabled            INTEGER NOT NULL DEFAULT 1,
-    created_by_user_id TEXT NOT NULL DEFAULT '',
+    created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL,
     CHECK (registration_limit > 0),
@@ -115,3 +115,4 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_invite_codes_created_at ON invite_codes(created_at);
+CREATE INDEX IF NOT EXISTS idx_invite_codes_created_by_user_id ON invite_codes(created_by_user_id);
