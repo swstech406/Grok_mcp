@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/grok-mcp/internal/settings"
 	"github.com/grok-mcp/internal/store"
 )
 
@@ -33,25 +34,25 @@ const (
 
 // UpstreamProtocol identifies the CPA-compatible HTTP protocol used for
 // search requests.
-type UpstreamProtocol string
+type UpstreamProtocol = settings.UpstreamProtocol
 
 const (
-	UpstreamProtocolResponses         UpstreamProtocol = "responses"
-	UpstreamProtocolChatCompletions   UpstreamProtocol = "chat_completions"
-	UpstreamProtocolAnthropicMessages UpstreamProtocol = "anthropic_messages"
+	UpstreamProtocolResponses         = settings.UpstreamProtocolResponses
+	UpstreamProtocolChatCompletions   = settings.UpstreamProtocolChatCompletions
+	UpstreamProtocolAnthropicMessages = settings.UpstreamProtocolAnthropicMessages
 )
 
 // Config 保存进程启动所需的全部配置项。
 type Config struct {
 	CPABaseURL                 string
-	CPAAPIKey                  string
+	CPAAPIKey                  string `json:"-"`
 	UpstreamProtocol           UpstreamProtocol
 	Model                      string
 	Timeout                    time.Duration
 	Debug                      bool
 	HTTPAddr                   string
 	DBPath                     string
-	JWTSecret                  string
+	JWTSecret                  string `json:"-"`
 	MCPIPRPM                   int
 	MCPGlobalSearchConcurrency int
 	MCPUserSearchConcurrency   int
@@ -67,19 +68,7 @@ type Config struct {
 // ServerSettings contains runtime-tunable settings exposed in the admin panel.
 // It intentionally excludes listener address, database path, and JWT secret
 // because changing those safely requires a process restart.
-type ServerSettings struct {
-	CPABaseURL                 string
-	CPAAPIKey                  string
-	UpstreamProtocol           UpstreamProtocol
-	Model                      string
-	TimeoutSeconds             int
-	MCPGlobalSearchConcurrency int
-	MCPUserSearchConcurrency   int
-	ProxyURL                   string
-	ProxyEnabled               bool
-	RegistrationMode           store.RegistrationMode
-	Debug                      bool
-}
+type ServerSettings = settings.Runtime
 
 // Load 读取并校验配置。
 func Load() (*Config, error) {
@@ -106,41 +95,45 @@ func Load() (*Config, error) {
 		RegistrationMode:           store.RegistrationModeFree,
 	}
 
-	if raw := strings.TrimSpace(os.Getenv("GROK_HTTP_TIMEOUT")); raw != "" {
-		seconds, err := strconv.Atoi(raw)
-		if err != nil || seconds <= 0 {
-			return nil, fmt.Errorf("GROK_HTTP_TIMEOUT must be a positive integer (seconds), got %q", raw)
-		}
-		cfg.Timeout = time.Duration(seconds) * time.Second
+	timeoutSeconds, err := parsePositiveIntegerEnvironmentVariable(
+		"GROK_HTTP_TIMEOUT",
+		int(defaultTimeout/time.Second),
+		" (seconds)",
+	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Timeout = time.Duration(timeoutSeconds) * time.Second
+
+	cfg.MCPIPRPM, err = parsePositiveIntegerEnvironmentVariable(
+		"GROK_MCP_IP_RPM",
+		defaultMCPIPRPM,
+		"",
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	if raw := strings.TrimSpace(os.Getenv("GROK_MCP_IP_RPM")); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("GROK_MCP_IP_RPM must be a positive integer, got %q", raw)
-		}
-		cfg.MCPIPRPM = n
+	cfg.MCPGlobalSearchConcurrency, err = parsePositiveIntegerEnvironmentVariable(
+		"GROK_MCP_GLOBAL_SEARCH_CONCURRENCY",
+		defaultMCPGlobalSearchConcurrency,
+		"",
+	)
+	if err != nil {
+		return nil, err
 	}
-
-	if raw := strings.TrimSpace(os.Getenv("GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")); raw != "" {
-		limit, err := strconv.Atoi(raw)
-		if err != nil || limit <= 0 {
-			return nil, fmt.Errorf("GROK_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer, got %q", raw)
-		}
-		cfg.MCPGlobalSearchConcurrency = limit
-	}
-	if raw := strings.TrimSpace(os.Getenv("GROK_MCP_USER_SEARCH_CONCURRENCY")); raw != "" {
-		limit, err := strconv.Atoi(raw)
-		if err != nil || limit <= 0 {
-			return nil, fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must be a positive integer, got %q", raw)
-		}
-		cfg.MCPUserSearchConcurrency = limit
+	cfg.MCPUserSearchConcurrency, err = parsePositiveIntegerEnvironmentVariable(
+		"GROK_MCP_USER_SEARCH_CONCURRENCY",
+		defaultMCPUserSearchConcurrency,
+		"",
+	)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.MCPUserSearchConcurrency > cfg.MCPGlobalSearchConcurrency {
 		return nil, fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")
 	}
 
-	var err error
 	if cfg.UsageRawRetention, err = parseRetentionDays(
 		"GROK_USAGE_RAW_RETENTION_DAYS",
 		defaultUsageRawRetention,
@@ -341,6 +334,29 @@ func envOrDefault(key, fallback string) string {
 func parseBoolEnv(key string) bool {
 	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	return raw == "1" || raw == "true" || raw == "yes"
+}
+
+func parsePositiveIntegerEnvironmentVariable(
+	environmentVariable string,
+	defaultValue int,
+	errorSuffix string,
+) (int, error) {
+	rawValue := strings.TrimSpace(os.Getenv(environmentVariable))
+	if rawValue == "" {
+		return defaultValue, nil
+	}
+
+	parsedValue, err := strconv.Atoi(rawValue)
+	if err != nil || parsedValue <= 0 {
+		return 0, fmt.Errorf(
+			"%s must be a positive integer%s, got %q",
+			environmentVariable,
+			errorSuffix,
+			rawValue,
+		)
+	}
+
+	return parsedValue, nil
 }
 
 func parseRetentionDays(environmentVariable string, fallback time.Duration) (time.Duration, error) {

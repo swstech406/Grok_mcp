@@ -58,12 +58,11 @@ func (s *SQLiteStore) ListInviteCodesPage(ctx context.Context, cursor *TimeIDCur
 	query := `SELECT ` + inviteCodeColumns + ` FROM invite_codes`
 	queryArgs := make([]any, 0, 4)
 	if cursor != nil {
-		cursorTimestamp := formatTime(cursor.Timestamp.UTC())
-		query += ` WHERE created_at < ? OR (created_at = ? AND id < ?)`
-		queryArgs = append(queryArgs, cursorTimestamp, cursorTimestamp, cursor.ID)
+		query += ` WHERE ` + timeIDCursorPredicate(timeIDDescending)
+		queryArgs = appendTimeIDCursorArguments(queryArgs, cursor)
 	}
 	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
-	queryArgs = append(queryArgs, pageLimit+1)
+	queryArgs = append(queryArgs, keysetFetchLimit(pageLimit))
 
 	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -71,7 +70,7 @@ func (s *SQLiteStore) ListInviteCodesPage(ctx context.Context, cursor *TimeIDCur
 	}
 	defer rows.Close()
 
-	inviteCodes := make([]*InviteCode, 0, pageLimit+1)
+	inviteCodes := make([]*InviteCode, 0, keysetFetchLimit(pageLimit))
 	for rows.Next() {
 		inviteCode, scanErr := scanInviteCode(rows)
 		if scanErr != nil {
@@ -83,15 +82,13 @@ func (s *SQLiteStore) ListInviteCodesPage(ctx context.Context, cursor *TimeIDCur
 		return nil, err
 	}
 
-	page := &InviteCodePage{}
-	if len(inviteCodes) > pageLimit {
-		page.HasMore = true
-		inviteCodes = inviteCodes[:pageLimit]
-	}
-	page.InviteCodes = inviteCodes
-	if page.HasMore && len(inviteCodes) > 0 {
-		lastInviteCode := inviteCodes[len(inviteCodes)-1]
-		page.NextCursor = &TimeIDCursor{Timestamp: lastInviteCode.CreatedAt, ID: lastInviteCode.ID}
+	inviteCodes, hasMore, nextCursor := finalizeTimeIDPage(inviteCodes, pageLimit, func(inviteCode *InviteCode) TimeIDCursor {
+		return TimeIDCursor{Timestamp: inviteCode.CreatedAt, ID: inviteCode.ID}
+	})
+	page := &InviteCodePage{
+		InviteCodes: inviteCodes,
+		HasMore:     hasMore,
+		NextCursor:  nextCursor,
 	}
 	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM invite_codes`).Scan(&page.TotalCount); err != nil {
 		return nil, err

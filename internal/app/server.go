@@ -251,7 +251,7 @@ func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.C
 
 	settings := cfg.ServerSettings()
 	if storedSettings != nil {
-		settings = config.ServerSettingsFromFields(store.SettingsFieldsFromStore(storedSettings))
+		settings = storedSettings.Runtime
 		// Databases created before search concurrency became panel-editable contain
 		// migration sentinel values. Preserve their environment-derived limits on
 		// the first upgraded start, then persist the effective positive values.
@@ -267,7 +267,7 @@ func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.C
 	if err != nil {
 		return config.ServerSettings{}, err
 	}
-	if _, err := st.UpsertServerSettings(ctx, store.ServerSettingsFromFields(config.SettingsFieldsFromConfig(normalizedSettings))); err != nil {
+	if _, err := st.UpsertServerSettings(ctx, store.ServerSettings{Runtime: normalizedSettings}); err != nil {
 		return config.ServerSettings{}, fmt.Errorf("persist settings: %w", err)
 	}
 	return normalizedSettings, nil

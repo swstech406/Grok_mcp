@@ -231,7 +231,7 @@ func TestInitializeServerSettingsPrefersDatabaseAndSuppliesMissingEnvironmentKey
 		RegistrationMode:           store.RegistrationModeInvite,
 		Debug:                      true,
 	}
-	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettingsFromFields(config.SettingsFieldsFromConfig(databaseSettings))); err != nil {
+	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettings{Runtime: databaseSettings}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,7 +277,7 @@ func TestInitializeServerSettingsBackfillsLegacySearchConcurrencySentinels(t *te
 		MCPUserSearchConcurrency:   4,
 		RegistrationMode:           store.RegistrationModeFree,
 	}
-	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettingsFromFields(config.SettingsFieldsFromConfig(legacySettings))); err != nil {
+	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettings{Runtime: legacySettings}); err != nil {
 		t.Fatal(err)
 	}
 

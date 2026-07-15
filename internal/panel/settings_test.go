@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/grok-mcp/internal/config"
@@ -21,6 +22,28 @@ type recordingSettingsApplier struct {
 func (applier *recordingSettingsApplier) ApplyServerSettings(settings config.ServerSettings) error {
 	applier.appliedSettings = settings
 	return nil
+}
+
+func TestServerSettingsResponseNeverIncludesCPAAPIKey(t *testing.T) {
+	const sensitiveAPIKey = "cpa-panel-never-return-this-full-secret-7f0d5b"
+	response := toServerSettingsResponse(config.ServerSettings{
+		CPABaseURL:       "https://cpa.example.test",
+		CPAAPIKey:        sensitiveAPIKey,
+		UpstreamProtocol: config.UpstreamProtocolResponses,
+		Model:            "grok-4.3",
+	}, nil)
+
+	encodedResponse, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal server settings response: %v", err)
+	}
+	encodedText := string(encodedResponse)
+	if strings.Contains(encodedText, sensitiveAPIKey) {
+		t.Fatalf("panel settings response exposed CPA API key: %s", encodedText)
+	}
+	if strings.Contains(encodedText, `"cpa_api_key"`) {
+		t.Fatalf("panel settings response included raw CPA API key field: %s", encodedText)
+	}
 }
 
 func TestAdminUpdateServerSettingsKeepsInitialSettingsImmutable(t *testing.T) {
@@ -43,7 +66,7 @@ func TestAdminUpdateServerSettingsKeepsInitialSettingsImmutable(t *testing.T) {
 		MCPUserSearchConcurrency:   4,
 		RegistrationMode:           store.RegistrationModeFree,
 	}
-	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettingsFromFields(config.SettingsFieldsFromConfig(initialSettings))); err != nil {
+	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettings{Runtime: initialSettings}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -4,8 +4,9 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
+
+	"github.com/grok-mcp/internal/settings"
 )
 
 // ErrUserNotFound 表示按 ID 未找到用户。
@@ -56,29 +57,20 @@ var ErrUsageRecordNotFound = errors.New("usage record not found")
 const DefaultTierName = "tier0"
 
 // RegistrationMode 控制公开注册入口如何放行新用户。
-type RegistrationMode string
+type RegistrationMode = settings.RegistrationMode
 
 const (
 	// RegistrationModeFree 允许用户无需邀请码自助注册。
-	RegistrationModeFree RegistrationMode = "free"
+	RegistrationModeFree = settings.RegistrationModeFree
 	// RegistrationModeInvite 要求用户提供有效且未耗尽的邀请码注册。
-	RegistrationModeInvite RegistrationMode = "invite"
+	RegistrationModeInvite = settings.RegistrationModeInvite
 	// RegistrationModeDisabled 禁止公开自助注册。
-	RegistrationModeDisabled RegistrationMode = "disabled"
+	RegistrationModeDisabled = settings.RegistrationModeDisabled
 )
 
 // NormalizeRegistrationMode canonicalizes the persisted/server setting value.
 func NormalizeRegistrationMode(mode RegistrationMode) (RegistrationMode, error) {
-	switch mode {
-	case RegistrationModeFree:
-		return RegistrationModeFree, nil
-	case RegistrationModeInvite:
-		return RegistrationModeInvite, nil
-	case RegistrationModeDisabled:
-		return RegistrationModeDisabled, nil
-	default:
-		return "", fmt.Errorf("registration_mode must be one of %q, %q, or %q", RegistrationModeFree, RegistrationModeInvite, RegistrationModeDisabled)
-	}
+	return settings.NormalizeRegistrationMode(mode)
 }
 
 // UserRole 面板用户角色。
@@ -287,20 +279,10 @@ type UsageRecordScope struct {
 // persisted because the server must reconnect to the upstream gateway after a
 // restart without exposing them back through the panel API.
 type ServerSettings struct {
-	ID                         string
-	CPABaseURL                 string
-	CPAAPIKey                  string
-	UpstreamProtocol           string
-	Model                      string
-	TimeoutSeconds             int
-	MCPGlobalSearchConcurrency int
-	MCPUserSearchConcurrency   int
-	ProxyURL                   string
-	ProxyEnabled               bool
-	RegistrationMode           RegistrationMode
-	Debug                      bool
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
+	settings.Runtime
+	ID        string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // KeyUpdates 用于 PATCH 式更新密钥；指针字段为 nil 表示不修改该列。
@@ -385,57 +367,4 @@ type Store interface {
 
 	GetServerSettings(ctx context.Context) (*ServerSettings, error)
 	UpsertServerSettings(ctx context.Context, settings ServerSettings) (*ServerSettings, error)
-}
-
-// SettingsFields 是 ServerSettings 中可热更的字段（不含 ID/时间戳）。
-// 用于与 config.ServerSettings 等运行时类型做单向映射，避免字段逐个拷贝散落在调用方。
-type SettingsFields struct {
-	CPABaseURL                 string
-	CPAAPIKey                  string
-	UpstreamProtocol           string
-	Model                      string
-	TimeoutSeconds             int
-	MCPGlobalSearchConcurrency int
-	MCPUserSearchConcurrency   int
-	ProxyURL                   string
-	ProxyEnabled               bool
-	RegistrationMode           RegistrationMode
-	Debug                      bool
-}
-
-// SettingsFieldsFromStore 提取持久化设置中的可热更字段。
-func SettingsFieldsFromStore(settings *ServerSettings) SettingsFields {
-	if settings == nil {
-		return SettingsFields{}
-	}
-	return SettingsFields{
-		CPABaseURL:                 settings.CPABaseURL,
-		CPAAPIKey:                  settings.CPAAPIKey,
-		UpstreamProtocol:           settings.UpstreamProtocol,
-		Model:                      settings.Model,
-		TimeoutSeconds:             settings.TimeoutSeconds,
-		MCPGlobalSearchConcurrency: settings.MCPGlobalSearchConcurrency,
-		MCPUserSearchConcurrency:   settings.MCPUserSearchConcurrency,
-		ProxyURL:                   settings.ProxyURL,
-		ProxyEnabled:               settings.ProxyEnabled,
-		RegistrationMode:           settings.RegistrationMode,
-		Debug:                      settings.Debug,
-	}
-}
-
-// ServerSettingsFromFields 将可热更字段组装为持久化结构（不含 ID/时间戳）。
-func ServerSettingsFromFields(fields SettingsFields) ServerSettings {
-	return ServerSettings{
-		CPABaseURL:                 fields.CPABaseURL,
-		CPAAPIKey:                  fields.CPAAPIKey,
-		UpstreamProtocol:           fields.UpstreamProtocol,
-		Model:                      fields.Model,
-		TimeoutSeconds:             fields.TimeoutSeconds,
-		MCPGlobalSearchConcurrency: fields.MCPGlobalSearchConcurrency,
-		MCPUserSearchConcurrency:   fields.MCPUserSearchConcurrency,
-		ProxyURL:                   fields.ProxyURL,
-		ProxyEnabled:               fields.ProxyEnabled,
-		RegistrationMode:           fields.RegistrationMode,
-		Debug:                      fields.Debug,
-	}
 }

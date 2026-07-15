@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/grok-mcp/internal/keyhash"
+	"github.com/grok-mcp/internal/settings"
 )
 
 func openTestDB(t *testing.T) *SQLiteStore {
@@ -520,17 +521,19 @@ func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T)
 		t.Fatal(err)
 	}
 
-	settings := ServerSettings{
-		CPABaseURL:                 "http://127.0.0.1:8317",
-		CPAAPIKey:                  cpaAPIKey,
-		UpstreamProtocol:           "responses",
-		Model:                      "grok-4.3",
-		TimeoutSeconds:             30,
-		MCPGlobalSearchConcurrency: 12,
-		MCPUserSearchConcurrency:   3,
-		RegistrationMode:           RegistrationModeFree,
+	serverSettings := ServerSettings{
+		Runtime: settings.Runtime{
+			CPABaseURL:                 "http://127.0.0.1:8317",
+			CPAAPIKey:                  cpaAPIKey,
+			UpstreamProtocol:           "responses",
+			Model:                      "grok-4.3",
+			TimeoutSeconds:             30,
+			MCPGlobalSearchConcurrency: 12,
+			MCPUserSearchConcurrency:   3,
+			RegistrationMode:           RegistrationModeFree,
+		},
 	}
-	storedSettings, err := sqliteStore.UpsertServerSettings(ctx, settings)
+	storedSettings, err := sqliteStore.UpsertServerSettings(ctx, serverSettings)
 	if err != nil {
 		t.Fatal(err)
 	}

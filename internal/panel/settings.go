@@ -47,7 +47,7 @@ func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	storedSettings, err := h.Store.UpsertServerSettings(r.Context(), store.ServerSettingsFromFields(config.SettingsFieldsFromConfig(normalizedSettings)))
+	storedSettings, err := h.Store.UpsertServerSettings(r.Context(), store.ServerSettings{Runtime: normalizedSettings})
 	if err != nil {
 		log.Printf("admin persist server settings failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to save server settings")
@@ -92,7 +92,7 @@ func (h *Handler) loadEffectiveServerSettings(r *http.Request) (config.ServerSet
 	}
 	if storedSettings != nil {
 		updatedAt := storedSettings.UpdatedAt
-		return config.ServerSettingsFromFields(store.SettingsFieldsFromStore(storedSettings)), &updatedAt, nil
+		return storedSettings.Runtime, &updatedAt, nil
 	}
 	if h.InitialServerSettings == (config.ServerSettings{}) {
 		return config.ServerSettings{}, nil, nil

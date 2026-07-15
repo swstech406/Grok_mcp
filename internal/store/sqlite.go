@@ -323,12 +323,11 @@ func (s *SQLiteStore) ListKeysByUserPage(ctx context.Context, userID string, cur
 	query := `SELECT ` + keyColumns + ` FROM apikeys WHERE user_id = ?`
 	queryArgs := []any{userID}
 	if cursor != nil {
-		cursorTimestamp := formatTime(cursor.Timestamp.UTC())
-		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
-		queryArgs = append(queryArgs, cursorTimestamp, cursorTimestamp, cursor.ID)
+		query += ` AND ` + timeIDCursorPredicate(timeIDDescending)
+		queryArgs = appendTimeIDCursorArguments(queryArgs, cursor)
 	}
 	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
-	queryArgs = append(queryArgs, pageLimit+1)
+	queryArgs = append(queryArgs, keysetFetchLimit(pageLimit))
 
 	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -336,7 +335,7 @@ func (s *SQLiteStore) ListKeysByUserPage(ctx context.Context, userID string, cur
 	}
 	defer rows.Close()
 
-	keys := make([]*APIKey, 0, pageLimit+1)
+	keys := make([]*APIKey, 0, keysetFetchLimit(pageLimit))
 	for rows.Next() {
 		apiKey, scanErr := scanAPIKey(rows)
 		if scanErr != nil {
@@ -348,15 +347,13 @@ func (s *SQLiteStore) ListKeysByUserPage(ctx context.Context, userID string, cur
 		return nil, err
 	}
 
-	page := &APIKeyPage{}
-	if len(keys) > pageLimit {
-		page.HasMore = true
-		keys = keys[:pageLimit]
-	}
-	page.Keys = keys
-	if page.HasMore && len(keys) > 0 {
-		lastKey := keys[len(keys)-1]
-		page.NextCursor = &TimeIDCursor{Timestamp: lastKey.CreatedAt, ID: lastKey.ID}
+	keys, hasMore, nextCursor := finalizeTimeIDPage(keys, pageLimit, func(apiKey *APIKey) TimeIDCursor {
+		return TimeIDCursor{Timestamp: apiKey.CreatedAt, ID: apiKey.ID}
+	})
+	page := &APIKeyPage{
+		Keys:       keys,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
 	}
 	if err := s.readDB.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END), 0) FROM apikeys WHERE user_id = ?`,
@@ -1358,7 +1355,7 @@ func (s *SQLiteStore) decryptServerSettingsAPIKey(settingsID string, storedAPIKe
 func (s *SQLiteStore) UpsertServerSettings(ctx context.Context, settings ServerSettings) (*ServerSettings, error) {
 	cpaBaseURL := strings.TrimSpace(settings.CPABaseURL)
 	cpaAPIKey := strings.TrimSpace(settings.CPAAPIKey)
-	upstreamProtocol := strings.TrimSpace(settings.UpstreamProtocol)
+	upstreamProtocol := strings.TrimSpace(string(settings.UpstreamProtocol))
 	model := strings.TrimSpace(settings.Model)
 	proxyURL := strings.TrimSpace(settings.ProxyURL)
 	if cpaBaseURL == "" {
