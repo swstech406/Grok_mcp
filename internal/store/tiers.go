@@ -51,24 +51,6 @@ func (s *SQLiteStore) GetTierByName(ctx context.Context, name string) (*Tier, er
 	return t, err
 }
 
-func (s *SQLiteStore) ListTiers(ctx context.Context) ([]*Tier, error) {
-	rows, err := s.readDB.QueryContext(ctx,
-		`SELECT `+tierColumns+` FROM tiers ORDER BY level ASC, name ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Tier
-	for rows.Next() {
-		t, err := scanTier(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
-}
-
 func (s *SQLiteStore) ListTiersPage(ctx context.Context, cursor *TierCursor, limit int) (*TierPage, error) {
 	pageLimit := normalizePanelPageLimit(limit)
 	query := `SELECT ` + tierColumns + ` FROM tiers`

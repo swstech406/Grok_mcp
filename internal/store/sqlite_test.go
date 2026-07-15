@@ -600,9 +600,9 @@ func TestListUpdateDeleteKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	keys, err := s.ListKeys(ctx)
-	if err != nil || len(keys) != 1 {
-		t.Fatalf("ListKeys: %v len=%d", err, len(keys))
+	keyPage, err := s.ListKeysByUserPage(ctx, uid, nil, 100)
+	if err != nil || len(keyPage.Keys) != 1 {
+		t.Fatalf("ListKeysByUserPage: %v len=%d", err, len(keyPage.Keys))
 	}
 
 	name := "renamed"
@@ -618,8 +618,11 @@ func TestListUpdateDeleteKey(t *testing.T) {
 	if err := s.DeleteKey(ctx, k.ID); err != nil {
 		t.Fatal(err)
 	}
-	keys, _ = s.ListKeys(ctx)
-	if len(keys) != 0 {
+	keyPage, err = s.ListKeysByUserPage(ctx, uid, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keyPage.Keys) != 0 {
 		t.Fatalf("expected 0 keys after delete")
 	}
 }

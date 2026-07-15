@@ -23,7 +23,6 @@ func (TestStore) RegisterUserWithInviteCode(context.Context, string, string, str
 }
 func (TestStore) GetUserByUsername(context.Context, string) (*User, error) { return nil, nil }
 func (TestStore) GetUserByID(context.Context, string) (*User, error)       { return nil, ErrUserNotFound }
-func (TestStore) ListUsers(context.Context) ([]*User, error)               { return nil, nil }
 func (TestStore) ListUsersPage(context.Context, *TimeIDCursor, int) (*UserPage, error) {
 	return &UserPage{}, nil
 }
@@ -42,7 +41,6 @@ func (TestStore) TryIncrementUserSuccessCalls(context.Context, string, int) erro
 
 func (TestStore) GetTierByID(context.Context, string) (*Tier, error)   { return nil, ErrTierNotFound }
 func (TestStore) GetTierByName(context.Context, string) (*Tier, error) { return nil, nil }
-func (TestStore) ListTiers(context.Context) ([]*Tier, error)           { return nil, nil }
 func (TestStore) ListTiersPage(context.Context, *TierCursor, int) (*TierPage, error) {
 	return &TierPage{}, nil
 }
@@ -61,10 +59,6 @@ func (TestStore) CreateKey(context.Context, string, string) (*APIKey, string, er
 func (TestStore) ConfigureAPIKeyEncryption(string) error                { return nil }
 func (TestStore) RevealKey(context.Context, string) (string, error)     { return "", nil }
 func (TestStore) GetKeyByHash(context.Context, string) (*APIKey, error) { return nil, nil }
-func (TestStore) ListKeys(context.Context) ([]*APIKey, error)           { return nil, nil }
-func (TestStore) ListKeysByUser(context.Context, string) ([]*APIKey, error) {
-	return nil, nil
-}
 func (TestStore) ListKeysByUserPage(context.Context, string, *TimeIDCursor, int) (*APIKeyPage, error) {
 	return &APIKeyPage{}, nil
 }
@@ -101,7 +95,6 @@ func (TestStore) UpsertServerSettings(context.Context, ServerSettings) (*ServerS
 	return nil, nil
 }
 
-func (TestStore) ListInviteCodes(context.Context) ([]*InviteCode, error) { return nil, nil }
 func (TestStore) ListInviteCodesPage(context.Context, *TimeIDCursor, int) (*InviteCodePage, error) {
 	return &InviteCodePage{}, nil
 }

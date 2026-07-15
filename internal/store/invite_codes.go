@@ -53,24 +53,6 @@ func scanInviteCode(row interface {
 	return &inviteCode, nil
 }
 
-func (s *SQLiteStore) ListInviteCodes(ctx context.Context) ([]*InviteCode, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT `+inviteCodeColumns+` FROM invite_codes ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	inviteCodes := make([]*InviteCode, 0)
-	for rows.Next() {
-		inviteCode, err := scanInviteCode(rows)
-		if err != nil {
-			return nil, err
-		}
-		inviteCodes = append(inviteCodes, inviteCode)
-	}
-	return inviteCodes, rows.Err()
-}
-
 func (s *SQLiteStore) ListInviteCodesPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*InviteCodePage, error) {
 	pageLimit := normalizePanelPageLimit(limit)
 	query := `SELECT ` + inviteCodeColumns + ` FROM invite_codes`

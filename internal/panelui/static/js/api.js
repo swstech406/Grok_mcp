@@ -252,10 +252,6 @@ export function fetchAdminUsers(options = {}) {
   return panelAPI.request(buildCollectionPath("/panel/v1/admin/users", { cursor, limit }), requestOptions);
 }
 
-export function createAdminUser(userData) {
-  return panelAPI.request("/panel/v1/admin/users", { method: "POST", body: userData });
-}
-
 export function updateAdminUser(userIdentifier, userData) {
   return panelAPI.request(`/panel/v1/admin/users/${encodeURIComponent(userIdentifier)}`, {
     method: "PATCH",

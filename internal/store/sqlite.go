@@ -308,24 +308,6 @@ func (s *SQLiteStore) GetKeyByHash(ctx context.Context, hash string) (*APIKey, e
 	return k, err
 }
 
-func (s *SQLiteStore) ListKeysByUser(ctx context.Context, userID string) ([]*APIKey, error) {
-	rows, err := s.readDB.QueryContext(ctx, listKeysByUserQuery, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var keys []*APIKey
-	for rows.Next() {
-		k, err := scanAPIKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, k)
-	}
-	return keys, rows.Err()
-}
-
 func normalizePanelPageLimit(limit int) int {
 	if limit <= 0 {
 		return 50
@@ -383,24 +365,6 @@ func (s *SQLiteStore) ListKeysByUserPage(ctx context.Context, userID string, cur
 		return nil, err
 	}
 	return page, nil
-}
-
-func (s *SQLiteStore) ListKeys(ctx context.Context) ([]*APIKey, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT `+keyColumns+` FROM apikeys ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var keys []*APIKey
-	for rows.Next() {
-		k, err := scanAPIKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		keys = append(keys, k)
-	}
-	return keys, rows.Err()
 }
 
 func (s *SQLiteStore) GetKeyByID(ctx context.Context, id string) (*APIKey, error) {

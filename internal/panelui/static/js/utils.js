@@ -127,11 +127,6 @@ export function getUsagePeriodSince(period) {
   return new Date(currentTime.getTime() - milliseconds).toISOString();
 }
 
-export function buildSinceQuery(period) {
-  const since = getUsagePeriodSince(period);
-  return since ? `?since=${encodeURIComponent(since)}` : "";
-}
-
 export function getSuccessRate(usage) {
   const totalCalls = Number(usage?.total_calls || 0);
   const successCalls = Number(usage?.success_calls || 0);

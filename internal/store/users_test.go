@@ -32,10 +32,11 @@ func TestRegisterUserCreatesOnlyRegularUsersUnderConcurrency(t *testing.T) {
 	for err := range errCh {
 		t.Fatal(err)
 	}
-	users, err := s.ListUsers(ctx)
+	userPage, err := s.ListUsersPage(ctx, nil, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
+	users := userPage.Users
 	if len(users) != n {
 		t.Fatalf("want %d users got %d", n, len(users))
 	}
@@ -242,10 +243,11 @@ func TestDeleteUserRemovesUserKeysAndUsage(t *testing.T) {
 	if _, err := s.GetUserByID(ctx, user.ID); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("expected deleted user to be missing, got %v", err)
 	}
-	keys, err := s.ListKeysByUser(ctx, user.ID)
+	keyPage, err := s.ListKeysByUserPage(ctx, user.ID, nil, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys := keyPage.Keys
 	if len(keys) != 0 {
 		t.Fatalf("expected user keys to be deleted, got %d", len(keys))
 	}
@@ -278,10 +280,11 @@ func TestDeleteUserSucceedsWhenDebugCleanupFails(t *testing.T) {
 	if _, err := store.GetUserByID(ctx, user.ID); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("expected user to be deleted from the primary database, got %v", err)
 	}
-	keys, err := store.ListKeysByUser(ctx, user.ID)
+	keyPage, err := store.ListKeysByUserPage(ctx, user.ID, nil, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys := keyPage.Keys
 	if len(keys) != 0 {
 		t.Fatalf("expected user keys to be deleted, got %d", len(keys))
 	}
@@ -304,10 +307,11 @@ func TestDeleteUserClearsInviteCodeCreatorReference(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inviteCodes, err := store.ListInviteCodes(ctx)
+	inviteCodePage, err := store.ListInviteCodesPage(ctx, nil, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
+	inviteCodes := inviteCodePage.InviteCodes
 	if len(inviteCodes) != 1 || inviteCodes[0].ID != inviteCode.ID {
 		t.Fatalf("invite code should remain after creator deletion, got %+v", inviteCodes)
 	}

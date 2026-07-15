@@ -346,7 +346,6 @@ type Store interface {
 	RegisterUserWithInviteCode(ctx context.Context, username, passwordHash, rawInviteCode string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	GetUserByID(ctx context.Context, id string) (*User, error)
-	ListUsers(ctx context.Context) ([]*User, error)
 	ListUsersPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*UserPage, error)
 	UpdateUser(ctx context.Context, id string, updates UserUpdates) (*User, error)
 	DeleteUser(ctx context.Context, id string) error
@@ -358,7 +357,6 @@ type Store interface {
 
 	GetTierByID(ctx context.Context, id string) (*Tier, error)
 	GetTierByName(ctx context.Context, name string) (*Tier, error)
-	ListTiers(ctx context.Context) ([]*Tier, error)
 	ListTiersPage(ctx context.Context, cursor *TierCursor, limit int) (*TierPage, error)
 	CreateTier(ctx context.Context, name string, level, rpm, successLimit int) (*Tier, error)
 	UpdateTier(ctx context.Context, id string, updates TierUpdates) (*Tier, error)
@@ -369,8 +367,6 @@ type Store interface {
 	ConfigureAPIKeyEncryption(applicationSecret string) error
 	RevealKey(ctx context.Context, id string) (string, error)
 	GetKeyByHash(ctx context.Context, hash string) (*APIKey, error)
-	ListKeys(ctx context.Context) ([]*APIKey, error)
-	ListKeysByUser(ctx context.Context, userID string) ([]*APIKey, error)
 	ListKeysByUserPage(ctx context.Context, userID string, cursor *TimeIDCursor, limit int) (*APIKeyPage, error)
 	GetKeyByID(ctx context.Context, id string) (*APIKey, error)
 	UpdateKey(ctx context.Context, id string, updates KeyUpdates) (*APIKey, error)
@@ -382,7 +378,6 @@ type Store interface {
 	GetGlobalStats(ctx context.Context, since time.Time) (*UsageStats, error)
 	ListUsageRecordsPage(ctx context.Context, scope UsageRecordListScope, since time.Time, cursor *UsageRecordCursor, limit int) (*UsageRecordPage, error)
 	GetUsageRecordDetail(ctx context.Context, usageID int64, scope UsageRecordScope) (*UsageRecord, error)
-	ListInviteCodes(ctx context.Context) ([]*InviteCode, error)
 	ListInviteCodesPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*InviteCodePage, error)
 	CreateInviteCode(ctx context.Context, createdByUserID string, registrationLimit int) (*InviteCode, string, error)
 	UpdateInviteCode(ctx context.Context, id string, updates InviteCodeUpdates) (*InviteCode, error)

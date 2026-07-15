@@ -173,32 +173,6 @@ func (s *SQLiteStore) GetUserByID(ctx context.Context, id string) (*User, error)
 	return u, err
 }
 
-func (s *SQLiteStore) ListUsers(ctx context.Context) ([]*User, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+userColumns+` FROM users ORDER BY created_at ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*User
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, u)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, user := range out {
-		if err := s.resetUserSuccessPeriodIfNeeded(ctx, user); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
 func (s *SQLiteStore) ListUsersPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*UserPage, error) {
 	pageLimit := normalizePanelPageLimit(limit)
 	query := `SELECT ` + userColumns + ` FROM users`
