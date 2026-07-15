@@ -212,6 +212,8 @@ func TestHTTPPanelAndMCPFlow(t *testing.T) {
 
 	userLimiter := ratelimit.NewUserLimiter()
 	defer userLimiter.Close()
+	searchConcurrencyLimiter := ratelimit.NewSearchConcurrencyLimiter(16, 4)
+	defer searchConcurrencyLimiter.Close()
 	mcpIPLimiter := ratelimit.NewIPLimiter(10000)
 	defer mcpIPLimiter.Close()
 
@@ -224,13 +226,14 @@ func TestHTTPPanelAndMCPFlow(t *testing.T) {
 		AuthCache:             authResolver,
 	}
 	handler := app.BuildHTTPHandler(app.HTTPDependencies{
-		Store:          st,
-		MCPServer:      server,
-		UsageWriter:    usageWriter,
-		UserLimiter:    userLimiter,
-		MCPIPLimiter:   mcpIPLimiter,
-		APIKeyResolver: authResolver,
-		PanelHandler:   panelHandler,
+		Store:                    st,
+		MCPServer:                server,
+		UsageWriter:              usageWriter,
+		UserLimiter:              userLimiter,
+		SearchConcurrencyLimiter: searchConcurrencyLimiter,
+		MCPIPLimiter:             mcpIPLimiter,
+		APIKeyResolver:           authResolver,
+		PanelHandler:             panelHandler,
 	})
 
 	ts := httptest.NewServer(handler)

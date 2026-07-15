@@ -51,6 +51,23 @@ func TestHandlerServesConfigurationGuideModule(t *testing.T) {
 	}
 }
 
+func TestHandlerServesSearchConcurrencySettingsFields(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/panel/js/pages/settings.js", nil)
+	responseRecorder := httptest.NewRecorder()
+
+	Handler().ServeHTTP(responseRecorder, request)
+
+	if responseRecorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusOK)
+	}
+	body := responseRecorder.Body.String()
+	for _, expectedField := range []string{"mcp_global_search_concurrency", "mcp_user_search_concurrency"} {
+		if !strings.Contains(body, expectedField) {
+			t.Fatalf("settings module does not contain %q", expectedField)
+		}
+	}
+}
+
 func TestHandlerFallsBackToIndexForSpaRoutesAndUnknownAssets(t *testing.T) {
 	testCases := []struct {
 		name string

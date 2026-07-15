@@ -24,7 +24,9 @@ const (
 	defaultUsageDailyRetention      = 730 * 24 * time.Hour
 	defaultUsageMaintenanceInterval = time.Hour
 	// defaultMCPIPRPM 在请求携带反向代理客户端 IP Header 时，于 API key 鉴权前限制 /mcp 请求。
-	defaultMCPIPRPM = 300
+	defaultMCPIPRPM                   = 300
+	defaultMCPGlobalSearchConcurrency = 16
+	defaultMCPUserSearchConcurrency   = 4
 )
 
 // UpstreamProtocol identifies the CPA-compatible HTTP protocol used for
@@ -39,61 +41,67 @@ const (
 
 // Config 保存进程启动所需的全部配置项。
 type Config struct {
-	CPABaseURL               string
-	CPAAPIKey                string
-	UpstreamProtocol         UpstreamProtocol
-	Model                    string
-	Timeout                  time.Duration
-	Debug                    bool
-	HTTPAddr                 string
-	DBPath                   string
-	JWTSecret                string
-	MCPIPRPM                 int
-	UsageRawRetention        time.Duration
-	UsageHourlyRetention     time.Duration
-	UsageDailyRetention      time.Duration
-	UsageMaintenanceInterval time.Duration
-	ProxyURL                 string
-	ProxyEnabled             bool
-	RegistrationMode         store.RegistrationMode
+	CPABaseURL                 string
+	CPAAPIKey                  string
+	UpstreamProtocol           UpstreamProtocol
+	Model                      string
+	Timeout                    time.Duration
+	Debug                      bool
+	HTTPAddr                   string
+	DBPath                     string
+	JWTSecret                  string
+	MCPIPRPM                   int
+	MCPGlobalSearchConcurrency int
+	MCPUserSearchConcurrency   int
+	UsageRawRetention          time.Duration
+	UsageHourlyRetention       time.Duration
+	UsageDailyRetention        time.Duration
+	UsageMaintenanceInterval   time.Duration
+	ProxyURL                   string
+	ProxyEnabled               bool
+	RegistrationMode           store.RegistrationMode
 }
 
-// ServerSettings contains the runtime-tunable upstream settings exposed in the
-// admin panel. It intentionally excludes listener address, database path, and
-// JWT secret because changing those safely requires a process restart.
+// ServerSettings contains runtime-tunable settings exposed in the admin panel.
+// It intentionally excludes listener address, database path, and JWT secret
+// because changing those safely requires a process restart.
 type ServerSettings struct {
-	CPABaseURL       string
-	CPAAPIKey        string
-	UpstreamProtocol UpstreamProtocol
-	Model            string
-	TimeoutSeconds   int
-	ProxyURL         string
-	ProxyEnabled     bool
-	RegistrationMode store.RegistrationMode
-	Debug            bool
+	CPABaseURL                 string
+	CPAAPIKey                  string
+	UpstreamProtocol           UpstreamProtocol
+	Model                      string
+	TimeoutSeconds             int
+	MCPGlobalSearchConcurrency int
+	MCPUserSearchConcurrency   int
+	ProxyURL                   string
+	ProxyEnabled               bool
+	RegistrationMode           store.RegistrationMode
+	Debug                      bool
 }
 
 // Load 读取并校验配置。
 func Load() (*Config, error) {
 	proxyURL := strings.TrimSpace(os.Getenv("GROK_PROXY_URL"))
 	cfg := &Config{
-		CPABaseURL:               strings.TrimRight(envOrDefault("CPA_BASE_URL", defaultBaseURL), "/"),
-		CPAAPIKey:                strings.TrimSpace(os.Getenv("CPA_API_KEY")),
-		UpstreamProtocol:         UpstreamProtocol(envOrDefault("GROK_UPSTREAM_PROTOCOL", string(defaultUpstreamProtocol))),
-		Model:                    envOrDefault("GROK_MODEL", defaultModel),
-		Timeout:                  defaultTimeout,
-		Debug:                    parseBoolEnv("GROK_MCP_DEBUG"),
-		HTTPAddr:                 envOrDefault("GROK_HTTP_ADDR", defaultHTTPAddr),
-		DBPath:                   envOrDefault("GROK_DB_PATH", defaultDBPath),
-		JWTSecret:                strings.TrimSpace(os.Getenv("GROK_JWT_SECRET")),
-		MCPIPRPM:                 defaultMCPIPRPM,
-		UsageRawRetention:        defaultUsageRawRetention,
-		UsageHourlyRetention:     defaultUsageHourlyRetention,
-		UsageDailyRetention:      defaultUsageDailyRetention,
-		UsageMaintenanceInterval: defaultUsageMaintenanceInterval,
-		ProxyURL:                 proxyURL,
-		ProxyEnabled:             parseBoolEnv("GROK_PROXY_ENABLED"),
-		RegistrationMode:         store.RegistrationModeFree,
+		CPABaseURL:                 strings.TrimRight(envOrDefault("CPA_BASE_URL", defaultBaseURL), "/"),
+		CPAAPIKey:                  strings.TrimSpace(os.Getenv("CPA_API_KEY")),
+		UpstreamProtocol:           UpstreamProtocol(envOrDefault("GROK_UPSTREAM_PROTOCOL", string(defaultUpstreamProtocol))),
+		Model:                      envOrDefault("GROK_MODEL", defaultModel),
+		Timeout:                    defaultTimeout,
+		Debug:                      parseBoolEnv("GROK_MCP_DEBUG"),
+		HTTPAddr:                   envOrDefault("GROK_HTTP_ADDR", defaultHTTPAddr),
+		DBPath:                     envOrDefault("GROK_DB_PATH", defaultDBPath),
+		JWTSecret:                  strings.TrimSpace(os.Getenv("GROK_JWT_SECRET")),
+		MCPIPRPM:                   defaultMCPIPRPM,
+		MCPGlobalSearchConcurrency: defaultMCPGlobalSearchConcurrency,
+		MCPUserSearchConcurrency:   defaultMCPUserSearchConcurrency,
+		UsageRawRetention:          defaultUsageRawRetention,
+		UsageHourlyRetention:       defaultUsageHourlyRetention,
+		UsageDailyRetention:        defaultUsageDailyRetention,
+		UsageMaintenanceInterval:   defaultUsageMaintenanceInterval,
+		ProxyURL:                   proxyURL,
+		ProxyEnabled:               parseBoolEnv("GROK_PROXY_ENABLED"),
+		RegistrationMode:           store.RegistrationModeFree,
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("GROK_HTTP_TIMEOUT")); raw != "" {
@@ -110,6 +118,24 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("GROK_MCP_IP_RPM must be a positive integer, got %q", raw)
 		}
 		cfg.MCPIPRPM = n
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit <= 0 {
+			return nil, fmt.Errorf("GROK_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer, got %q", raw)
+		}
+		cfg.MCPGlobalSearchConcurrency = limit
+	}
+	if raw := strings.TrimSpace(os.Getenv("GROK_MCP_USER_SEARCH_CONCURRENCY")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit <= 0 {
+			return nil, fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must be a positive integer, got %q", raw)
+		}
+		cfg.MCPUserSearchConcurrency = limit
+	}
+	if cfg.MCPUserSearchConcurrency > cfg.MCPGlobalSearchConcurrency {
+		return nil, fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")
 	}
 
 	var err error
@@ -180,15 +206,17 @@ func (c *Config) ServerSettings() ServerSettings {
 		timeoutSeconds = int(defaultTimeout / time.Second)
 	}
 	return ServerSettings{
-		CPABaseURL:       c.CPABaseURL,
-		CPAAPIKey:        c.CPAAPIKey,
-		UpstreamProtocol: c.UpstreamProtocol,
-		Model:            c.Model,
-		TimeoutSeconds:   timeoutSeconds,
-		ProxyURL:         c.ProxyURL,
-		ProxyEnabled:     c.ProxyEnabled,
-		RegistrationMode: c.RegistrationMode,
-		Debug:            c.Debug,
+		CPABaseURL:                 c.CPABaseURL,
+		CPAAPIKey:                  c.CPAAPIKey,
+		UpstreamProtocol:           c.UpstreamProtocol,
+		Model:                      c.Model,
+		TimeoutSeconds:             timeoutSeconds,
+		MCPGlobalSearchConcurrency: c.MCPGlobalSearchConcurrency,
+		MCPUserSearchConcurrency:   c.MCPUserSearchConcurrency,
+		ProxyURL:                   c.ProxyURL,
+		ProxyEnabled:               c.ProxyEnabled,
+		RegistrationMode:           c.RegistrationMode,
+		Debug:                      c.Debug,
 	}
 }
 
@@ -232,6 +260,9 @@ func normalizeServerSettings(settings ServerSettings, requireAPIKey bool) (Serve
 	if settings.TimeoutSeconds <= 0 {
 		return settings, fmt.Errorf("GROK_HTTP_TIMEOUT must be a positive integer (seconds), got %d", settings.TimeoutSeconds)
 	}
+	if err := validateSearchConcurrencyLimits(settings.MCPGlobalSearchConcurrency, settings.MCPUserSearchConcurrency); err != nil {
+		return settings, err
+	}
 	if settings.ProxyEnabled {
 		if settings.ProxyURL == "" {
 			return settings, fmt.Errorf("GROK_PROXY_URL is required when proxy is enabled")
@@ -242,6 +273,19 @@ func normalizeServerSettings(settings ServerSettings, requireAPIKey bool) (Serve
 	}
 
 	return settings, nil
+}
+
+func validateSearchConcurrencyLimits(globalLimit, perUserLimit int) error {
+	if globalLimit <= 0 {
+		return fmt.Errorf("GROK_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer, got %d", globalLimit)
+	}
+	if perUserLimit <= 0 {
+		return fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must be a positive integer, got %d", perUserLimit)
+	}
+	if perUserLimit > globalLimit {
+		return fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")
+	}
+	return nil
 }
 
 // NormalizeUpstreamProtocol canonicalizes an explicitly configured protocol.

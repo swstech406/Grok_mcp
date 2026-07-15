@@ -37,6 +37,12 @@ const (
 		"model IDs that contain the grok keyword and do not contain imagine or video."
 )
 
+// IsSearchToolName reports whether a tool executes a streaming upstream search.
+// Model listing is intentionally excluded because it does not hold an SSE search open.
+func IsSearchToolName(toolName string) bool {
+	return toolName == webSearchToolName || toolName == xSearchToolName
+}
+
 // WebSearchInput 为 grok_web_search 的 JSON 入参，字段名与 jsonschema 标签供客户端生成表单。
 type WebSearchInput struct {
 	Query                    string   `json:"query" jsonschema:"Search query text"`

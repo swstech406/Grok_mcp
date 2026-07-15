@@ -215,23 +215,24 @@ type UsageRecordScope struct {
 	IncludeAllUsers bool
 }
 
-// ServerSettings stores runtime-tunable upstream configuration for the MCP
-// server. Secrets are persisted because the server must be able to reconnect to
-// the upstream gateway after a restart without exposing them back through the
-// panel API.
+// ServerSettings stores runtime-tunable MCP server configuration. Secrets are
+// persisted because the server must reconnect to the upstream gateway after a
+// restart without exposing them back through the panel API.
 type ServerSettings struct {
-	ID               string
-	CPABaseURL       string
-	CPAAPIKey        string
-	UpstreamProtocol string
-	Model            string
-	TimeoutSeconds   int
-	ProxyURL         string
-	ProxyEnabled     bool
-	RegistrationMode RegistrationMode
-	Debug            bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                         string
+	CPABaseURL                 string
+	CPAAPIKey                  string
+	UpstreamProtocol           string
+	Model                      string
+	TimeoutSeconds             int
+	MCPGlobalSearchConcurrency int
+	MCPUserSearchConcurrency   int
+	ProxyURL                   string
+	ProxyEnabled               bool
+	RegistrationMode           RegistrationMode
+	Debug                      bool
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
 }
 
 // KeyUpdates 用于 PATCH 式更新密钥；指针字段为 nil 表示不修改该列。
@@ -317,18 +318,20 @@ type Store interface {
 	UpsertServerSettings(ctx context.Context, settings ServerSettings) (*ServerSettings, error)
 }
 
-// SettingsFields 是 ServerSettings 中可热更的上游连接字段（不含 ID/时间戳）。
+// SettingsFields 是 ServerSettings 中可热更的字段（不含 ID/时间戳）。
 // 用于与 config.ServerSettings 等运行时类型做单向映射，避免字段逐个拷贝散落在调用方。
 type SettingsFields struct {
-	CPABaseURL       string
-	CPAAPIKey        string
-	UpstreamProtocol string
-	Model            string
-	TimeoutSeconds   int
-	ProxyURL         string
-	ProxyEnabled     bool
-	RegistrationMode RegistrationMode
-	Debug            bool
+	CPABaseURL                 string
+	CPAAPIKey                  string
+	UpstreamProtocol           string
+	Model                      string
+	TimeoutSeconds             int
+	MCPGlobalSearchConcurrency int
+	MCPUserSearchConcurrency   int
+	ProxyURL                   string
+	ProxyEnabled               bool
+	RegistrationMode           RegistrationMode
+	Debug                      bool
 }
 
 // SettingsFieldsFromStore 提取持久化设置中的可热更字段。
@@ -337,29 +340,33 @@ func SettingsFieldsFromStore(settings *ServerSettings) SettingsFields {
 		return SettingsFields{}
 	}
 	return SettingsFields{
-		CPABaseURL:       settings.CPABaseURL,
-		CPAAPIKey:        settings.CPAAPIKey,
-		UpstreamProtocol: settings.UpstreamProtocol,
-		Model:            settings.Model,
-		TimeoutSeconds:   settings.TimeoutSeconds,
-		ProxyURL:         settings.ProxyURL,
-		ProxyEnabled:     settings.ProxyEnabled,
-		RegistrationMode: settings.RegistrationMode,
-		Debug:            settings.Debug,
+		CPABaseURL:                 settings.CPABaseURL,
+		CPAAPIKey:                  settings.CPAAPIKey,
+		UpstreamProtocol:           settings.UpstreamProtocol,
+		Model:                      settings.Model,
+		TimeoutSeconds:             settings.TimeoutSeconds,
+		MCPGlobalSearchConcurrency: settings.MCPGlobalSearchConcurrency,
+		MCPUserSearchConcurrency:   settings.MCPUserSearchConcurrency,
+		ProxyURL:                   settings.ProxyURL,
+		ProxyEnabled:               settings.ProxyEnabled,
+		RegistrationMode:           settings.RegistrationMode,
+		Debug:                      settings.Debug,
 	}
 }
 
 // ServerSettingsFromFields 将可热更字段组装为持久化结构（不含 ID/时间戳）。
 func ServerSettingsFromFields(fields SettingsFields) ServerSettings {
 	return ServerSettings{
-		CPABaseURL:       fields.CPABaseURL,
-		CPAAPIKey:        fields.CPAAPIKey,
-		UpstreamProtocol: fields.UpstreamProtocol,
-		Model:            fields.Model,
-		TimeoutSeconds:   fields.TimeoutSeconds,
-		ProxyURL:         fields.ProxyURL,
-		ProxyEnabled:     fields.ProxyEnabled,
-		RegistrationMode: fields.RegistrationMode,
-		Debug:            fields.Debug,
+		CPABaseURL:                 fields.CPABaseURL,
+		CPAAPIKey:                  fields.CPAAPIKey,
+		UpstreamProtocol:           fields.UpstreamProtocol,
+		Model:                      fields.Model,
+		TimeoutSeconds:             fields.TimeoutSeconds,
+		MCPGlobalSearchConcurrency: fields.MCPGlobalSearchConcurrency,
+		MCPUserSearchConcurrency:   fields.MCPUserSearchConcurrency,
+		ProxyURL:                   fields.ProxyURL,
+		ProxyEnabled:               fields.ProxyEnabled,
+		RegistrationMode:           fields.RegistrationMode,
+		Debug:                      fields.Debug,
 	}
 }

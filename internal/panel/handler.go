@@ -23,13 +23,13 @@ type Handler struct {
 	Store                 store.Store
 	JWTSecret             string
 	InitialServerSettings config.ServerSettings
-	SettingsApplier       ServerSettingsApplier // 可选；保存服务器设置后热更新上游客户端
+	SettingsApplier       ServerSettingsApplier // 可选；保存服务器设置后热更新运行时组件
 	ModelLister           ModelLister           // 可选；管理员面板通过它从上游拉取可用 Grok 模型
 	AuthCache             AuthCacheInvalidator  // 可选；管理员变更用户/等级/密钥后清空 MCP 鉴权缓存
 	AuthProtector         *AuthProtector        // 可选；未设置时使用内置面板登录/注册防护
 }
 
-// ServerSettingsApplier 接收热更新后的上游连接设置。
+// ServerSettingsApplier 接收热更新后的服务器运行时设置。
 type ServerSettingsApplier interface {
 	ApplyServerSettings(config.ServerSettings) error
 }

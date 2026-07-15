@@ -55,14 +55,35 @@ type BootstrapAdminCredentials struct {
 // HTTPDependencies contains the initialized resources needed to build the
 // production HTTP routing tree. Resource ownership remains with the caller.
 type HTTPDependencies struct {
-	Store          store.Store
-	MCPServer      *mcp.Server
-	UsageWriter    *store.AsyncUsageWriter
-	UserLimiter    *ratelimit.UserLimiter
-	MCPIPLimiter   *ratelimit.IPLimiter
-	APIKeyResolver auth.APIKeyResolver
-	PanelHandler   *panel.Handler
-	DebugState     *logx.DebugState
+	Store                    store.Store
+	MCPServer                *mcp.Server
+	UsageWriter              *store.AsyncUsageWriter
+	UserLimiter              *ratelimit.UserLimiter
+	SearchConcurrencyLimiter *ratelimit.SearchConcurrencyLimiter
+	MCPIPLimiter             *ratelimit.IPLimiter
+	APIKeyResolver           auth.APIKeyResolver
+	PanelHandler             *panel.Handler
+	DebugState               *logx.DebugState
+}
+
+type runtimeServerSettingsApplier struct {
+	upstreamApplier          panel.ServerSettingsApplier
+	searchConcurrencyLimiter *ratelimit.SearchConcurrencyLimiter
+}
+
+func (applier *runtimeServerSettingsApplier) ApplyServerSettings(settings config.ServerSettings) error {
+	if applier.upstreamApplier != nil {
+		if err := applier.upstreamApplier.ApplyServerSettings(settings); err != nil {
+			return err
+		}
+	}
+	if applier.searchConcurrencyLimiter != nil {
+		return applier.searchConcurrencyLimiter.UpdateLimits(
+			settings.MCPGlobalSearchConcurrency,
+			settings.MCPUserSearchConcurrency,
+		)
+	}
+	return nil
 }
 
 // Run starts the HTTP server (MCP + panel) and blocks until ctx is cancelled or ListenAndServe fails.
@@ -118,6 +139,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 
 	userLimiter := ratelimit.NewUserLimiter()
 	defer userLimiter.Close()
+	searchConcurrencyLimiter := ratelimit.NewSearchConcurrencyLimiter(
+		serverSettings.MCPGlobalSearchConcurrency,
+		serverSettings.MCPUserSearchConcurrency,
+	)
+	defer searchConcurrencyLimiter.Close()
 	mcpIPLimiter := ratelimit.NewIPLimiter(cfg.MCPIPRPM)
 	defer mcpIPLimiter.Close()
 
@@ -127,19 +153,23 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		Store:                 st,
 		JWTSecret:             cfg.JWTSecret,
 		InitialServerSettings: serverSettings,
-		SettingsApplier:       grokClient,
-		ModelLister:           grokClient,
-		AuthCache:             authResolver,
+		SettingsApplier: &runtimeServerSettingsApplier{
+			upstreamApplier:          grokClient,
+			searchConcurrencyLimiter: searchConcurrencyLimiter,
+		},
+		ModelLister: grokClient,
+		AuthCache:   authResolver,
 	}
 	httpHandler := BuildHTTPHandler(HTTPDependencies{
-		Store:          st,
-		MCPServer:      mcpServer,
-		UsageWriter:    usageWriter,
-		UserLimiter:    userLimiter,
-		MCPIPLimiter:   mcpIPLimiter,
-		APIKeyResolver: authResolver,
-		PanelHandler:   panelHandler,
-		DebugState:     debugState,
+		Store:                    st,
+		MCPServer:                mcpServer,
+		UsageWriter:              usageWriter,
+		UserLimiter:              userLimiter,
+		SearchConcurrencyLimiter: searchConcurrencyLimiter,
+		MCPIPLimiter:             mcpIPLimiter,
+		APIKeyResolver:           authResolver,
+		PanelHandler:             panelHandler,
+		DebugState:               debugState,
 	})
 
 	srv := &http.Server{
@@ -185,10 +215,12 @@ func BuildHTTPHandler(dependencies HTTPDependencies) http.Handler {
 	}, &mcp.StreamableHTTPOptions{Stateless: true})
 
 	// MCP middleware is wrapped from inside out. The effective request order is:
-	// MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM -> Quota -> Usage -> MCP.
+	// MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM ->
+	// Search Concurrency -> Quota -> Usage -> MCP.
 	var mcpChain http.Handler = mcpHandler
 	mcpChain = usage.MCPMiddleware(dependencies.Store, dependencies.UsageWriter, dependencies.DebugState)(mcpChain)
 	mcpChain = quota.MCPMiddleware(dependencies.Store)(mcpChain)
+	mcpChain = dependencies.SearchConcurrencyLimiter.Middleware(mcpserver.IsSearchToolName)(mcpChain)
 	mcpChain = dependencies.UserLimiter.UserMiddleware()(mcpChain)
 	mcpChain = usage.ExtractToolNameMiddleware()(mcpChain)
 	mcpChain = auth.APIKeyMiddleware(dependencies.APIKeyResolver)(mcpChain)
@@ -220,6 +252,15 @@ func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.C
 	settings := cfg.ServerSettings()
 	if storedSettings != nil {
 		settings = config.ServerSettingsFromFields(store.SettingsFieldsFromStore(storedSettings))
+		// Databases created before search concurrency became panel-editable contain
+		// migration sentinel values. Preserve their environment-derived limits on
+		// the first upgraded start, then persist the effective positive values.
+		if settings.MCPGlobalSearchConcurrency <= 0 {
+			settings.MCPGlobalSearchConcurrency = cfg.MCPGlobalSearchConcurrency
+		}
+		if settings.MCPUserSearchConcurrency <= 0 {
+			settings.MCPUserSearchConcurrency = cfg.MCPUserSearchConcurrency
+		}
 	}
 
 	normalizedSettings, err := config.NormalizeServerSettings(settings)

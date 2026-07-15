@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,6 +37,10 @@ type integrationEnv struct {
 }
 
 func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
+	return bootIntegrationEnvWithSearchConcurrency(t, cpa, 16, 4)
+}
+
+func bootIntegrationEnvWithSearchConcurrency(t *testing.T, cpa *httptest.Server, globalLimit, perUserLimit int) *integrationEnv {
 	t.Helper()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "guards.db"))
 	if err != nil {
@@ -61,6 +66,7 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 	server := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, nil)
 	mcpserver.RegisterToolsWithLogger(server, client, logx.New("mcp-test", false))
 	userLimiter := ratelimit.NewUserLimiter()
+	searchConcurrencyLimiter := ratelimit.NewSearchConcurrencyLimiter(globalLimit, perUserLimit)
 	mcpIPLimiter := ratelimit.NewIPLimiter(10000)
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
 	panelHandler := &panel.Handler{
@@ -70,19 +76,21 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 		AuthCache:             authResolver,
 	}
 	handler := app.BuildHTTPHandler(app.HTTPDependencies{
-		Store:          st,
-		MCPServer:      server,
-		UsageWriter:    writer,
-		UserLimiter:    userLimiter,
-		MCPIPLimiter:   mcpIPLimiter,
-		APIKeyResolver: authResolver,
-		PanelHandler:   panelHandler,
+		Store:                    st,
+		MCPServer:                server,
+		UsageWriter:              writer,
+		UserLimiter:              userLimiter,
+		SearchConcurrencyLimiter: searchConcurrencyLimiter,
+		MCPIPLimiter:             mcpIPLimiter,
+		APIKeyResolver:           authResolver,
+		PanelHandler:             panelHandler,
 	})
 	ts := httptest.NewServer(handler)
 	t.Cleanup(func() {
 		ts.Close()
 		authResolver.Close()
 		userLimiter.Close()
+		searchConcurrencyLimiter.Close()
 		mcpIPLimiter.Close()
 		writer.Close()
 		st.Close()
@@ -121,6 +129,111 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 		t.Fatalf("create key %d", keyResp.StatusCode)
 	}
 	return &integrationEnv{ts: ts, st: st, writer: writer, userLim: userLimiter, created: created, login: login}
+}
+
+func TestHTTPSearchConcurrencyRejectsBeforeUpstreamAndUsage(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstreamRequestStarted := make(chan struct{})
+	releaseUpstreamRequest := make(chan struct{})
+	var releaseUpstreamOnce sync.Once
+	releaseUpstream := func() {
+		releaseUpstreamOnce.Do(func() { close(releaseUpstreamRequest) })
+	}
+	defer releaseUpstream()
+
+	cpa := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if err := validateCPAMockRequest(request, newWebSearchCPAExpectation("held search")); err != nil {
+			t.Errorf("CPA mock received invalid request: %v", err)
+			http.Error(responseWriter, "invalid CPA mock request", http.StatusBadRequest)
+			return
+		}
+		upstreamCalls.Add(1)
+		close(upstreamRequestStarted)
+		<-releaseUpstreamRequest
+		writeCPAMockSSEResponse(responseWriter, "held search answer")
+	}))
+	defer cpa.Close()
+
+	environment := bootIntegrationEnvWithSearchConcurrency(t, cpa, 2, 1)
+	toolPayload := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"held search"}}}`
+
+	type firstRequestResult struct {
+		statusCode int
+		body       string
+		err        error
+	}
+	firstRequestDone := make(chan firstRequestResult, 1)
+	go func() {
+		request, _ := http.NewRequest(http.MethodPost, environment.ts.URL+"/mcp", bytes.NewBufferString(toolPayload))
+		setMCPHeaders(request, environment.created.APIKey)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			firstRequestDone <- firstRequestResult{err: err}
+			return
+		}
+		responseBody, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		firstRequestDone <- firstRequestResult{
+			statusCode: response.StatusCode,
+			body:       string(responseBody),
+			err:        readErr,
+		}
+	}()
+
+	select {
+	case <-upstreamRequestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for the first upstream search")
+	}
+
+	secondRequest, _ := http.NewRequest(http.MethodPost, environment.ts.URL+"/mcp", bytes.NewBufferString(toolPayload))
+	setMCPHeaders(secondRequest, environment.created.APIKey)
+	secondResponse, err := http.DefaultClient.Do(secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResponseBody, err := io.ReadAll(secondResponse.Body)
+	secondResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	releaseUpstream()
+	firstResult := <-firstRequestDone
+	if firstResult.err != nil {
+		t.Fatalf("first search request failed: %v", firstResult.err)
+	}
+	if firstResult.statusCode != http.StatusOK || !strings.Contains(firstResult.body, "held search answer") {
+		t.Fatalf("first search status=%d body=%s", firstResult.statusCode, truncate(firstResult.body, 512))
+	}
+	if secondResponse.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("second search status=%d, want %d", secondResponse.StatusCode, http.StatusServiceUnavailable)
+	}
+	if secondResponse.Header.Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After=%q, want 1", secondResponse.Header.Get("Retry-After"))
+	}
+	if secondResponse.Header.Get(ratelimit.SearchQueueTimeHeader) == "" {
+		t.Fatalf("missing %s header", ratelimit.SearchQueueTimeHeader)
+	}
+	if !strings.Contains(string(secondResponseBody), "user search concurrency limit reached") {
+		t.Fatalf("unexpected concurrency rejection body: %s", truncate(string(secondResponseBody), 512))
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("upstream calls=%d, want 1", upstreamCalls.Load())
+	}
+
+	environment.writer.Close()
+	usageStats, err := environment.st.GetUsageStats(
+		context.Background(),
+		environment.created.Key.ID,
+		time.Now().UTC().Add(-time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usageStats.TotalCalls != 1 {
+		t.Fatalf("usage calls=%d, want only the admitted search", usageStats.TotalCalls)
+	}
 }
 
 func TestHTTPPanelKeysRequireJWT(t *testing.T) {

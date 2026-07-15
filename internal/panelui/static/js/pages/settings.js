@@ -4,7 +4,7 @@ import { renderPageHeading } from "../components/loading.js";
 
 export function renderSettingsPage(state) {
   if (state.pageLoading && !state.data.settings) {
-    return `${renderPageHeading("服务设置", "热更新上游连接、默认模型、代理与注册策略。")}
+    return `${renderPageHeading("服务设置", "热更新上游连接、搜索并发、默认模型、代理与注册策略。")}
       <div class="settings-layout"><div class="skeleton" style="height:620px;border-radius:16px"></div><div class="skeleton" style="height:330px;border-radius:16px"></div></div>`;
   }
 
@@ -17,7 +17,7 @@ export function renderSettingsPage(state) {
     : modelOptions;
 
   return `
-    ${renderPageHeading("服务设置", "热更新上游连接、默认模型、代理与注册策略。")}
+    ${renderPageHeading("服务设置", "热更新上游连接、搜索并发、默认模型、代理与注册策略。")}
     <div class="settings-layout">
       <form class="data-card" data-form="settings">
         <section class="settings-section">
@@ -42,6 +42,13 @@ export function renderSettingsPage(state) {
           </div>
         </section>
         <section class="settings-section">
+          <div class="settings-section-copy"><h3>搜索并发</h3><p>限制同时进行的流式搜索。容量耗尽时立即返回 503，不在服务内排队。</p></div>
+          <div class="form-grid form-grid-align-fields">
+            <label class="field-group"><span class="field-label">全局搜索并发</span><input class="text-input" name="mcp_global_search_concurrency" type="number" min="1" step="1" value="${escapeHTML(settings.mcp_global_search_concurrency || 16)}" required><span class="field-hint">整个 grok-mcp 进程允许的同时在途搜索数。</span></label>
+            <label class="field-group"><span class="field-label">单用户搜索并发</span><input class="text-input" name="mcp_user_search_concurrency" type="number" min="1" step="1" value="${escapeHTML(settings.mcp_user_search_concurrency || 4)}" required><span class="field-hint">同一用户所有 API Key 共享，且不得超过全局上限。</span></label>
+          </div>
+        </section>
+        <section class="settings-section">
           <div class="settings-section-copy"><h3>网络代理</h3><p>在上游网络需要代理时启用。代理地址支持 HTTP 或 HTTPS。</p></div>
           <div>
             <label class="switch-row"><span class="switch-copy"><strong>启用显式代理</strong><span>关闭时使用默认网络路径</span></span><span class="switch"><input name="proxy_enabled" type="checkbox" ${settings.proxy_enabled ? "checked" : ""}><span class="switch-track"></span></span></label>
@@ -63,11 +70,12 @@ export function renderSettingsPage(state) {
       </form>
 
       <aside class="info-card">
-        <div class="info-card-top"><span class="info-card-icon">${renderIcon("shield")}</span><h3>运行时热更新</h3><p>这些设置保存后会立即应用到上游客户端，无需重启 grok-mcp 服务。</p></div>
+        <div class="info-card-top"><span class="info-card-icon">${renderIcon("shield")}</span><h3>运行时热更新</h3><p>这些设置保存后会立即应用到上游客户端和搜索并发控制，无需重启 grok-mcp 服务。</p></div>
         <div class="info-list">
           <div class="info-row"><span>服务版本</span><strong>${escapeHTML(settings.version || "未知")}</strong></div>
           <div class="info-row"><span>上游协议</span><strong>${escapeHTML(getUpstreamProtocolLabel(upstreamProtocol))}</strong></div>
           <div class="info-row"><span>当前模型</span><strong>${escapeHTML(settings.model || "未配置")}</strong></div>
+          <div class="info-row"><span>搜索并发</span><strong>${escapeHTML(`${settings.mcp_global_search_concurrency || 16} / 用户 ${settings.mcp_user_search_concurrency || 4}`)}</strong></div>
           <div class="info-row"><span>API Key</span><strong>${settings.cpa_api_key_set ? "已安全配置" : "未配置"}</strong></div>
           <div class="info-row"><span>代理</span><strong>${settings.proxy_enabled ? "已启用" : "直连"}</strong></div>
           <div class="info-row"><span>注册</span><strong>${escapeHTML(getRegistrationModeLabel(settings.registration_mode))}</strong></div>

@@ -121,6 +121,12 @@ func mergeServerSettingsRequest(currentSettings config.ServerSettings, req Updat
 	if req.TimeoutSeconds != nil {
 		mergedSettings.TimeoutSeconds = *req.TimeoutSeconds
 	}
+	if req.MCPGlobalSearchConcurrency != nil {
+		mergedSettings.MCPGlobalSearchConcurrency = *req.MCPGlobalSearchConcurrency
+	}
+	if req.MCPUserSearchConcurrency != nil {
+		mergedSettings.MCPUserSearchConcurrency = *req.MCPUserSearchConcurrency
+	}
 	if req.ProxyURL != nil {
 		mergedSettings.ProxyURL = *req.ProxyURL
 	}

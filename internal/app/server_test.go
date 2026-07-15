@@ -12,9 +12,45 @@ import (
 	"time"
 
 	"github.com/grok-mcp/internal/config"
+	"github.com/grok-mcp/internal/ratelimit"
 	"github.com/grok-mcp/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
+
+type recordingRuntimeSettingsApplier struct {
+	appliedSettings config.ServerSettings
+}
+
+func (applier *recordingRuntimeSettingsApplier) ApplyServerSettings(settings config.ServerSettings) error {
+	applier.appliedSettings = settings
+	return nil
+}
+
+func TestRuntimeServerSettingsApplierUpdatesSearchConcurrency(t *testing.T) {
+	searchConcurrencyLimiter := ratelimit.NewSearchConcurrencyLimiter(1, 1)
+	defer searchConcurrencyLimiter.Close()
+
+	upstreamApplier := &recordingRuntimeSettingsApplier{}
+	applier := &runtimeServerSettingsApplier{
+		upstreamApplier:          upstreamApplier,
+		searchConcurrencyLimiter: searchConcurrencyLimiter,
+	}
+	settings := config.ServerSettings{
+		MCPGlobalSearchConcurrency: 2,
+		MCPUserSearchConcurrency:   2,
+	}
+	if err := applier.ApplyServerSettings(settings); err != nil {
+		t.Fatalf("ApplyServerSettings failed: %v", err)
+	}
+	if upstreamApplier.appliedSettings != settings {
+		t.Fatalf("upstream applied settings = %+v, want %+v", upstreamApplier.appliedSettings, settings)
+	}
+
+	globalLimit, perUserLimit := searchConcurrencyLimiter.Limits()
+	if globalLimit != 2 || perUserLimit != 2 {
+		t.Fatalf("limiter limits = (%d, %d), want (2, 2)", globalLimit, perUserLimit)
+	}
+}
 
 func TestEnsureBootstrapAdminCreatesAdminForEmptyStore(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "bootstrap.db")
@@ -121,12 +157,14 @@ func TestInitializeServerSettingsUsesEnvironmentDefaultsWithoutMutatingConfig(t 
 	}
 
 	cfg := &config.Config{
-		CPABaseURL:       " http://127.0.0.1:8317/ ",
-		CPAAPIKey:        " environment-key ",
-		UpstreamProtocol: config.UpstreamProtocolResponses,
-		Model:            " grok-4.3 ",
-		Timeout:          45 * time.Second,
-		RegistrationMode: store.RegistrationModeFree,
+		CPABaseURL:                 " http://127.0.0.1:8317/ ",
+		CPAAPIKey:                  " environment-key ",
+		UpstreamProtocol:           config.UpstreamProtocolResponses,
+		Model:                      " grok-4.3 ",
+		Timeout:                    45 * time.Second,
+		MCPGlobalSearchConcurrency: 12,
+		MCPUserSearchConcurrency:   3,
+		RegistrationMode:           store.RegistrationModeFree,
 	}
 	originalConfig := *cfg
 
@@ -183,24 +221,28 @@ func TestInitializeServerSettingsPrefersDatabaseAndSuppliesMissingEnvironmentKey
 	}
 
 	databaseSettings := config.ServerSettings{
-		CPABaseURL:       "http://database-cpa.example",
-		CPAAPIKey:        "database-key",
-		UpstreamProtocol: config.UpstreamProtocolAnthropicMessages,
-		Model:            "grok-database-model",
-		TimeoutSeconds:   90,
-		RegistrationMode: store.RegistrationModeInvite,
-		Debug:            true,
+		CPABaseURL:                 "http://database-cpa.example",
+		CPAAPIKey:                  "database-key",
+		UpstreamProtocol:           config.UpstreamProtocolAnthropicMessages,
+		Model:                      "grok-database-model",
+		TimeoutSeconds:             90,
+		MCPGlobalSearchConcurrency: 8,
+		MCPUserSearchConcurrency:   2,
+		RegistrationMode:           store.RegistrationModeInvite,
+		Debug:                      true,
 	}
 	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettingsFromFields(config.SettingsFieldsFromConfig(databaseSettings))); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg := &config.Config{
-		CPABaseURL:       "http://environment-cpa.example",
-		CPAAPIKey:        "",
-		UpstreamProtocol: config.UpstreamProtocolChatCompletions,
-		Model:            "grok-environment-model",
-		Timeout:          30 * time.Second,
+		CPABaseURL:                 "http://environment-cpa.example",
+		CPAAPIKey:                  "",
+		UpstreamProtocol:           config.UpstreamProtocolChatCompletions,
+		Model:                      "grok-environment-model",
+		Timeout:                    30 * time.Second,
+		MCPGlobalSearchConcurrency: 16,
+		MCPUserSearchConcurrency:   4,
 	}
 	effectiveSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
 	if err != nil {
@@ -211,6 +253,72 @@ func TestInitializeServerSettingsPrefersDatabaseAndSuppliesMissingEnvironmentKey
 	}
 	if cfg.CPAAPIKey != "" {
 		t.Fatalf("database settings must not be copied into startup config, got key %q", cfg.CPAAPIKey)
+	}
+}
+
+func TestInitializeServerSettingsBackfillsLegacySearchConcurrencySentinels(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "legacy-search-concurrency.db")
+	sqliteStore, err := store.OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+	if err := sqliteStore.ConfigureAPIKeyEncryption("app-test-settings-encryption-secret-at-least-32-bytes"); err != nil {
+		t.Fatal(err)
+	}
+
+	legacySettings := config.ServerSettings{
+		CPABaseURL:                 "http://database-cpa.example",
+		CPAAPIKey:                  "database-key",
+		UpstreamProtocol:           config.UpstreamProtocolResponses,
+		Model:                      "grok-database-model",
+		TimeoutSeconds:             90,
+		MCPGlobalSearchConcurrency: 16,
+		MCPUserSearchConcurrency:   4,
+		RegistrationMode:           store.RegistrationModeFree,
+	}
+	if _, err := sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettingsFromFields(config.SettingsFieldsFromConfig(legacySettings))); err != nil {
+		t.Fatal(err)
+	}
+
+	rawDatabase, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawDatabase.Exec(`
+		UPDATE server_settings
+		SET mcp_global_search_concurrency = 0,
+			mcp_user_search_concurrency = 0`); err != nil {
+		_ = rawDatabase.Close()
+		t.Fatal(err)
+	}
+	if err := rawDatabase.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		CPABaseURL:                 "http://environment-cpa.example",
+		UpstreamProtocol:           config.UpstreamProtocolResponses,
+		Model:                      "grok-environment-model",
+		Timeout:                    30 * time.Second,
+		MCPGlobalSearchConcurrency: 9,
+		MCPUserSearchConcurrency:   3,
+		RegistrationMode:           store.RegistrationModeFree,
+	}
+	effectiveSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effectiveSettings.MCPGlobalSearchConcurrency != 9 || effectiveSettings.MCPUserSearchConcurrency != 3 {
+		t.Fatalf("effective search concurrency = %+v", effectiveSettings)
+	}
+
+	persistedSettings, err := sqliteStore.GetServerSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedSettings.MCPGlobalSearchConcurrency != 9 || persistedSettings.MCPUserSearchConcurrency != 3 {
+		t.Fatalf("persisted search concurrency = %+v", persistedSettings)
 	}
 }
 
@@ -225,11 +333,13 @@ func TestInitializeServerSettingsRejectsMissingAPIKeyWithoutDatabaseFallback(t *
 	}
 
 	cfg := &config.Config{
-		CPABaseURL:       "http://127.0.0.1:8317",
-		UpstreamProtocol: config.UpstreamProtocolResponses,
-		Model:            "grok-4.3",
-		Timeout:          30 * time.Second,
-		RegistrationMode: store.RegistrationModeFree,
+		CPABaseURL:                 "http://127.0.0.1:8317",
+		UpstreamProtocol:           config.UpstreamProtocolResponses,
+		Model:                      "grok-4.3",
+		Timeout:                    30 * time.Second,
+		MCPGlobalSearchConcurrency: 16,
+		MCPUserSearchConcurrency:   4,
+		RegistrationMode:           store.RegistrationModeFree,
 	}
 	_, err = InitializeServerSettings(context.Background(), sqliteStore, cfg)
 	if err == nil || !strings.Contains(err.Error(), "CPA_API_KEY is required") {

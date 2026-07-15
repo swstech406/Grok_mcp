@@ -109,18 +109,20 @@ type UpdateTierRequest struct {
 }
 
 type ServerSettingsResponse struct {
-	Version          string                  `json:"version"`
-	CPABaseURL       string                  `json:"cpa_base_url"`
-	CPAAPIKeySet     bool                    `json:"cpa_api_key_set"`
-	CPAAPIKeyPreview string                  `json:"cpa_api_key_preview,omitempty"`
-	UpstreamProtocol config.UpstreamProtocol `json:"upstream_protocol"`
-	Model            string                  `json:"model"`
-	TimeoutSeconds   int                     `json:"timeout_seconds"`
-	ProxyURL         string                  `json:"proxy_url"`
-	ProxyEnabled     bool                    `json:"proxy_enabled"`
-	RegistrationMode store.RegistrationMode  `json:"registration_mode"`
-	Debug            bool                    `json:"debug"`
-	UpdatedAt        *time.Time              `json:"updated_at,omitempty"`
+	Version                    string                  `json:"version"`
+	CPABaseURL                 string                  `json:"cpa_base_url"`
+	CPAAPIKeySet               bool                    `json:"cpa_api_key_set"`
+	CPAAPIKeyPreview           string                  `json:"cpa_api_key_preview,omitempty"`
+	UpstreamProtocol           config.UpstreamProtocol `json:"upstream_protocol"`
+	Model                      string                  `json:"model"`
+	TimeoutSeconds             int                     `json:"timeout_seconds"`
+	MCPGlobalSearchConcurrency int                     `json:"mcp_global_search_concurrency"`
+	MCPUserSearchConcurrency   int                     `json:"mcp_user_search_concurrency"`
+	ProxyURL                   string                  `json:"proxy_url"`
+	ProxyEnabled               bool                    `json:"proxy_enabled"`
+	RegistrationMode           store.RegistrationMode  `json:"registration_mode"`
+	Debug                      bool                    `json:"debug"`
+	UpdatedAt                  *time.Time              `json:"updated_at,omitempty"`
 }
 
 type RegistrationSettingsResponse struct {
@@ -136,15 +138,17 @@ type ModelsResponse struct {
 }
 
 type UpdateServerSettingsRequest struct {
-	CPABaseURL       *string                  `json:"cpa_base_url,omitempty"`
-	CPAAPIKey        *string                  `json:"cpa_api_key,omitempty"`
-	UpstreamProtocol *config.UpstreamProtocol `json:"upstream_protocol,omitempty"`
-	Model            *string                  `json:"model,omitempty"`
-	TimeoutSeconds   *int                     `json:"timeout_seconds,omitempty"`
-	ProxyURL         *string                  `json:"proxy_url,omitempty"`
-	ProxyEnabled     *bool                    `json:"proxy_enabled,omitempty"`
-	RegistrationMode *store.RegistrationMode  `json:"registration_mode,omitempty"`
-	Debug            *bool                    `json:"debug,omitempty"`
+	CPABaseURL                 *string                  `json:"cpa_base_url,omitempty"`
+	CPAAPIKey                  *string                  `json:"cpa_api_key,omitempty"`
+	UpstreamProtocol           *config.UpstreamProtocol `json:"upstream_protocol,omitempty"`
+	Model                      *string                  `json:"model,omitempty"`
+	TimeoutSeconds             *int                     `json:"timeout_seconds,omitempty"`
+	MCPGlobalSearchConcurrency *int                     `json:"mcp_global_search_concurrency,omitempty"`
+	MCPUserSearchConcurrency   *int                     `json:"mcp_user_search_concurrency,omitempty"`
+	ProxyURL                   *string                  `json:"proxy_url,omitempty"`
+	ProxyEnabled               *bool                    `json:"proxy_enabled,omitempty"`
+	RegistrationMode           *store.RegistrationMode  `json:"registration_mode,omitempty"`
+	Debug                      *bool                    `json:"debug,omitempty"`
 }
 
 type InviteCodeResponse struct {
@@ -268,18 +272,20 @@ func toServerSettingsResponse(settings config.ServerSettings, updatedAt *time.Ti
 		apiKeyPreview = maskSecret(settings.CPAAPIKey)
 	}
 	return ServerSettingsResponse{
-		Version:          version.Version,
-		CPABaseURL:       settings.CPABaseURL,
-		CPAAPIKeySet:     settings.CPAAPIKey != "",
-		CPAAPIKeyPreview: apiKeyPreview,
-		UpstreamProtocol: settings.UpstreamProtocol,
-		Model:            settings.Model,
-		TimeoutSeconds:   settings.TimeoutSeconds,
-		ProxyURL:         settings.ProxyURL,
-		ProxyEnabled:     settings.ProxyEnabled,
-		RegistrationMode: settings.RegistrationMode,
-		Debug:            settings.Debug,
-		UpdatedAt:        updatedAt,
+		Version:                    version.Version,
+		CPABaseURL:                 settings.CPABaseURL,
+		CPAAPIKeySet:               settings.CPAAPIKey != "",
+		CPAAPIKeyPreview:           apiKeyPreview,
+		UpstreamProtocol:           settings.UpstreamProtocol,
+		Model:                      settings.Model,
+		TimeoutSeconds:             settings.TimeoutSeconds,
+		MCPGlobalSearchConcurrency: settings.MCPGlobalSearchConcurrency,
+		MCPUserSearchConcurrency:   settings.MCPUserSearchConcurrency,
+		ProxyURL:                   settings.ProxyURL,
+		ProxyEnabled:               settings.ProxyEnabled,
+		RegistrationMode:           settings.RegistrationMode,
+		Debug:                      settings.Debug,
+		UpdatedAt:                  updatedAt,
 	}
 }
 

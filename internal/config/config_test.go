@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/grok-mcp/internal/store"
 )
 
 func setEnv(t *testing.T, key, value string) {
@@ -36,6 +38,9 @@ func panelEnv(t *testing.T) {
 	unsetEnv(t, "GROK_USAGE_HOURLY_RETENTION_DAYS")
 	unsetEnv(t, "GROK_USAGE_DAILY_RETENTION_DAYS")
 	unsetEnv(t, "GROK_USAGE_MAINTENANCE_INTERVAL")
+	unsetEnv(t, "GROK_MCP_IP_RPM")
+	unsetEnv(t, "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")
+	unsetEnv(t, "GROK_MCP_USER_SEARCH_CONCURRENCY")
 	setEnv(t, "CPA_API_KEY", "test-key")
 	setEnv(t, "GROK_JWT_SECRET", "jwt-secret-must-be-at-least-32-bytes!")
 }
@@ -232,7 +237,9 @@ func TestLoadHTTPDefaults(t *testing.T) {
 	}
 	if cfg.HTTPAddr != ":8080" ||
 		cfg.DBPath != "./grok-mcp.db" ||
-		cfg.MCPIPRPM != 300 {
+		cfg.MCPIPRPM != 300 ||
+		cfg.MCPGlobalSearchConcurrency != 16 ||
+		cfg.MCPUserSearchConcurrency != 4 {
 		t.Fatalf("unexpected http defaults: %+v", cfg)
 	}
 }
@@ -320,22 +327,62 @@ func TestLoadRejectsInvalidUsageRetention(t *testing.T) {
 func TestLoadCustomSecuritySettings(t *testing.T) {
 	panelEnv(t)
 	setEnv(t, "GROK_MCP_IP_RPM", "123")
+	setEnv(t, "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY", "12")
+	setEnv(t, "GROK_MCP_USER_SEARCH_CONCURRENCY", "3")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if cfg.MCPIPRPM != 123 {
+	if cfg.MCPIPRPM != 123 ||
+		cfg.MCPGlobalSearchConcurrency != 12 ||
+		cfg.MCPUserSearchConcurrency != 3 {
 		t.Fatalf("unexpected security settings: %+v", cfg)
 	}
 }
 
 func TestLoadRejectsInvalidSecuritySettings(t *testing.T) {
-	panelEnv(t)
-	setEnv(t, "GROK_MCP_IP_RPM", "0")
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "GROK_MCP_IP_RPM must be a positive integer") {
-		t.Fatalf("expected MCP IP RPM validation error, got %v", err)
+	testCases := []struct {
+		name          string
+		environment   map[string]string
+		expectedError string
+	}{
+		{
+			name:          "non-positive IP RPM",
+			environment:   map[string]string{"GROK_MCP_IP_RPM": "0"},
+			expectedError: "GROK_MCP_IP_RPM must be a positive integer",
+		},
+		{
+			name:          "non-positive global search concurrency",
+			environment:   map[string]string{"GROK_MCP_GLOBAL_SEARCH_CONCURRENCY": "0"},
+			expectedError: "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer",
+		},
+		{
+			name:          "invalid user search concurrency",
+			environment:   map[string]string{"GROK_MCP_USER_SEARCH_CONCURRENCY": "many"},
+			expectedError: "GROK_MCP_USER_SEARCH_CONCURRENCY must be a positive integer",
+		},
+		{
+			name: "user search concurrency exceeds global capacity",
+			environment: map[string]string{
+				"GROK_MCP_GLOBAL_SEARCH_CONCURRENCY": "2",
+				"GROK_MCP_USER_SEARCH_CONCURRENCY":   "3",
+			},
+			expectedError: "GROK_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_MCP_GLOBAL_SEARCH_CONCURRENCY",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			panelEnv(t)
+			for environmentVariable, value := range testCase.environment {
+				setEnv(t, environmentVariable, value)
+			}
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), testCase.expectedError) {
+				t.Fatalf("expected error containing %q, got %v", testCase.expectedError, err)
+			}
+		})
 	}
 }
 
@@ -343,5 +390,51 @@ func TestParseBoolEnvUnset(t *testing.T) {
 	_ = os.Unsetenv("GROK_MCP_DEBUG")
 	if parseBoolEnv("GROK_MCP_DEBUG") {
 		t.Fatalf("expected false for unset env")
+	}
+}
+
+func TestNormalizeServerSettingsValidatesSearchConcurrency(t *testing.T) {
+	baseSettings := ServerSettings{
+		CPABaseURL:                 "http://127.0.0.1:8317",
+		CPAAPIKey:                  "test-key",
+		UpstreamProtocol:           UpstreamProtocolResponses,
+		Model:                      "grok-4.3",
+		TimeoutSeconds:             120,
+		MCPGlobalSearchConcurrency: 16,
+		MCPUserSearchConcurrency:   4,
+		RegistrationMode:           store.RegistrationModeFree,
+	}
+
+	testCases := []struct {
+		name          string
+		globalLimit   int
+		perUserLimit  int
+		expectedError string
+	}{
+		{name: "valid", globalLimit: 8, perUserLimit: 2},
+		{name: "zero global", globalLimit: 0, perUserLimit: 1, expectedError: "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY"},
+		{name: "zero per-user", globalLimit: 8, perUserLimit: 0, expectedError: "GROK_MCP_USER_SEARCH_CONCURRENCY"},
+		{name: "per-user exceeds global", globalLimit: 2, perUserLimit: 3, expectedError: "must not exceed"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			settings := baseSettings
+			settings.MCPGlobalSearchConcurrency = testCase.globalLimit
+			settings.MCPUserSearchConcurrency = testCase.perUserLimit
+			normalizedSettings, err := NormalizeServerSettings(settings)
+			if testCase.expectedError == "" {
+				if err != nil {
+					t.Fatalf("NormalizeServerSettings failed: %v", err)
+				}
+				if normalizedSettings.MCPGlobalSearchConcurrency != testCase.globalLimit || normalizedSettings.MCPUserSearchConcurrency != testCase.perUserLimit {
+					t.Fatalf("normalized search concurrency = %+v", normalizedSettings)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.expectedError) {
+				t.Fatalf("expected error containing %q, got %v", testCase.expectedError, err)
+			}
+		})
 	}
 }

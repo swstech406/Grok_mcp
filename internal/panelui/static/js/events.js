@@ -771,11 +771,22 @@ export function createApplicationEvents({
 
   async function submitSettings(formElement) {
     const formData = createFormDataObject(formElement);
+    const globalSearchConcurrency = Number(formData.mcp_global_search_concurrency);
+    const userSearchConcurrency = Number(formData.mcp_user_search_concurrency);
+    if (userSearchConcurrency > globalSearchConcurrency) {
+      const userConcurrencyInput = formElement.elements.mcp_user_search_concurrency;
+      userConcurrencyInput.setCustomValidity("单用户搜索并发不得超过全局搜索并发。");
+      userConcurrencyInput.reportValidity();
+      userConcurrencyInput.setCustomValidity("");
+      return;
+    }
     const settingsPayload = {
       cpa_base_url: String(formData.cpa_base_url || "").trim(),
       upstream_protocol: String(formData.upstream_protocol || ""),
       model: String(formData.model || "").trim(),
       timeout_seconds: Number(formData.timeout_seconds),
+      mcp_global_search_concurrency: globalSearchConcurrency,
+      mcp_user_search_concurrency: userSearchConcurrency,
       proxy_url: String(formData.proxy_url || "").trim(),
       proxy_enabled: formElement.elements.proxy_enabled.checked,
       registration_mode: formElement.elements.registration_mode.value,
@@ -793,7 +804,7 @@ export function createApplicationEvents({
       state.registrationMode = state.data.settings.registration_mode || state.registrationMode;
       state.formBusy = false;
       renderApplication();
-      showToast("设置已应用", "上游客户端已使用新的运行时配置。", "success");
+      showToast("设置已应用", "上游客户端和搜索并发控制已使用新的运行时配置。", "success");
     } catch (error) {
       state.formBusy = false;
       if (!handleSessionError(error)) {

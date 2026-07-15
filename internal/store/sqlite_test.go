@@ -521,12 +521,14 @@ func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T)
 	}
 
 	settings := ServerSettings{
-		CPABaseURL:       "http://127.0.0.1:8317",
-		CPAAPIKey:        cpaAPIKey,
-		UpstreamProtocol: "responses",
-		Model:            "grok-4.3",
-		TimeoutSeconds:   30,
-		RegistrationMode: RegistrationModeFree,
+		CPABaseURL:                 "http://127.0.0.1:8317",
+		CPAAPIKey:                  cpaAPIKey,
+		UpstreamProtocol:           "responses",
+		Model:                      "grok-4.3",
+		TimeoutSeconds:             30,
+		MCPGlobalSearchConcurrency: 12,
+		MCPUserSearchConcurrency:   3,
+		RegistrationMode:           RegistrationModeFree,
 	}
 	storedSettings, err := sqliteStore.UpsertServerSettings(ctx, settings)
 	if err != nil {
@@ -566,6 +568,9 @@ func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T)
 	}
 	if reopenedSettings == nil || reopenedSettings.CPAAPIKey != cpaAPIKey {
 		t.Fatalf("reopened settings = %+v, want decrypted CPA API key", reopenedSettings)
+	}
+	if reopenedSettings.MCPGlobalSearchConcurrency != 12 || reopenedSettings.MCPUserSearchConcurrency != 3 {
+		t.Fatalf("reopened search concurrency settings = %+v", reopenedSettings)
 	}
 	revealedAPIKey, err := reopenedStore.RevealKey(ctx, apiKey.ID)
 	if err != nil {

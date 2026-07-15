@@ -35,7 +35,7 @@ MCP client -- HTTPS --> reverse proxy / load balancer -- HTTP --> grok-mcp /mcp
 - Valid-forwarded-IP-triggered protection for `/mcp` and panel authentication
 - SQLite persistence for users, keys, tiers, usage, invite codes, and server settings
 - Embedded administration panel with no separate frontend build step
-- Runtime updates for upstream settings, proxy settings, registration mode, and debug mode
+- Runtime updates for upstream settings, search concurrency, proxy settings, registration mode, and debug mode
 - Docker Compose deployment with a non-root runtime image
 
 ## Architecture
@@ -282,10 +282,14 @@ Accepts no arguments. It reads CPA `GET /v1/models`, trims and deduplicates IDs,
 | `GROK_USAGE_DAILY_RETENTION_DAYS` | `730` | Daily aggregate retention before deletion. |
 | `GROK_USAGE_MAINTENANCE_INTERVAL` | `1h` | Interval for rollup, cleanup, and WAL checkpoint maintenance. |
 | `GROK_MCP_IP_RPM` | `300` | Source-IP RPM applied before MCP API-key authentication only when `X-Real-IP` or `X-Forwarded-For` contains a valid IP. |
+| `GROK_MCP_GLOBAL_SEARCH_CONCURRENCY` | `16` | Environment default for the process-wide in-flight streaming search limit. The persisted panel setting takes precedence after initialization. |
+| `GROK_MCP_USER_SEARCH_CONCURRENCY` | `4` | Environment default for the per-user limit; must not exceed the global limit. The persisted panel setting takes precedence after initialization. |
 | `GROK_MCP_DEBUG` | `false` | Accepts `1`, `true`, or `yes`. May capture debug request/response context in usage records. |
 | `GROK_PROXY_URL` | Empty | Explicit upstream HTTP(S) proxy URL. |
 | `GROK_PROXY_ENABLED` | Inferred | Explicit proxy switch. When unset, a non-empty `GROK_PROXY_URL` enables it. |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Go defaults | Used by the standard transport when an explicit proxy is not enabled. |
+
+When either search concurrency limit is exhausted, the server rejects the request immediately with HTTP `503` and `Retry-After: 1` instead of queueing another long-lived HTTP/SSE request. Search responses expose semaphore acquisition time in `X-Grok-Search-Queue-Time-Ms`.
 
 ### Forwarded client-IP protection
 
@@ -328,6 +332,7 @@ On startup, environment variables are loaded first. If SQLite already contains s
 - Explicit proxy URL and enabled state
 - Registration mode
 - Debug mode
+- Process-wide and per-user streaming search concurrency limits
 
 The listen address, database path, JWT secret, and source-IP RPM remain startup-only settings.
 
@@ -382,7 +387,7 @@ Successful-call periods use UTC calendar months. A call reserves quota before to
 The `/mcp` middleware order is shown below. The `IP RPM` step immediately passes through when neither forwarded header yields a valid IP:
 
 ```text
-MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM -> Quota -> Usage -> MCP handler
+MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM -> Search Concurrency -> Quota -> Usage -> MCP handler
 ```
 
 ## Administration API overview

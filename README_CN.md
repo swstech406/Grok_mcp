@@ -35,7 +35,7 @@ MCP 客户端 -- HTTPS --> 反向代理 / 负载均衡器 -- HTTP --> grok-mcp /
 - 由有效转发 IP 触发的 `/mcp` 与面板认证 IP 防护
 - 使用 SQLite 持久化用户、Key、tier、用量、邀请码和服务设置
 - 内嵌管理面板，无独立前端构建步骤
-- 上游、代理、注册模式和 debug 设置支持运行时热更新
+- 上游、搜索并发、代理、注册模式和 debug 设置支持运行时热更新
 - 使用非 root 运行镜像的 Docker Compose 部署
 
 ## 架构
@@ -279,10 +279,14 @@ claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
 | `GROK_USAGE_DAILY_RETENTION_DAYS` | `730` | 日级聚合超过此期限后删除。 |
 | `GROK_USAGE_MAINTENANCE_INTERVAL` | `1h` | 聚合、清理和 WAL checkpoint 的执行间隔。 |
 | `GROK_MCP_IP_RPM` | `300` | 仅当 `X-Real-IP` 或 `X-Forwarded-For` 包含有效 IP 时，在 MCP API Key 鉴权前应用的来源 IP RPM。 |
+| `GROK_MCP_GLOBAL_SEARCH_CONCURRENCY` | `16` | 进程级流式搜索同时在途上限的环境默认值；初始化后以面板持久化设置为准。 |
+| `GROK_MCP_USER_SEARCH_CONCURRENCY` | `4` | 单用户上限的环境默认值，不得超过全局上限；初始化后以面板持久化设置为准。 |
 | `GROK_MCP_DEBUG` | `false` | `1`、`true` 或 `yes` 启用；可能在用量记录中捕获调试上下文。 |
 | `GROK_PROXY_URL` | 空 | 显式上游 HTTP(S) 代理。 |
 | `GROK_PROXY_ENABLED` | 自动判断 | 显式代理开关；未设置时，非空 `GROK_PROXY_URL` 会启用代理。 |
 | `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | Go 默认行为 | 未启用显式代理时由标准 HTTP Transport 使用。 |
+
+任一搜索并发容量耗尽时，服务会立即返回 HTTP `503` 和 `Retry-After: 1`，不会继续排队并占用长连接 goroutine/socket。搜索响应通过 `X-Grok-Search-Queue-Time-Ms` 暴露 semaphore 获取耗时。
 
 ### 转发客户端 IP 防护
 
@@ -325,6 +329,7 @@ location / {
 - 显式代理地址及开关
 - 注册模式
 - Debug 模式
+- 进程级和单用户流式搜索并发上限
 
 监听地址、数据库路径、JWT 密钥和来源 IP RPM 仍然是仅启动时生效的配置。
 
@@ -379,7 +384,7 @@ location / {
 `/mcp` 中间件顺序如下；当两个转发 Header 都无法解析出有效 IP 时，`IP RPM` 步骤会直接放行：
 
 ```text
-MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM -> Quota -> Usage -> MCP handler
+MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM -> Search Concurrency -> Quota -> Usage -> MCP handler
 ```
 
 ## 管理面板 API 概览
