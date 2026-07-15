@@ -16,20 +16,18 @@ import (
 	"github.com/grok-mcp/internal/store"
 )
 
-// fakeStore 的 touched/lastID 字段会被 AsyncUsageWriter 后台 goroutine 写入、
+// fakeStore 的 recordedUsage 字段会被 AsyncUsageWriter 后台 goroutine 写入、
 // 测试主 goroutine 读取，因此用 mutex 保护以避免数据竞争。
 type fakeStore struct {
 	store.TestStore
-	mu      sync.Mutex
-	touched int
-	lastID  string
+	mu            sync.Mutex
+	recordedUsage []store.UsageRecord
 }
 
-func (f *fakeStore) TouchKeyUsage(_ context.Context, keyID string) error {
+func (f *fakeStore) RecordUsage(_ context.Context, record store.UsageRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.touched++
-	f.lastID = keyID
+	f.recordedUsage = append(f.recordedUsage, record)
 	return nil
 }
 
@@ -39,16 +37,10 @@ func (f *fakeStore) TryIncrementUserSuccessCalls(context.Context, string, int) e
 	return nil
 }
 
-func (f *fakeStore) Touched() int {
+func (f *fakeStore) RecordedUsage() []store.UsageRecord {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.touched
-}
-
-func (f *fakeStore) LastID() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.lastID
+	return append([]store.UsageRecord(nil), f.recordedUsage...)
 }
 
 func TestMCPMiddlewareGatesUsageByToolCall(t *testing.T) {
@@ -64,8 +56,8 @@ func TestMCPMiddlewareGatesUsageByToolCall(t *testing.T) {
 	req = req.WithContext(auth.WithAPIKey(req.Context(), key))
 	req = req.WithContext(auth.WithUser(req.Context(), user))
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	if st.Touched() != 0 {
-		t.Fatalf("initialize must not touch usage, got touched=%d", st.Touched())
+	if recordedUsage := st.RecordedUsage(); len(recordedUsage) != 0 {
+		t.Fatalf("initialize must not record usage, got records=%d", len(recordedUsage))
 	}
 
 	req2 := httptest.NewRequest(http.MethodPost, "/mcp",
@@ -74,11 +66,15 @@ func TestMCPMiddlewareGatesUsageByToolCall(t *testing.T) {
 	req2 = req2.WithContext(auth.WithUser(req2.Context(), user))
 	h.ServeHTTP(httptest.NewRecorder(), req2)
 	deadline := time.Now().Add(2 * time.Second)
-	for st.Touched() < 1 && time.Now().Before(deadline) {
+	for len(st.RecordedUsage()) < 1 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if st.Touched() != 1 || st.LastID() != "k1" {
-		t.Fatalf("tools/call should touch usage once for k1, got touched=%d id=%q", st.Touched(), st.LastID())
+	recordedUsage := st.RecordedUsage()
+	if len(recordedUsage) != 1 {
+		t.Fatalf("tools/call should enqueue one usage record, got %d", len(recordedUsage))
+	}
+	if recordedUsage[0].KeyID != "k1" || recordedUsage[0].ToolName != "grok_web_search" {
+		t.Fatalf("unexpected usage record: key=%q tool=%q", recordedUsage[0].KeyID, recordedUsage[0].ToolName)
 	}
 }
 
@@ -276,7 +272,6 @@ func (r *releaseContextRecordingStore) ReleaseSuccessCall(ctx context.Context, _
 type failureRecordingStore struct {
 	store.TestStore
 	releaseSuccessCalls int
-	touchedKeys         []string
 	recordedUsage       []store.UsageRecord
 }
 
@@ -478,11 +473,6 @@ func TestMCPMiddlewareCleansDebugSpoolsOnPanic(t *testing.T) {
 	}
 }
 
-func (f *failureRecordingStore) TouchKeyUsage(_ context.Context, keyID string) error {
-	f.touchedKeys = append(f.touchedKeys, keyID)
-	return nil
-}
-
 func (f *failureRecordingStore) ReleaseSuccessCall(_ context.Context, _ string) error {
 	f.releaseSuccessCalls++
 	return nil
@@ -537,9 +527,6 @@ func TestMCPMiddlewareReleasesAndRecordsFailureOnToolErrorAndHTTPError(t *testin
 
 			if st.releaseSuccessCalls != 1 {
 				t.Fatalf("expected one quota release, got %d", st.releaseSuccessCalls)
-			}
-			if len(st.touchedKeys) != 1 || st.touchedKeys[0] != "k1" {
-				t.Fatalf("expected one touch for k1, got %+v", st.touchedKeys)
 			}
 			if len(st.recordedUsage) != 1 {
 				t.Fatalf("expected one usage record, got %+v", st.recordedUsage)
@@ -671,10 +658,10 @@ func TestMCPMiddlewareUsesContextToolName(t *testing.T) {
 
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	deadline := time.Now().Add(2 * time.Second)
-	for st.Touched() < 1 && time.Now().Before(deadline) {
+	for len(st.RecordedUsage()) < 1 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if st.Touched() != 1 {
-		t.Fatalf("expected usage touched via context tool name, got %d", st.Touched())
+	if recordedUsage := st.RecordedUsage(); len(recordedUsage) != 1 {
+		t.Fatalf("expected one usage record via context tool name, got %d", len(recordedUsage))
 	}
 }

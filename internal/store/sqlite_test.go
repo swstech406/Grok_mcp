@@ -405,6 +405,102 @@ func TestCreateAndGetKeyByHash(t *testing.T) {
 	}
 }
 
+func TestRecordUsageUpdatesKeyAccountingWithoutRegressingLastUsedAt(t *testing.T) {
+	sqliteStore := openTestDB(t)
+	ctx := context.Background()
+	userID := testUserID(t, sqliteStore)
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "usage-key")
+	if err != nil {
+		t.Fatalf("CreateKey: %v", err)
+	}
+
+	newerTimestamp := time.Date(2026, time.July, 15, 12, 30, 45, 0, time.UTC)
+	olderTimestamp := newerTimestamp.Add(-2 * time.Hour)
+	for _, usageTimestamp := range []time.Time{newerTimestamp, olderTimestamp} {
+		if err := sqliteStore.RecordUsage(ctx, UsageRecord{
+			KeyID:      apiKey.ID,
+			ToolName:   "grok_web_search",
+			Timestamp:  usageTimestamp,
+			DurationMs: 25,
+			Success:    true,
+		}); err != nil {
+			t.Fatalf("RecordUsage(%s): %v", usageTimestamp, err)
+		}
+	}
+
+	updatedKey, err := sqliteStore.GetKeyByID(ctx, apiKey.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID: %v", err)
+	}
+	if updatedKey.TotalCalls != 2 {
+		t.Fatalf("total calls = %d, want 2", updatedKey.TotalCalls)
+	}
+	if updatedKey.LastUsedAt == nil {
+		t.Fatal("last used timestamp was not recorded")
+	}
+	if !updatedKey.LastUsedAt.Equal(newerTimestamp) {
+		t.Fatalf("last used timestamp = %s, want %s", updatedKey.LastUsedAt, newerTimestamp)
+	}
+
+	var usageCount int
+	if err := sqliteStore.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM usage_log WHERE key_id = ?`, apiKey.ID,
+	).Scan(&usageCount); err != nil {
+		t.Fatalf("count usage records: %v", err)
+	}
+	if usageCount != 2 {
+		t.Fatalf("usage records = %d, want 2", usageCount)
+	}
+}
+
+func TestRecordUsageRollsBackLogWhenKeyAccountingFails(t *testing.T) {
+	sqliteStore := openTestDB(t)
+	ctx := context.Background()
+	userID := testUserID(t, sqliteStore)
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "rollback-key")
+	if err != nil {
+		t.Fatalf("CreateKey: %v", err)
+	}
+
+	if _, err := sqliteStore.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_usage_accounting
+		BEFORE UPDATE OF total_calls ON apikeys
+		BEGIN
+			SELECT RAISE(ABORT, 'usage accounting rejected');
+		END`); err != nil {
+		t.Fatalf("create accounting rejection trigger: %v", err)
+	}
+
+	err = sqliteStore.RecordUsage(ctx, UsageRecord{
+		KeyID:      apiKey.ID,
+		ToolName:   "grok_web_search",
+		Timestamp:  time.Now().UTC(),
+		DurationMs: 10,
+		Success:    true,
+	})
+	if err == nil {
+		t.Fatal("expected RecordUsage to fail when key accounting is rejected")
+	}
+
+	var usageCount int
+	if err := sqliteStore.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM usage_log WHERE key_id = ?`, apiKey.ID,
+	).Scan(&usageCount); err != nil {
+		t.Fatalf("count usage records: %v", err)
+	}
+	if usageCount != 0 {
+		t.Fatalf("usage records after rollback = %d, want 0", usageCount)
+	}
+
+	updatedKey, err := sqliteStore.GetKeyByID(ctx, apiKey.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID: %v", err)
+	}
+	if updatedKey.TotalCalls != 0 || updatedKey.LastUsedAt != nil {
+		t.Fatalf("key accounting changed after rollback: total_calls=%d last_used_at=%v", updatedKey.TotalCalls, updatedKey.LastUsedAt)
+	}
+}
+
 func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T) {
 	const encryptionSecret = "test-server-settings-encryption-secret-at-least-32-bytes"
 	const cpaAPIKey = "sensitive-cpa-api-key"
@@ -833,7 +929,7 @@ func TestUsageStatsAggregatesTrafficAndRPMBeyondRecordLimit(t *testing.T) {
 	}
 }
 
-func TestAsyncUsageWriterCloseFlushesUsageAndTouch(t *testing.T) {
+func TestAsyncUsageWriterCloseFlushesUsageAndKeyAccounting(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 	key, _, err := s.CreateKey(ctx, testUserID(t, s), "async")
@@ -843,7 +939,6 @@ func TestAsyncUsageWriterCloseFlushesUsageAndTouch(t *testing.T) {
 
 	writer := NewAsyncUsageWriter(s, 8)
 	now := time.Now().UTC()
-	writer.Enqueue(UsageRecord{KeyID: key.ID, TouchKey: true})
 	writer.Enqueue(UsageRecord{KeyID: key.ID, ToolName: "grok_web_search", Timestamp: now, DurationMs: 21, Success: true})
 	writer.Enqueue(UsageRecord{KeyID: key.ID, ToolName: "grok_x_search", Timestamp: now, DurationMs: 22, Success: false})
 	writer.Close()
@@ -852,8 +947,8 @@ func TestAsyncUsageWriterCloseFlushesUsageAndTouch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updatedKey.TotalCalls != 1 || updatedKey.LastUsedAt == nil {
-		t.Fatalf("expected touch record to update key usage, got %+v", updatedKey)
+	if updatedKey.TotalCalls != 2 || updatedKey.LastUsedAt == nil {
+		t.Fatalf("expected usage records to update key accounting, got %+v", updatedKey)
 	}
 
 	stats, err := s.GetUsageStats(ctx, key.ID, now.Add(-time.Minute))

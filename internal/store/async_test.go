@@ -1,9 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -55,20 +58,55 @@ func TestAsyncUsageWriterStatsTrackDroppedRecords(t *testing.T) {
 			_ = os.Remove(droppedCapturePath)
 		},
 	})
-	writer.Enqueue(UsageRecord{KeyID: "key-4", TouchKey: true})
+	writer.Enqueue(UsageRecord{KeyID: "key-4", ToolName: "grok_x_search"})
 	if _, err := os.Stat(droppedCapturePath); !os.IsNotExist(err) {
 		t.Fatalf("queue-full capture was not removed: %v", err)
 	}
 
 	stats := writer.Stats()
-	if stats.DroppedRecords != 1 {
-		t.Fatalf("dropped records = %d, want 1", stats.DroppedRecords)
-	}
-	if stats.DroppedTouches != 1 {
-		t.Fatalf("dropped touches = %d, want 1", stats.DroppedTouches)
+	if stats.DroppedRecords != 2 {
+		t.Fatalf("dropped records = %d, want 2", stats.DroppedRecords)
 	}
 	if stats.QueueCapacity != 1 {
 		t.Fatalf("queue capacity = %d, want 1", stats.QueueCapacity)
+	}
+
+	close(blockingStore.unblock)
+	writer.Close()
+}
+
+func TestAsyncUsageWriterRateLimitsQueueFullLogs(t *testing.T) {
+	blockingStore := &blockingUsageStore{
+		started: make(chan struct{}, 1),
+		unblock: make(chan struct{}),
+	}
+	writer := NewAsyncUsageWriter(blockingStore, 1)
+
+	writer.Enqueue(UsageRecord{KeyID: "in-flight", ToolName: "grok_web_search"})
+	select {
+	case <-blockingStore.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async writer to start blocked write")
+	}
+	writer.Enqueue(UsageRecord{KeyID: "queued", ToolName: "grok_web_search"})
+
+	var logOutput bytes.Buffer
+	originalLogWriter := log.Writer()
+	log.SetOutput(&logOutput)
+	t.Cleanup(func() {
+		log.SetOutput(originalLogWriter)
+	})
+
+	const droppedRequestCount = 20
+	for requestIndex := 0; requestIndex < droppedRequestCount; requestIndex++ {
+		writer.Enqueue(UsageRecord{KeyID: "dropped", ToolName: "grok_web_search"})
+	}
+
+	if stats := writer.Stats(); stats.DroppedRecords != droppedRequestCount {
+		t.Fatalf("dropped records = %d, want %d", stats.DroppedRecords, droppedRequestCount)
+	}
+	if logCount := strings.Count(logOutput.String(), "usage record dropped (buffer full)"); logCount != 1 {
+		t.Fatalf("queue-full log count = %d, want 1; logs=%q", logCount, logOutput.String())
 	}
 
 	close(blockingStore.unblock)

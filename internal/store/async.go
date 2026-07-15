@@ -12,6 +12,7 @@ const (
 	defaultAsyncUsageWriteTimeout = 2 * time.Second
 	defaultAsyncUsageCloseTimeout = 3 * time.Second
 	asyncUsageCancellationGrace   = 250 * time.Millisecond
+	asyncUsageDropLogInterval     = time.Second
 )
 
 // AsyncUsageWriter 将用量写入从请求路径解耦：主线程只入队，后台 goroutine 调用 Store。
@@ -29,22 +30,21 @@ type AsyncUsageWriter struct {
 
 	// 可观测计数：缓冲丢弃与写库失败/成功（原子累加，便于运维与测试断言）。
 	droppedRecords atomic.Uint64
-	droppedTouches atomic.Uint64
 	writeFailures  atomic.Uint64
 	writeSuccesses atomic.Uint64
+	nextDropLogAt  atomic.Int64
 }
 
 // AsyncUsageWriterStats 是异步用量写入器的快照统计。
 type AsyncUsageWriterStats struct {
 	DroppedRecords uint64
-	DroppedTouches uint64
 	WriteFailures  uint64
 	WriteSuccesses uint64
 	QueueLength    int
 	QueueCapacity  int
 }
 
-// NewAsyncUsageWriter 启动消费者；buffer 为满时 Enqueue 会丢弃并打日志（不阻塞 MCP）。
+// NewAsyncUsageWriter 启动消费者；buffer 为满时 Enqueue 会丢弃并限频记录日志（不阻塞 MCP）。
 func NewAsyncUsageWriter(s Store, buffer int) *AsyncUsageWriter {
 	return newAsyncUsageWriter(s, buffer, defaultAsyncUsageWriteTimeout, defaultAsyncUsageCloseTimeout)
 }
@@ -99,15 +99,6 @@ func (w *AsyncUsageWriter) write(workerContext context.Context, rec UsageRecord)
 
 	writeContext, cancelWrite := context.WithTimeout(workerContext, w.writeTimeout)
 	defer cancelWrite()
-	if rec.TouchKey {
-		if err := w.store.TouchKeyUsage(writeContext, rec.KeyID); err != nil {
-			failures := w.writeFailures.Add(1)
-			log.Printf("touch key usage failed key=%s failures=%d: %v", rec.KeyID, failures, err)
-			return
-		}
-		w.writeSuccesses.Add(1)
-		return
-	}
 	if err := w.store.RecordUsage(writeContext, rec); err != nil {
 		failures := w.writeFailures.Add(1)
 		log.Printf("usage record write failed key=%s tool=%s failures=%d: %v", rec.KeyID, rec.ToolName, failures, err)
@@ -158,15 +149,26 @@ func (w *AsyncUsageWriter) discardQueuedRecords(reason string) {
 
 func (w *AsyncUsageWriter) discardRecord(rec UsageRecord, reason string) {
 	defer cleanupUsageRecord(rec)
-	if rec.TouchKey {
-		dropped := w.droppedTouches.Add(1)
-		log.Printf("touch key usage dropped (%s) key=%s dropped_touches=%d queue_cap=%d",
-			reason, rec.KeyID, dropped, cap(w.ch))
+	dropped := w.droppedRecords.Add(1)
+	if !w.shouldLogDrop() {
 		return
 	}
-	dropped := w.droppedRecords.Add(1)
 	log.Printf("usage record dropped (%s) key=%s tool=%s dropped_records=%d queue_cap=%d",
 		reason, rec.KeyID, rec.ToolName, dropped, cap(w.ch))
+}
+
+func (w *AsyncUsageWriter) shouldLogDrop() bool {
+	now := time.Now()
+	nowUnixNano := now.UnixNano()
+	for {
+		nextAllowedUnixNano := w.nextDropLogAt.Load()
+		if nowUnixNano < nextAllowedUnixNano {
+			return false
+		}
+		if w.nextDropLogAt.CompareAndSwap(nextAllowedUnixNano, now.Add(asyncUsageDropLogInterval).UnixNano()) {
+			return true
+		}
+	}
 }
 
 func cleanupUsageRecord(rec UsageRecord) {
@@ -185,7 +187,6 @@ func cleanupUsageRecord(rec UsageRecord) {
 func (w *AsyncUsageWriter) Stats() AsyncUsageWriterStats {
 	return AsyncUsageWriterStats{
 		DroppedRecords: w.droppedRecords.Load(),
-		DroppedTouches: w.droppedTouches.Load(),
 		WriteFailures:  w.writeFailures.Load(),
 		WriteSuccesses: w.writeSuccesses.Load(),
 		QueueLength:    len(w.ch),

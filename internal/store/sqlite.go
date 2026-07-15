@@ -413,6 +413,7 @@ func (s *SQLiteStore) RecordUsage(ctx context.Context, record UsageRecord) error
 	if record.Success {
 		success = 1
 	}
+	usageTimestamp := formatTime(record.Timestamp.UTC())
 
 	transaction, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -422,7 +423,7 @@ func (s *SQLiteStore) RecordUsage(ctx context.Context, record UsageRecord) error
 
 	result, err := transaction.ExecContext(ctx,
 		`INSERT INTO usage_log (key_id, tool_name, timestamp, duration_ms, success) VALUES (?, ?, ?, ?, ?)`,
-		record.KeyID, record.ToolName, formatTime(record.Timestamp.UTC()), record.DurationMs, success,
+		record.KeyID, record.ToolName, usageTimestamp, record.DurationMs, success,
 	)
 	if err != nil {
 		return err
@@ -430,6 +431,18 @@ func (s *SQLiteStore) RecordUsage(ctx context.Context, record UsageRecord) error
 	usageID, err := result.LastInsertId()
 	if err != nil {
 		return fmt.Errorf("usage insert id: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `
+		UPDATE apikeys
+		SET last_used_at = CASE
+				WHEN last_used_at IS NULL OR last_used_at < ? THEN ?
+				ELSE last_used_at
+			END,
+			total_calls = total_calls + 1
+		WHERE id = ?`,
+		usageTimestamp, usageTimestamp, record.KeyID,
+	); err != nil {
+		return fmt.Errorf("update API key usage: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {
 		return err
@@ -541,7 +554,7 @@ func (s *SQLiteStore) persistUsageDebugRecord(ctx context.Context, usageID int64
 	return err
 }
 
-// TouchKeyUsage 在 tools/call 后递增 total_calls 并刷新 last_used_at；
+// TouchKeyUsage 保留给直接调用方；异步用量生产路径通过 RecordUsage 原子更新计数。
 // 不触碰 updated_at——该字段只随 CreateKey/UpdateKey 的配置变更而更新。
 func (s *SQLiteStore) TouchKeyUsage(ctx context.Context, keyID string) error {
 	now := formatTime(time.Now().UTC())

@@ -194,7 +194,6 @@ func MCPMiddleware(st UsageStore, writer *store.AsyncUsageWriter, debugStates ..
 				if debugEnabled {
 					debugJSON = buildDebugJSON(r, key, user, hasUser, toolName, start, dur, success, rec, debugCapture)
 				}
-				writer.Enqueue(store.UsageRecord{KeyID: key.ID, TouchKey: true})
 				usageRecord := store.UsageRecord{
 					KeyID: key.ID, ToolName: toolName,
 					Timestamp: time.Now().UTC(), DurationMs: dur,

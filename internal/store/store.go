@@ -183,8 +183,6 @@ type UsageRecord struct {
 	// single-record detail query. Usage-stat list queries always leave them empty.
 	DebugRequestBody  string
 	DebugResponseBody string
-	// TouchKey 为 true 时异步执行 TouchKeyUsage，不写 usage_log。
-	TouchKey bool
 	// Cleanup releases resources owned by the queued record, such as temporary
 	// debug capture files. AsyncUsageWriter invokes it exactly once after the
 	// record is written or discarded.
@@ -310,8 +308,6 @@ type Store interface {
 	GetUserUsageStats(ctx context.Context, userID string, since time.Time) (*UsageStats, error)
 	GetGlobalStats(ctx context.Context, since time.Time) (*UsageStats, error)
 	GetUsageRecordDetail(ctx context.Context, usageID int64, scope UsageRecordScope) (*UsageRecord, error)
-	TouchKeyUsage(ctx context.Context, keyID string) error
-
 	ListInviteCodes(ctx context.Context) ([]*InviteCode, error)
 	CreateInviteCode(ctx context.Context, createdByUserID string, registrationLimit int) (*InviteCode, string, error)
 	UpdateInviteCode(ctx context.Context, id string, updates InviteCodeUpdates) (*InviteCode, error)
