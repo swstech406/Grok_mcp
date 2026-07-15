@@ -1,6 +1,8 @@
 package panel
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,5 +57,38 @@ func TestToUsageStatsResponseIncludesDatabaseAggregates(t *testing.T) {
 	bucket := response.TrafficBuckets[0]
 	if !bucket.Start.Equal(bucketStart) || !bucket.End.Equal(bucketEnd) || bucket.Calls != 650 {
 		t.Fatalf("unexpected traffic bucket response: %+v", bucket)
+	}
+}
+
+func TestToUsageStatsResponseOmitsCompleteDebugBodies(t *testing.T) {
+	const requestBody = "unique-sensitive-request-body"
+	const responseBody = "unique-sensitive-response-body"
+	usageRecord := store.UsageRecord{
+		ID: 17, KeyID: "key-1", ToolName: "grok_web_search", Timestamp: time.Now().UTC(),
+		DebugJSON: `{"version":2}`, HasDebugRequestBody: true, HasDebugResponseBody: true,
+		DebugRequestBytes: int64(len(requestBody)), DebugResponseBytes: int64(len(responseBody)),
+		DebugRequestBody: requestBody, DebugResponseBody: responseBody,
+	}
+
+	responseJSON, err := json.Marshal(toUsageStatsResponse(&store.UsageStats{Records: []store.UsageRecord{usageRecord}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serializedResponse := string(responseJSON)
+	for _, forbiddenValue := range []string{"\"debug_request_body\":", "\"debug_response_body\":", requestBody, responseBody} {
+		if strings.Contains(serializedResponse, forbiddenValue) {
+			t.Fatalf("usage list exposed complete debug body data: %s", serializedResponse)
+		}
+	}
+	if !strings.Contains(serializedResponse, "has_debug_request_body") || !strings.Contains(serializedResponse, "debug_request_body_bytes") {
+		t.Fatalf("usage list omitted safe debug body summary: %s", serializedResponse)
+	}
+
+	detailJSON, err := json.Marshal(toUsageRecordDetailResponse(&usageRecord))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(detailJSON), requestBody) || !strings.Contains(string(detailJSON), responseBody) {
+		t.Fatalf("usage detail omitted complete debug bodies: %s", detailJSON)
 	}
 }

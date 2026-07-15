@@ -79,6 +79,9 @@ func (TestStore) GetUserUsageStats(context.Context, string, time.Time) (*UsageSt
 func (TestStore) GetGlobalStats(context.Context, time.Time) (*UsageStats, error) {
 	return nil, nil
 }
+func (TestStore) GetUsageRecordDetail(context.Context, int64, UsageRecordScope) (*UsageRecord, error) {
+	return nil, nil
+}
 func (TestStore) TouchKeyUsage(context.Context, string) error { return nil }
 
 func (TestStore) GetServerSettings(context.Context) (*ServerSettings, error) { return nil, nil }

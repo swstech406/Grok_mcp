@@ -8,6 +8,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func NewMux(h *Handler) http.Handler {
 	authenticated.HandleFunc("DELETE /panel/v1/keys/{id}", h.deleteKey)
 	authenticated.HandleFunc("GET /panel/v1/keys/{id}/usage", h.keyUsage)
 	authenticated.HandleFunc("GET /panel/v1/usage", h.userUsage)
+	authenticated.HandleFunc("GET /panel/v1/usage/records/{id}", h.usageRecordDetail)
 	h.registerAdminRoutes(authenticated)
 
 	authenticatedHandler := auth.JWTMiddleware(h.JWTSecret, h.Store)(authenticated)
@@ -505,6 +507,35 @@ func (h *Handler) userUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toUsageStatsResponse(stats))
+}
+
+func (h *Handler) usageRecordDetail(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	usageID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || usageID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid usage record id")
+		return
+	}
+
+	record, err := h.Store.GetUsageRecordDetail(r.Context(), usageID, store.UsageRecordScope{
+		UserID:          user.ID,
+		IncludeAllUsers: user.Role == store.RoleAdmin,
+	})
+	if errors.Is(err, store.ErrUsageRecordNotFound) {
+		writeError(w, http.StatusNotFound, "usage record not found")
+		return
+	}
+	if err != nil {
+		log.Printf("usage record %d detail failed: %v", usageID, err)
+		writeError(w, http.StatusInternalServerError, "failed to load usage record")
+		return
+	}
+	writeJSON(w, http.StatusOK, toUsageRecordDetailResponse(record))
 }
 
 func (h *Handler) adminListUsers(w http.ResponseWriter, r *http.Request) {

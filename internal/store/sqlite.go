@@ -577,12 +577,9 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	if err := recRows.Close(); err != nil {
 		return nil, err
 	}
-	for recordIndex := range stats.Records {
-		if err := s.loadUsageDebugBodies(ctx, &stats.Records[recordIndex]); err != nil {
-			return nil, err
-		}
+	if err := s.loadUsageDebugBodySummaries(ctx, stats.Records); err != nil {
+		return nil, err
 	}
-
 	currentRPM, err := s.queryCurrentRPM(ctx, where, whereArgs, queryEnd)
 	if err != nil {
 		return nil, err
@@ -601,13 +598,103 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	return stats, nil
 }
 
-func (s *SQLiteStore) loadUsageDebugBodies(ctx context.Context, record *UsageRecord) error {
+func (s *SQLiteStore) loadUsageDebugBodySummaries(ctx context.Context, records []UsageRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	queryPlaceholders := strings.TrimSuffix(strings.Repeat("?,", len(records)), ",")
+	queryArgs := make([]any, 0, len(records))
+	recordIndexesByID := make(map[int64]int, len(records))
+	for recordIndex := range records {
+		queryArgs = append(queryArgs, records[recordIndex].ID)
+		recordIndexesByID[records[recordIndex].ID] = recordIndex
+	}
+
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT body_kind, body_data FROM usage_log_debug_body_chunks WHERE usage_id = ? ORDER BY body_kind, chunk_index`,
-		record.ID,
+		`SELECT usage_id, body_kind, COALESCE(SUM(length(body_data)), 0)
+		 FROM usage_log_debug_body_chunks
+		 WHERE usage_id IN (`+queryPlaceholders+`)
+		 GROUP BY usage_id, body_kind`,
+		queryArgs...,
 	)
 	if err != nil {
 		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var usageID int64
+		var bodyKind string
+		var bodyBytes int64
+		if err := rows.Scan(&usageID, &bodyKind, &bodyBytes); err != nil {
+			return err
+		}
+		recordIndex, exists := recordIndexesByID[usageID]
+		if !exists {
+			continue
+		}
+		switch bodyKind {
+		case "request":
+			records[recordIndex].HasDebugRequestBody = true
+			records[recordIndex].DebugRequestBytes = bodyBytes
+		case "response":
+			records[recordIndex].HasDebugResponseBody = true
+			records[recordIndex].DebugResponseBytes = bodyBytes
+		}
+	}
+	return rows.Err()
+}
+
+func (s *SQLiteStore) GetUsageRecordDetail(ctx context.Context, usageID int64, scope UsageRecordScope) (*UsageRecord, error) {
+	if usageID <= 0 {
+		return nil, ErrUsageRecordNotFound
+	}
+
+	query := `SELECT usage_log.id, usage_log.key_id, usage_log.tool_name, usage_log.timestamp,
+	                 usage_log.duration_ms, usage_log.success, usage_log.debug_json
+	          FROM usage_log
+	          INNER JOIN apikeys ON apikeys.id = usage_log.key_id
+	          WHERE usage_log.id = ?`
+	queryArgs := []any{usageID}
+	if !scope.IncludeAllUsers {
+		query += ` AND apikeys.user_id = ?`
+		queryArgs = append(queryArgs, scope.UserID)
+	}
+
+	var record UsageRecord
+	var timestamp string
+	var success int
+	err := s.db.QueryRowContext(ctx, query, queryArgs...).Scan(
+		&record.ID,
+		&record.KeyID,
+		&record.ToolName,
+		&timestamp,
+		&record.DurationMs,
+		&success,
+		&record.DebugJSON,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrUsageRecordNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	record.Success = success != 0
+	record.Timestamp, err = parseTime(timestamp)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT body_kind, body_data
+		 FROM usage_log_debug_body_chunks
+		 WHERE usage_id = ?
+		 ORDER BY body_kind, chunk_index`,
+		usageID,
+	)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -617,21 +704,25 @@ func (s *SQLiteStore) loadUsageDebugBodies(ctx context.Context, record *UsageRec
 		var bodyKind string
 		var bodyData []byte
 		if err := rows.Scan(&bodyKind, &bodyData); err != nil {
-			return err
+			return nil, err
 		}
 		switch bodyKind {
 		case "request":
+			record.HasDebugRequestBody = true
+			record.DebugRequestBytes += int64(len(bodyData))
 			_, _ = requestBody.Write(bodyData)
 		case "response":
+			record.HasDebugResponseBody = true
+			record.DebugResponseBytes += int64(len(bodyData))
 			_, _ = responseBody.Write(bodyData)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	record.DebugRequestBody = requestBody.String()
 	record.DebugResponseBody = responseBody.String()
-	return nil
+	return &record, nil
 }
 
 func appendUsageStatsArgs(whereArgs []any, trailingArgs ...any) []any {

@@ -203,8 +203,12 @@ export function fetchKeyUsage(keyIdentifier) {
 }
 
 export function fetchUsage(since = "", options = {}) {
-  const sinceQuery = since ? `?since=${encodeURIComponent(since)}` : "";
-  return panelAPI.request(`/panel/v1/usage${sinceQuery}`, options);
+	const sinceQuery = since ? `?since=${encodeURIComponent(since)}` : "";
+	return panelAPI.request(`/panel/v1/usage${sinceQuery}`, options);
+}
+
+export function fetchUsageRecordDetail(recordIdentifier, options = {}) {
+	return panelAPI.request(`/panel/v1/usage/records/${encodeURIComponent(recordIdentifier)}`, options);
 }
 
 export function fetchAdminUsers(options = {}) {

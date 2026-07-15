@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +80,101 @@ func withJWT(req *http.Request, jwt string) *http.Request {
 		req.Header.Set("Authorization", "Bearer "+jwt)
 	}
 	return req
+}
+
+func TestUsageRecordDetailLoadsBodiesOnDemandAndEnforcesOwnership(t *testing.T) {
+	testServer, sqliteStore, configuration := panelTestServer(t)
+	defer testServer.Close()
+	ctx := context.Background()
+
+	owner, err := sqliteStore.CreateUser(ctx, "usage-detail-owner", "hash", store.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUser, err := sqliteStore.CreateUser(ctx, "usage-detail-other", "hash", store.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	administrator, err := sqliteStore.CreateUser(ctx, "usage-detail-admin", "hash", store.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiKey, _, err := sqliteStore.CreateKey(ctx, owner.ID, "usage-detail-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const requestBody = `{"query":"private request"}`
+	const responseBody = `{"answer":"private response"}`
+	requestPath := filepath.Join(t.TempDir(), "request.body")
+	responsePath := filepath.Join(t.TempDir(), "response.body")
+	if err := os.WriteFile(requestPath, []byte(requestBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(responsePath, []byte(responseBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordTimestamp := time.Now().UTC()
+	if err := sqliteStore.RecordUsage(ctx, store.UsageRecord{
+		KeyID: apiKey.ID, ToolName: "grok_web_search", Timestamp: recordTimestamp,
+		DebugJSON: `{"version":2}`, DebugRequestBodyPath: requestPath, DebugResponseBodyPath: responsePath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	usageStats, err := sqliteStore.GetUsageStats(ctx, apiKey.ID, recordTimestamp.Add(-time.Minute))
+	if err != nil || len(usageStats.Records) != 1 {
+		t.Fatalf("usage stats = %+v, err = %v", usageStats, err)
+	}
+	usageID := usageStats.Records[0].ID
+
+	issueToken := func(user *store.User) string {
+		t.Helper()
+		token, _, issueErr := auth.IssuePanelToken(configuration.JWTSecret, user, 0)
+		if issueErr != nil {
+			t.Fatal(issueErr)
+		}
+		return token
+	}
+	requestUsage := func(path, token string) (int, string) {
+		t.Helper()
+		request, requestErr := http.NewRequest(http.MethodGet, testServer.URL+path, nil)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		response, requestErr := http.DefaultClient.Do(withJWT(request, token))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		defer response.Body.Close()
+		var responseBuffer bytes.Buffer
+		if _, requestErr := responseBuffer.ReadFrom(response.Body); requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		return response.StatusCode, responseBuffer.String()
+	}
+
+	ownerToken := issueToken(owner)
+	listStatus, listBody := requestUsage("/panel/v1/usage", ownerToken)
+	if listStatus != http.StatusOK {
+		t.Fatalf("usage list status = %d, body = %s", listStatus, listBody)
+	}
+	if strings.Contains(listBody, "private request") || strings.Contains(listBody, "private response") || strings.Contains(listBody, `"debug_request_body"`) {
+		t.Fatalf("usage list exposed complete debug bodies: %s", listBody)
+	}
+
+	detailPath := "/panel/v1/usage/records/" + strconv.FormatInt(usageID, 10)
+	ownerStatus, ownerBody := requestUsage(detailPath, ownerToken)
+	if ownerStatus != http.StatusOK || !strings.Contains(ownerBody, "private request") || !strings.Contains(ownerBody, "private response") {
+		t.Fatalf("owner detail status = %d, body = %s", ownerStatus, ownerBody)
+	}
+	otherStatus, otherBody := requestUsage(detailPath, issueToken(otherUser))
+	if otherStatus != http.StatusNotFound || strings.Contains(otherBody, "private request") || strings.Contains(otherBody, "private response") {
+		t.Fatalf("other user detail status = %d, body = %s", otherStatus, otherBody)
+	}
+	adminStatus, adminBody := requestUsage(detailPath, issueToken(administrator))
+	if adminStatus != http.StatusOK || !strings.Contains(adminBody, "private request") || !strings.Contains(adminBody, "private response") {
+		t.Fatalf("admin detail status = %d, body = %s", adminStatus, adminBody)
+	}
 }
 
 func TestAdminUpdateUserRejectsSelfDisableAndDowngrade(t *testing.T) {

@@ -54,6 +54,29 @@ function renderModalFrame({ title, description, body, footer, wide = false, clos
 
 function renderDebugJSONModal(modal) {
   const record = modal.record || {};
+
+	if (modal.loading) {
+		return renderModalFrame({
+			title: "正在加载调试详情",
+			description: `正在按需读取调用 #${record.id ?? "--"} 的请求与响应正文。`,
+			body: `<div class="inline-alert">${renderIcon("activity")}<span>调试正文不会随用量列表提前传输，请稍候。</span></div>`,
+			footer: `<button class="button button-secondary" type="button" data-action="close-modal">取消</button>`,
+			wide: true,
+			modalClass: "debug-json-modal"
+		});
+	}
+
+	if (modal.error) {
+		return renderModalFrame({
+			title: "无法加载调试详情",
+			description: `调用 #${record.id ?? "--"} 的调试正文未能读取。`,
+			body: `<div class="inline-alert">${renderIcon("alert")}<span>${escapeHTML(modal.error)}</span></div>`,
+			footer: `<button class="button button-secondary" type="button" data-action="close-modal">关闭</button>`,
+			wide: true,
+			modalClass: "debug-json-modal"
+		});
+	}
+
   const rawDebugJSON = String(record.debug_json || "");
   let parsedDebugJSON = null;
   let parseError = "";

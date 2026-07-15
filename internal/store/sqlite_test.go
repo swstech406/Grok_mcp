@@ -340,7 +340,8 @@ func TestUsageDebugBodiesPersistAndLoadInBoundedChunks(t *testing.T) {
 	store := openTestDB(t)
 	ctx := context.Background()
 
-	key, _, err := store.CreateKey(ctx, testUserID(t, store), "debug-capture")
+	userID := testUserID(t, store)
+	key, _, err := store.CreateKey(ctx, userID, "debug-capture")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,14 +383,28 @@ func TestUsageDebugBodiesPersistAndLoadInBoundedChunks(t *testing.T) {
 	if persistedRecord.DebugJSON != debugJSON {
 		t.Fatalf("debug metadata changed: got %q want %q", persistedRecord.DebugJSON, debugJSON)
 	}
-	if persistedRecord.DebugRequestBody != requestBody {
-		t.Fatalf("request body length = %d, want %d", len(persistedRecord.DebugRequestBody), len(requestBody))
+	if persistedRecord.DebugRequestBody != "" || persistedRecord.DebugResponseBody != "" {
+		t.Fatal("usage list must not load complete debug bodies")
 	}
-	if persistedRecord.DebugResponseBody != responseBody {
-		t.Fatalf("response body length = %d, want %d", len(persistedRecord.DebugResponseBody), len(responseBody))
+	if !persistedRecord.HasDebugRequestBody || persistedRecord.DebugRequestBytes != int64(len(requestBody)) {
+		t.Fatalf("request body summary = available:%v bytes:%d, want true/%d", persistedRecord.HasDebugRequestBody, persistedRecord.DebugRequestBytes, len(requestBody))
+	}
+	if !persistedRecord.HasDebugResponseBody || persistedRecord.DebugResponseBytes != int64(len(responseBody)) {
+		t.Fatalf("response body summary = available:%v bytes:%d, want true/%d", persistedRecord.HasDebugResponseBody, persistedRecord.DebugResponseBytes, len(responseBody))
 	}
 	if persistedRecord.DebugRequestBodyPath != "" || persistedRecord.DebugResponseBodyPath != "" {
 		t.Fatalf("temporary paths must not be returned from stats: %+v", persistedRecord)
+	}
+
+	detailRecord, err := store.GetUsageRecordDetail(ctx, persistedRecord.ID, UsageRecordScope{UserID: userID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailRecord.DebugRequestBody != requestBody {
+		t.Fatalf("detail request body length = %d, want %d", len(detailRecord.DebugRequestBody), len(requestBody))
+	}
+	if detailRecord.DebugResponseBody != responseBody {
+		t.Fatalf("detail response body length = %d, want %d", len(detailRecord.DebugResponseBody), len(responseBody))
 	}
 
 	var chunkCount int
@@ -405,6 +420,45 @@ func TestUsageDebugBodiesPersistAndLoadInBoundedChunks(t *testing.T) {
 	}
 	if maximumChunkBytes > usageDebugBodyChunkSize {
 		t.Fatalf("maximum chunk size = %d, cap = %d", maximumChunkBytes, usageDebugBodyChunkSize)
+	}
+}
+
+func TestGetUsageRecordDetailEnforcesUserScope(t *testing.T) {
+	store := openTestDB(t)
+	ctx := context.Background()
+
+	owner, err := store.CreateUser(ctx, "usage-owner", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUser, err := store.CreateUser(ctx, "usage-other", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := store.CreateKey(ctx, owner.ID, "owned-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordUsage(ctx, UsageRecord{
+		KeyID: key.ID, ToolName: "grok_x_search", Timestamp: time.Now().UTC(), DebugJSON: `{"version":2}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var usageID int64
+	if err := store.db.QueryRowContext(ctx, `SELECT id FROM usage_log WHERE key_id = ?`, key.ID).Scan(&usageID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetUsageRecordDetail(ctx, usageID, UsageRecordScope{UserID: otherUser.ID}); !errors.Is(err, ErrUsageRecordNotFound) {
+		t.Fatalf("other user detail error = %v, want ErrUsageRecordNotFound", err)
+	}
+	ownerRecord, err := store.GetUsageRecordDetail(ctx, usageID, UsageRecordScope{UserID: owner.ID})
+	if err != nil || ownerRecord.ID != usageID {
+		t.Fatalf("owner detail = %+v, err = %v", ownerRecord, err)
+	}
+	adminRecord, err := store.GetUsageRecordDetail(ctx, usageID, UsageRecordScope{IncludeAllUsers: true})
+	if err != nil || adminRecord.ID != usageID {
+		t.Fatalf("admin detail = %+v, err = %v", adminRecord, err)
 	}
 }
 

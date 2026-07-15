@@ -193,15 +193,33 @@ type UsageBucketDTO struct {
 }
 
 type UsageRecordDTO struct {
-	ID                int64     `json:"id"`
-	KeyID             string    `json:"key_id"`
-	ToolName          string    `json:"tool_name"`
-	Timestamp         time.Time `json:"timestamp"`
-	DurationMs        int64     `json:"duration_ms"`
-	Success           bool      `json:"success"`
-	DebugJSON         string    `json:"debug_json,omitempty"`
-	DebugRequestBody  string    `json:"debug_request_body,omitempty"`
-	DebugResponseBody string    `json:"debug_response_body,omitempty"`
+	ID                     int64     `json:"id"`
+	KeyID                  string    `json:"key_id"`
+	ToolName               string    `json:"tool_name"`
+	Timestamp              time.Time `json:"timestamp"`
+	DurationMs             int64     `json:"duration_ms"`
+	Success                bool      `json:"success"`
+	DebugJSON              string    `json:"debug_json,omitempty"`
+	HasDebugRequestBody    bool      `json:"has_debug_request_body,omitempty"`
+	HasDebugResponseBody   bool      `json:"has_debug_response_body,omitempty"`
+	DebugRequestBodyBytes  int64     `json:"debug_request_body_bytes,omitempty"`
+	DebugResponseBodyBytes int64     `json:"debug_response_body_bytes,omitempty"`
+}
+
+type UsageRecordDetailDTO struct {
+	ID                     int64     `json:"id"`
+	KeyID                  string    `json:"key_id"`
+	ToolName               string    `json:"tool_name"`
+	Timestamp              time.Time `json:"timestamp"`
+	DurationMs             int64     `json:"duration_ms"`
+	Success                bool      `json:"success"`
+	DebugJSON              string    `json:"debug_json,omitempty"`
+	HasDebugRequestBody    bool      `json:"has_debug_request_body,omitempty"`
+	HasDebugResponseBody   bool      `json:"has_debug_response_body,omitempty"`
+	DebugRequestBodyBytes  int64     `json:"debug_request_body_bytes,omitempty"`
+	DebugResponseBodyBytes int64     `json:"debug_response_body_bytes,omitempty"`
+	DebugRequestBody       string    `json:"debug_request_body,omitempty"`
+	DebugResponseBody      string    `json:"debug_response_body,omitempty"`
 }
 
 func toUserResponse(u *store.User) UserResponse {
@@ -317,9 +335,26 @@ func toUsageStatsResponse(s *store.UsageStats) UsageStatsResponse {
 		out.Records = append(out.Records, UsageRecordDTO{
 			ID: r.ID, KeyID: r.KeyID, ToolName: r.ToolName,
 			Timestamp: r.Timestamp, DurationMs: r.DurationMs, Success: r.Success,
-			DebugJSON: r.DebugJSON, DebugRequestBody: r.DebugRequestBody,
-			DebugResponseBody: r.DebugResponseBody,
+			DebugJSON:              r.DebugJSON,
+			HasDebugRequestBody:    r.HasDebugRequestBody,
+			HasDebugResponseBody:   r.HasDebugResponseBody,
+			DebugRequestBodyBytes:  r.DebugRequestBytes,
+			DebugResponseBodyBytes: r.DebugResponseBytes,
 		})
 	}
 	return out
+}
+
+func toUsageRecordDetailResponse(record *store.UsageRecord) UsageRecordDetailDTO {
+	return UsageRecordDetailDTO{
+		ID: record.ID, KeyID: record.KeyID, ToolName: record.ToolName,
+		Timestamp: record.Timestamp, DurationMs: record.DurationMs, Success: record.Success,
+		DebugJSON:              record.DebugJSON,
+		HasDebugRequestBody:    record.HasDebugRequestBody,
+		HasDebugResponseBody:   record.HasDebugResponseBody,
+		DebugRequestBodyBytes:  record.DebugRequestBytes,
+		DebugResponseBodyBytes: record.DebugResponseBytes,
+		DebugRequestBody:       record.DebugRequestBody,
+		DebugResponseBody:      record.DebugResponseBody,
+	}
 }

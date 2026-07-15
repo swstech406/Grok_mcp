@@ -48,6 +48,10 @@ var ErrInviteCodeExhausted = errors.New("invite code exhausted")
 // ErrInviteCodeLimitTooLow 表示新的注册上限低于当前已使用次数。
 var ErrInviteCodeLimitTooLow = errors.New("invite code registration limit is lower than current usage")
 
+// ErrUsageRecordNotFound is returned when a usage record does not exist or is
+// outside the caller's authorized scope.
+var ErrUsageRecordNotFound = errors.New("usage record not found")
+
 // DefaultTierName 是新建用户与缺失 tier_id 时回退使用的默认等级名称。
 const DefaultTierName = "tier0"
 
@@ -160,13 +164,19 @@ type UsageRecord struct {
 	// DebugJSON stores compact debug metadata. Complete bodies are persisted
 	// separately so queued records never retain potentially huge strings.
 	DebugJSON string
+	// Debug body summaries are populated in one batched metadata query for usage
+	// lists. The complete BLOB contents are loaded only by GetUsageRecordDetail.
+	HasDebugRequestBody  bool
+	HasDebugResponseBody bool
+	DebugRequestBytes    int64
+	DebugResponseBytes   int64
 	// DebugRequestBodyPath and DebugResponseBodyPath are short-lived spool file
 	// references consumed transactionally by RecordUsage. They are never
 	// returned from usage-stat queries.
 	DebugRequestBodyPath  string
 	DebugResponseBodyPath string
-	// DebugRequestBody and DebugResponseBody are populated only when reading
-	// persisted usage stats. They remain empty on the asynchronous write path.
+	// DebugRequestBody and DebugResponseBody are populated only by the explicit
+	// single-record detail query. Usage-stat list queries always leave them empty.
 	DebugRequestBody  string
 	DebugResponseBody string
 	// TouchKey 为 true 时异步执行 TouchKeyUsage，不写 usage_log。
@@ -193,6 +203,14 @@ type UsageStats struct {
 	ByTool         map[string]int64
 	TrafficBuckets []UsageBucket
 	Records        []UsageRecord
+}
+
+// UsageRecordScope constrains access to a single usage record. Administrators
+// may set IncludeAllUsers; normal callers must provide their authenticated user
+// ID so ownership is checked in SQL before debug bodies are loaded.
+type UsageRecordScope struct {
+	UserID          string
+	IncludeAllUsers bool
 }
 
 // ServerSettings stores runtime-tunable upstream configuration for the MCP
@@ -288,6 +306,7 @@ type Store interface {
 	GetUsageStats(ctx context.Context, keyID string, since time.Time) (*UsageStats, error)
 	GetUserUsageStats(ctx context.Context, userID string, since time.Time) (*UsageStats, error)
 	GetGlobalStats(ctx context.Context, since time.Time) (*UsageStats, error)
+	GetUsageRecordDetail(ctx context.Context, usageID int64, scope UsageRecordScope) (*UsageRecord, error)
 	TouchKeyUsage(ctx context.Context, keyID string) error
 
 	ListInviteCodes(ctx context.Context) ([]*InviteCode, error)

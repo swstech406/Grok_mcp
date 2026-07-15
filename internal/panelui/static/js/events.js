@@ -9,6 +9,7 @@ import {
   fetchAdminUserUsage,
   fetchKeyUsage,
   fetchModels,
+	fetchUsageRecordDetail,
   login,
   panelAPI,
   register,
@@ -108,7 +109,7 @@ export function createApplicationEvents({
         await loadCurrentPage();
         break;
       case "view-debug-json":
-        openDebugJSONModal(actionElement.dataset.recordId);
+		await openDebugJSONModal(actionElement.dataset.recordId);
         break;
       case "open-edit-user":
         openEditUserModal(actionElement.dataset.id);
@@ -170,7 +171,7 @@ export function createApplicationEvents({
         await copyValue(actionElement.dataset.value || "");
         break;
       case "view-debug-json":
-        openDebugJSONModal(actionElement.dataset.recordId);
+		await openDebugJSONModal(actionElement.dataset.recordId);
         break;
       case "view-user-usage-logs":
         openUserUsageLogsModal();
@@ -399,11 +400,11 @@ export function createApplicationEvents({
     });
   }
 
-  function openDebugJSONModal(recordIdentifier) {
-    const pageUsageRecords = state.data.usage?.records || [];
-    const modalUsageRecords = state.modal?.usage?.records || [];
-    const matchingRecord = [...modalUsageRecords, ...pageUsageRecords].find(
-      (usageRecord) => String(usageRecord.id) === String(recordIdentifier)
+	async function openDebugJSONModal(recordIdentifier) {
+		const pageUsageRecords = state.data.usage?.records || [];
+		const modalUsageRecords = state.modal?.usage?.records || [];
+		const matchingRecord = [...modalUsageRecords, ...pageUsageRecords].find(
+			(usageRecord) => String(usageRecord.id) === String(recordIdentifier)
     );
 
     if (!matchingRecord?.debug_json) {
@@ -411,8 +412,31 @@ export function createApplicationEvents({
       return;
     }
 
-    openModal({ type: "debugJSON", record: matchingRecord, busy: false });
-  }
+		openModal({
+			type: "debugJSON",
+			record: { ...matchingRecord },
+			loading: true,
+			busy: false,
+			error: ""
+		});
+
+		try {
+			const recordDetail = await fetchUsageRecordDetail(recordIdentifier);
+			if (state.modal?.type === "debugJSON" && String(state.modal.record?.id) === String(recordIdentifier)) {
+				state.modal.record = recordDetail;
+				state.modal.loading = false;
+				renderModalRegion();
+			}
+		} catch (error) {
+			if (!handleSessionError(error)
+				&& state.modal?.type === "debugJSON"
+				&& String(state.modal.record?.id) === String(recordIdentifier)) {
+				state.modal.loading = false;
+				state.modal.error = getErrorMessage(error);
+				renderModalRegion();
+			}
+		}
+	}
 
   function closeModal() {
     state.modal = null;
