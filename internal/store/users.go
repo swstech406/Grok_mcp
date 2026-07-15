@@ -199,6 +199,57 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]*User, error) {
 	return out, nil
 }
 
+func (s *SQLiteStore) ListUsersPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*UserPage, error) {
+	pageLimit := normalizePanelPageLimit(limit)
+	query := `SELECT ` + userColumns + ` FROM users`
+	queryArgs := make([]any, 0, 4)
+	if cursor != nil {
+		cursorTimestamp := formatTime(cursor.Timestamp.UTC())
+		query += ` WHERE created_at > ? OR (created_at = ? AND id > ?)`
+		queryArgs = append(queryArgs, cursorTimestamp, cursorTimestamp, cursor.ID)
+	}
+	query += ` ORDER BY created_at ASC, id ASC LIMIT ?`
+	queryArgs = append(queryArgs, pageLimit+1)
+
+	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := make([]*User, 0, pageLimit+1)
+	for rows.Next() {
+		user, scanErr := scanUser(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &UserPage{}
+	if len(users) > pageLimit {
+		page.HasMore = true
+		users = users[:pageLimit]
+	}
+	for _, user := range users {
+		if err := s.resetUserSuccessPeriodIfNeeded(ctx, user); err != nil {
+			return nil, err
+		}
+	}
+	page.Users = users
+	if page.HasMore && len(users) > 0 {
+		lastUser := users[len(users)-1]
+		page.NextCursor = &TimeIDCursor{Timestamp: lastUser.CreatedAt, ID: lastUser.ID}
+	}
+	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&page.TotalCount); err != nil {
+		return nil, err
+	}
+	return page, nil
+}
+
 func (s *SQLiteStore) UpdateUser(ctx context.Context, id string, updates UserUpdates) (*User, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

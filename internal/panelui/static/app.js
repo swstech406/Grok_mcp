@@ -8,6 +8,7 @@ import {
   fetchSettings,
   fetchTiers,
   fetchUsage,
+  fetchUsageRecords,
   panelAPI
 } from "./js/api.js";
 import { renderAuthView } from "./js/components/forms.js";
@@ -17,6 +18,7 @@ import { createApplicationEvents } from "./js/events.js";
 import { adminPages, availablePages, pageMetadata, renderShell } from "./js/router.js";
 import {
   clearAuthenticatedState,
+  COLLECTION_PAGE_SIZE,
   commitPageData,
   normalizeUsage,
   pageHasExistingData,
@@ -121,20 +123,22 @@ async function loadCurrentPage(options = {}) {
   try {
     const pageResult = await loadPageData(page, requestController.signal);
     if (requestIdentifier !== activePageRequestIdentifier) {
-      return;
+      return false;
     }
     commitPageData(page, pageResult);
+    return true;
   } catch (error) {
     if (requestIdentifier !== activePageRequestIdentifier) {
-      return;
+      return false;
     }
     if (error?.name === "AbortError") {
-      return;
+      return false;
     }
     if (handleSessionError(error)) {
-      return;
+      return false;
     }
     showToast("加载失败", getErrorMessage(error), "error");
+    return false;
   } finally {
     if (activePageRequestController === requestController) {
       activePageRequestController = null;
@@ -152,40 +156,66 @@ async function loadPageData(page, signal) {
     case "overview": {
       const [user, keyResponse, usage] = await Promise.all([
         fetchCurrentUser({ signal }),
-        fetchKeys({ signal }),
+        fetchKeys({ signal, limit: COLLECTION_PAGE_SIZE }),
         fetchUsage(getUsagePeriodSince("24h"), { signal })
       ]);
       return {
         user,
-        keys: keyResponse?.keys || [],
+        keyResponse,
         overviewUsage: normalizeUsage(usage)
       };
     }
     case "keys": {
-      const keyResponse = await fetchKeys({ signal });
-      return { keys: keyResponse?.keys || [] };
+      const keyResponse = await fetchKeys({
+        signal,
+        cursor: state.pagination.keys.cursor,
+        limit: COLLECTION_PAGE_SIZE
+      });
+      return { keyResponse };
     }
     case "usage": {
-      const usage = await fetchUsage(getUsagePeriodSince(state.filters.usagePeriod), { signal });
+      const since = getUsagePeriodSince(state.filters.usagePeriod);
+      const cursor = state.pagination.usageRecords.cursor;
+      if (cursor) {
+        const recordPage = await fetchUsageRecords(since, { signal, cursor, limit: COLLECTION_PAGE_SIZE });
+        return {
+          usage: normalizeUsage({
+            ...(state.data.usage || {}),
+            records: recordPage?.records || [],
+            next_cursor: recordPage?.next_cursor || "",
+            has_more: Boolean(recordPage?.has_more)
+          })
+        };
+      }
+      const usage = await fetchUsage(since, { signal });
       return { usage: normalizeUsage(usage) };
     }
     case "users": {
       const [userResponse, tierResponse] = await Promise.all([
-        fetchAdminUsers({ signal }),
-        fetchTiers({ signal })
+        fetchAdminUsers({
+          signal,
+          cursor: state.pagination.users.cursor,
+          limit: COLLECTION_PAGE_SIZE
+        }),
+        fetchTiers({ signal, limit: 100 })
       ]);
-      return {
-        users: userResponse?.users || [],
-        tiers: tierResponse?.tiers || []
-      };
+      return { userResponse, tierResponse };
     }
     case "tiers": {
-      const tierResponse = await fetchTiers({ signal });
-      return { tiers: tierResponse?.tiers || [] };
+      const tierResponse = await fetchTiers({
+        signal,
+        cursor: state.pagination.tiers.cursor,
+        limit: COLLECTION_PAGE_SIZE
+      });
+      return { tierResponse };
     }
     case "invites": {
-      const inviteResponse = await fetchInviteCodes({ signal });
-      return { invites: inviteResponse?.invite_codes || [] };
+      const inviteResponse = await fetchInviteCodes({
+        signal,
+        cursor: state.pagination.invites.cursor,
+        limit: COLLECTION_PAGE_SIZE
+      });
+      return { inviteResponse };
     }
     case "settings":
       return { settings: await fetchSettings({ signal }) };

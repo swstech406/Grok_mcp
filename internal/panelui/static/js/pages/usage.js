@@ -4,6 +4,7 @@ import { renderMetricCard } from "../components/metric-card.js";
 import { renderToolBreakdown } from "../components/tool-breakdown.js";
 import { renderChart } from "../components/usage-chart.js";
 import { renderUsageRecords } from "../components/usage-records.js";
+import { renderCollectionPagination } from "../components/pagination.js";
 
 export function renderUsagePage(state) {
   const period = state.filters.usagePeriod;
@@ -38,6 +39,7 @@ export function renderUsagePage(state) {
     <article class="data-card">
       <header class="card-header"><div><h2>最近调用</h2><p>请求结果与耗时明细</p></div></header>
       ${renderUsageRecords(usage.records)}
+      ${renderCollectionPagination("usageRecords", state.pagination.usageRecords, usage.records.length)}
     </article>
   `;
 }

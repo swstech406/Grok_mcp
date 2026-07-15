@@ -915,8 +915,34 @@ func TestUsageStatsAggregatesTrafficAndRPMBeyondRecordLimit(t *testing.T) {
 	if stats.TotalCalls != recordCount || stats.SuccessCalls != recordCount {
 		t.Fatalf("expected complete aggregate counts of %d, got %+v", recordCount, stats)
 	}
-	if len(stats.Records) != 500 {
-		t.Fatalf("expected recent activity to remain limited to 500 records, got %d", len(stats.Records))
+	if len(stats.Records) != usageRecordPageSize {
+		t.Fatalf("expected recent activity to remain limited to %d records, got %d", usageRecordPageSize, len(stats.Records))
+	}
+	if !stats.RecordsPage.HasMore || stats.RecordsPage.NextCursor == nil {
+		t.Fatal("expected high-volume recent activity to expose a continuation cursor")
+	}
+	firstPage, err := s.ListUsageRecordsPage(ctx, UsageRecordListScope{UserID: userID}, recordTimestamp.Add(-time.Hour), nil, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPage, err := s.ListUsageRecordsPage(ctx, UsageRecordListScope{UserID: userID}, recordTimestamp.Add(-time.Hour), firstPage.NextCursor, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstPage.Records) != 40 || len(secondPage.Records) != 40 {
+		t.Fatalf("expected two full keyset pages, got %d and %d records", len(firstPage.Records), len(secondPage.Records))
+	}
+	seenUsageRecordIDs := make(map[int64]struct{}, 80)
+	for _, page := range []*UsageRecordPage{firstPage, secondPage} {
+		for recordIndex, record := range page.Records {
+			if _, alreadySeen := seenUsageRecordIDs[record.ID]; alreadySeen {
+				t.Fatalf("usage record %d appeared in more than one keyset page", record.ID)
+			}
+			seenUsageRecordIDs[record.ID] = struct{}{}
+			if recordIndex > 0 && page.Records[recordIndex-1].ID <= record.ID {
+				t.Fatalf("same-timestamp usage records are not ordered by descending ID: %d before %d", page.Records[recordIndex-1].ID, record.ID)
+			}
+		}
 	}
 	if stats.CurrentRPM != recordCount {
 		t.Fatalf("expected current RPM to count all %d records, got %d", recordCount, stats.CurrentRPM)

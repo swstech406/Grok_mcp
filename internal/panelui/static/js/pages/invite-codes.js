@@ -1,6 +1,7 @@
 import { calculatePercent, escapeHTML, formatNumber, formatShortDate } from "../utils.js";
 import { renderIcon } from "../components/icons.js";
 import { renderEmptyState, renderPageHeading, renderStatusBadge } from "../components/loading.js";
+import { renderCollectionPagination } from "../components/pagination.js";
 
 export function renderInvitesPage(state) {
   const createButton = `<button class="button button-primary" type="button" data-action="open-create-invite">${renderIcon("plus")} 创建邀请码</button>`;
@@ -33,6 +34,7 @@ export function renderInvitesPage(state) {
           </article>
         `;
       }).join("")}</div>
+      ${renderCollectionPagination("invites", state.pagination.invites, invites.length)}
     `}
   `;
 }

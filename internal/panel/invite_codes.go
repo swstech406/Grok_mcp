@@ -11,15 +11,30 @@ import (
 )
 
 func (h *Handler) adminListInviteCodes(w http.ResponseWriter, r *http.Request) {
-	inviteCodes, err := h.Store.ListInviteCodes(r.Context())
+	limit, err := parsePanelPageLimit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cursor, err := parseTimeIDCursor(r, cursorKindInvites)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.Store.ListInviteCodesPage(r.Context(), cursor, limit)
 	if err != nil {
 		log.Printf("admin list invite codes failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to list invite codes")
 		return
 	}
 
-	response := InviteCodesResponse{InviteCodes: make([]InviteCodeResponse, 0, len(inviteCodes))}
-	for _, inviteCode := range inviteCodes {
+	response := InviteCodesResponse{
+		InviteCodes: make([]InviteCodeResponse, 0, len(page.InviteCodes)),
+		NextCursor:  encodeTimeIDCursor(cursorKindInvites, page.NextCursor),
+		HasMore:     page.HasMore,
+		TotalCount:  page.TotalCount,
+	}
+	for _, inviteCode := range page.InviteCodes {
 		response.InviteCodes = append(response.InviteCodes, toInviteCodeResponse(inviteCode))
 	}
 	writeJSON(w, http.StatusOK, response)

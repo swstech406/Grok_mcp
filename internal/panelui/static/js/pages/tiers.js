@@ -1,6 +1,7 @@
 import { escapeHTML, formatLimit, formatNumber } from "../utils.js";
 import { renderIcon } from "../components/icons.js";
 import { renderEmptyState, renderPageHeading } from "../components/loading.js";
+import { renderCollectionPagination } from "../components/pagination.js";
 
 export function renderTiersPage(state) {
   const createButton = `<button class="button button-primary" type="button" data-action="open-create-tier">${renderIcon("plus")} 创建配额方案</button>`;
@@ -9,13 +10,15 @@ export function renderTiersPage(state) {
   }
 
   const tiers = state.data.tiers || [];
-  const assignedUserCount = tiers.reduce((totalUserCount, tier) => totalUserCount + getNonNegativeNumber(tier.user_count), 0);
+  const assignedUserCount = state.pagination.tiers.assignedUserCount
+    || tiers.reduce((totalUserCount, tier) => totalUserCount + getNonNegativeNumber(tier.user_count), 0);
+  const totalTierCount = state.pagination.tiers.totalCount || tiers.length;
   const initialTier = tiers.find((tier) => isInitialTier(tier));
 
   return `
     <div class="tiers-page">
       ${renderPageHeading("配额方案", "为不同用户群体设置清晰、统一且可复用的调用上限。", createButton)}
-      ${renderTierOverview(tiers.length, assignedUserCount, initialTier)}
+      ${renderTierOverview(totalTierCount, assignedUserCount, initialTier)}
       ${tiers.length === 0 ? renderEmptyTiers(createButton) : `
         <div class="tier-catalog-heading">
           <div>
@@ -27,6 +30,7 @@ export function renderTiersPage(state) {
         <section class="tier-grid" aria-label="配额方案列表">
           ${tiers.map((tier) => renderTierCard(tier)).join("")}
         </section>
+        ${renderCollectionPagination("tiers", state.pagination.tiers, tiers.length)}
       `}
     </div>
   `;

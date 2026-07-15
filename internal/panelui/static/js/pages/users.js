@@ -1,6 +1,7 @@
 import { escapeHTML, formatDateTime, formatLimit, formatNumber, getInitials } from "../utils.js";
 import { renderIcon } from "../components/icons.js";
 import { renderEmptyState, renderLoadingTable, renderPageHeading, renderStatusBadge } from "../components/loading.js";
+import { renderCollectionPagination } from "../components/pagination.js";
 
 export function renderUsersPage(state) {
   const users = state.data.users || [];
@@ -11,7 +12,7 @@ export function renderUsersPage(state) {
   const toolbar = `
     <div class="toolbar">
       <label class="search-field">${renderIcon("search")}<span class="sr-only">搜索用户</span><input class="text-input" type="search" value="${escapeHTML(state.filters.userSearch)}" placeholder="搜索用户名或 ID" data-filter="user-search"></label>
-      <span class="muted" style="font-size:11px">共 ${formatNumber(users.length)} 位用户</span>
+      <span class="muted" style="font-size:11px">共 ${formatNumber(state.pagination.users.totalCount || users.length)} 位用户</span>
     </div>
   `;
 
@@ -42,6 +43,7 @@ export function renderUsersPage(state) {
             </tr>
           `).join("")}</tbody>
         </table></div>
+        ${renderCollectionPagination("users", state.pagination.users, filteredUsers.length)}
       `}
     </div>
   `;

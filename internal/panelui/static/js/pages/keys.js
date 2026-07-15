@@ -1,6 +1,7 @@
 import { escapeHTML, formatDateTime, formatNumber, formatRelativeTime } from "../utils.js";
 import { renderIcon } from "../components/icons.js";
 import { renderEmptyState, renderLoadingTable, renderPageHeading, renderStatusBadge } from "../components/loading.js";
+import { renderCollectionPagination } from "../components/pagination.js";
 
 export function renderKeysPage(state) {
   const createButton = `<button class="button button-primary" type="button" data-action="open-create-key">${renderIcon("plus")} 创建密钥</button>`;
@@ -35,6 +36,7 @@ export function renderKeysPage(state) {
             `).join("")}</tbody>
           </table>
         </div>
+        ${renderCollectionPagination("keys", state.pagination.keys, keys.length)}
       </div>
     `}
   `;

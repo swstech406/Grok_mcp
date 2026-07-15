@@ -24,6 +24,9 @@ func (TestStore) RegisterUserWithInviteCode(context.Context, string, string, str
 func (TestStore) GetUserByUsername(context.Context, string) (*User, error) { return nil, nil }
 func (TestStore) GetUserByID(context.Context, string) (*User, error)       { return nil, ErrUserNotFound }
 func (TestStore) ListUsers(context.Context) ([]*User, error)               { return nil, nil }
+func (TestStore) ListUsersPage(context.Context, *TimeIDCursor, int) (*UserPage, error) {
+	return &UserPage{}, nil
+}
 func (TestStore) UpdateUser(context.Context, string, UserUpdates) (*User, error) {
 	return nil, nil
 }
@@ -40,6 +43,9 @@ func (TestStore) TryIncrementUserSuccessCalls(context.Context, string, int) erro
 func (TestStore) GetTierByID(context.Context, string) (*Tier, error)   { return nil, ErrTierNotFound }
 func (TestStore) GetTierByName(context.Context, string) (*Tier, error) { return nil, nil }
 func (TestStore) ListTiers(context.Context) ([]*Tier, error)           { return nil, nil }
+func (TestStore) ListTiersPage(context.Context, *TierCursor, int) (*TierPage, error) {
+	return &TierPage{}, nil
+}
 func (TestStore) CreateTier(context.Context, string, int, int, int) (*Tier, error) {
 	return nil, nil
 }
@@ -59,6 +65,9 @@ func (TestStore) ListKeys(context.Context) ([]*APIKey, error)           { return
 func (TestStore) ListKeysByUser(context.Context, string) ([]*APIKey, error) {
 	return nil, nil
 }
+func (TestStore) ListKeysByUserPage(context.Context, string, *TimeIDCursor, int) (*APIKeyPage, error) {
+	return &APIKeyPage{}, nil
+}
 func (TestStore) GetKeyByID(context.Context, string) (*APIKey, error) { return nil, nil }
 func (TestStore) UpdateKey(context.Context, string, KeyUpdates) (*APIKey, error) {
 	return nil, nil
@@ -76,6 +85,9 @@ func (TestStore) GetUserUsageStats(context.Context, string, time.Time) (*UsageSt
 func (TestStore) GetGlobalStats(context.Context, time.Time) (*UsageStats, error) {
 	return nil, nil
 }
+func (TestStore) ListUsageRecordsPage(context.Context, UsageRecordListScope, time.Time, *UsageRecordCursor, int) (*UsageRecordPage, error) {
+	return &UsageRecordPage{}, nil
+}
 func (TestStore) GetUsageRecordDetail(context.Context, int64, UsageRecordScope) (*UsageRecord, error) {
 	return nil, nil
 }
@@ -87,6 +99,9 @@ func (TestStore) UpsertServerSettings(context.Context, ServerSettings) (*ServerS
 }
 
 func (TestStore) ListInviteCodes(context.Context) ([]*InviteCode, error) { return nil, nil }
+func (TestStore) ListInviteCodesPage(context.Context, *TimeIDCursor, int) (*InviteCodePage, error) {
+	return &InviteCodePage{}, nil
+}
 func (TestStore) CreateInviteCode(context.Context, string, int) (*InviteCode, string, error) {
 	return nil, "", nil
 }

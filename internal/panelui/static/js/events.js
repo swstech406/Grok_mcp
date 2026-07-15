@@ -26,10 +26,14 @@ import { adminPages, availablePages, readPageFromLocation } from "./router.js";
 import {
   clearAuthenticatedState,
   clearCachedData,
+  COLLECTION_PAGE_SIZE,
   compareTiers,
+  movePaginationCursor,
   normalizeUsage,
   removeItemByIdentifier,
+  resetPagination,
   replaceItemByIdentifier,
+  restorePaginationCursor,
   state
 } from "./state.js";
 import { createFormDataObject } from "./utils.js";
@@ -44,6 +48,9 @@ export function createApplicationEvents({
   normalizeCurrentPageForRole,
   handleSessionError
 }) {
+  let activeModalRequestController = null;
+  let activeModalRequestIdentifier = 0;
+
   function registerEventHandlers() {
     applicationElement.addEventListener("click", handleApplicationClick);
     applicationElement.addEventListener("submit", handleFormSubmit);
@@ -86,7 +93,11 @@ export function createApplicationEvents({
         logout();
         break;
       case "refresh-page":
+        resetCurrentPagePagination();
         await loadCurrentPage({ refreshing: true });
+        break;
+      case "change-list-page":
+        await changeListPage(actionElement.dataset.list, actionElement.dataset.direction);
         break;
       case "open-create-key":
         openModal({ type: "createKey", busy: false, error: "" });
@@ -106,6 +117,7 @@ export function createApplicationEvents({
       case "set-usage-period":
         state.filters.usagePeriod = actionElement.dataset.period || "24h";
         state.data.usage = null;
+        resetPagination("usageRecords");
         await loadCurrentPage();
         break;
       case "view-debug-json":
@@ -290,7 +302,47 @@ export function createApplicationEvents({
     state.currentPage = requestedPage;
     normalizeCurrentPageForRole();
     state.sidebarOpen = false;
+    abortCurrentModalRequest();
+    state.modal = null;
     loadCurrentPage();
+  }
+
+  function resetCurrentPagePagination() {
+    const paginationByPage = {
+      overview: "keys",
+      keys: "keys",
+      usage: "usageRecords",
+      users: "users",
+      tiers: "tiers",
+      invites: "invites"
+    };
+    const collectionName = paginationByPage[state.currentPage];
+    if (collectionName) {
+      resetPagination(collectionName);
+    }
+  }
+
+  async function changeListPage(collectionName, direction) {
+    const pageByCollection = {
+      keys: "keys",
+      users: "users",
+      tiers: "tiers",
+      invites: "invites",
+      usageRecords: "usage"
+    };
+    if (pageByCollection[collectionName] !== state.currentPage) {
+      return;
+    }
+
+    const cursorSnapshot = movePaginationCursor(collectionName, direction);
+    if (!cursorSnapshot) {
+      return;
+    }
+    const loaded = await loadCurrentPage({ refreshing: true });
+    if (!loaded && state.authenticated) {
+      restorePaginationCursor(collectionName, cursorSnapshot);
+      renderApplication();
+    }
   }
 
   function handleGlobalKeydown(event) {
@@ -320,6 +372,8 @@ export function createApplicationEvents({
     }
 
     state.sidebarOpen = false;
+    abortCurrentModalRequest();
+    state.modal = null;
     if (state.currentPage === page) {
       renderApplication();
       return;
@@ -328,6 +382,7 @@ export function createApplicationEvents({
   }
 
   function logout() {
+    abortCurrentModalRequest();
     panelAPI.clearSession();
     clearAuthenticatedState();
     state.authError = "";
@@ -392,7 +447,33 @@ export function createApplicationEvents({
     }
   }
 
+  function abortCurrentModalRequest() {
+    activeModalRequestController?.abort();
+    activeModalRequestController = null;
+    activeModalRequestIdentifier += 1;
+  }
+
+  function startModalRequest() {
+    abortCurrentModalRequest();
+    const requestController = new AbortController();
+    const requestIdentifier = activeModalRequestIdentifier;
+    activeModalRequestController = requestController;
+    return { requestController, requestIdentifier };
+  }
+
+  function isCurrentModalRequest(requestContext) {
+    return requestContext.requestIdentifier === activeModalRequestIdentifier
+      && activeModalRequestController === requestContext.requestController;
+  }
+
+  function finishModalRequest(requestContext) {
+    if (activeModalRequestController === requestContext.requestController) {
+      activeModalRequestController = null;
+    }
+  }
+
   function openModal(modalState) {
+    abortCurrentModalRequest();
     state.modal = modalState;
     renderModalRegion();
     window.requestAnimationFrame(() => {
@@ -420,25 +501,35 @@ export function createApplicationEvents({
 			error: ""
 		});
 
+		const requestContext = startModalRequest();
 		try {
-			const recordDetail = await fetchUsageRecordDetail(recordIdentifier);
-			if (state.modal?.type === "debugJSON" && String(state.modal.record?.id) === String(recordIdentifier)) {
+			const recordDetail = await fetchUsageRecordDetail(recordIdentifier, {
+				signal: requestContext.requestController.signal
+			});
+			if (isCurrentModalRequest(requestContext)
+				&& state.modal?.type === "debugJSON"
+				&& String(state.modal.record?.id) === String(recordIdentifier)) {
 				state.modal.record = recordDetail;
 				state.modal.loading = false;
 				renderModalRegion();
 			}
 		} catch (error) {
-			if (!handleSessionError(error)
+			if (error?.name !== "AbortError"
+				&& isCurrentModalRequest(requestContext)
+				&& !handleSessionError(error)
 				&& state.modal?.type === "debugJSON"
 				&& String(state.modal.record?.id) === String(recordIdentifier)) {
 				state.modal.loading = false;
 				state.modal.error = getErrorMessage(error);
 				renderModalRegion();
 			}
+		} finally {
+			finishModalRequest(requestContext);
 		}
 	}
 
   function closeModal() {
+    abortCurrentModalRequest();
     state.modal = null;
     renderModalRegion();
   }
@@ -457,7 +548,7 @@ export function createApplicationEvents({
     setModalBusy(true);
     try {
       const createResponse = await createKey({ name: String(formData.name || "").trim() });
-      state.data.keys = [createResponse.key, ...(state.data.keys || [])];
+      state.data.keys = [createResponse.key, ...(state.data.keys || [])].slice(0, COLLECTION_PAGE_SIZE);
       state.modal = {
         type: "secret",
         secretType: "key",
@@ -523,19 +614,24 @@ export function createApplicationEvents({
 
   async function openKeyUsageModal(keyIdentifier) {
     const apiKey = (state.data.keys || []).find((candidateKey) => candidateKey.id === keyIdentifier);
-    openModal({ type: "keyUsage", title: apiKey?.name || "密钥调用分析", loading: true, usage: null });
+    openModal({ type: "keyUsage", keyIdentifier, title: apiKey?.name || "密钥调用分析", loading: true, usage: null });
+    const requestContext = startModalRequest();
     try {
-      const usage = await fetchKeyUsage(keyIdentifier);
-      if (state.modal?.type === "keyUsage") {
+      const usage = await fetchKeyUsage(keyIdentifier, { signal: requestContext.requestController.signal });
+      if (isCurrentModalRequest(requestContext)
+        && state.modal?.type === "keyUsage"
+        && state.modal.keyIdentifier === keyIdentifier) {
         state.modal.loading = false;
         state.modal.usage = normalizeUsage(usage);
         renderModalRegion();
       }
     } catch (error) {
-      if (!handleSessionError(error)) {
+      if (error?.name !== "AbortError" && isCurrentModalRequest(requestContext) && !handleSessionError(error)) {
         closeModal();
         showToast("无法加载密钥用量", getErrorMessage(error), "error");
       }
+    } finally {
+      finishModalRequest(requestContext);
     }
   }
 
@@ -601,18 +697,23 @@ export function createApplicationEvents({
       loading: true,
       usage: null
     });
+    const requestContext = startModalRequest();
     try {
-      const usage = await fetchAdminUserUsage(userIdentifier);
-      if (state.modal?.type === "userUsage") {
+      const usage = await fetchAdminUserUsage(userIdentifier, { signal: requestContext.requestController.signal });
+      if (isCurrentModalRequest(requestContext)
+        && state.modal?.type === "userUsage"
+        && state.modal.userIdentifier === userIdentifier) {
         state.modal.loading = false;
         state.modal.usage = normalizeUsage(usage);
         renderModalRegion();
       }
     } catch (error) {
-      if (!handleSessionError(error)) {
+      if (error?.name !== "AbortError" && isCurrentModalRequest(requestContext) && !handleSessionError(error)) {
         closeModal();
         showToast("无法加载用户用量", getErrorMessage(error), "error");
       }
+    } finally {
+      finishModalRequest(requestContext);
     }
   }
 
@@ -689,7 +790,9 @@ export function createApplicationEvents({
       if (isEdit) {
         state.data.tiers = replaceItemByIdentifier(state.data.tiers, tier);
       } else {
-        state.data.tiers = [...(state.data.tiers || []), tier].sort(compareTiers);
+        state.data.tiers = [...(state.data.tiers || []), tier]
+          .sort(compareTiers)
+          .slice(0, COLLECTION_PAGE_SIZE);
       }
       closeModal();
       renderApplication();
@@ -722,7 +825,8 @@ export function createApplicationEvents({
       const createResponse = await createInviteCode({
         registration_limit: Number(formData.registration_limit)
       });
-      state.data.invites = [createResponse.invite_code, ...(state.data.invites || [])];
+      state.data.invites = [createResponse.invite_code, ...(state.data.invites || [])]
+        .slice(0, COLLECTION_PAGE_SIZE);
       state.modal = {
         type: "secret",
         secretType: "invite",

@@ -4620,6 +4620,33 @@ svg {
   }
 }
 
+.collection-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.collection-pagination-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .collection-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .collection-pagination-actions > .button {
+    flex: 1;
+  }
+}
+
 @keyframes enter-up {
   from {
     opacity: 0;

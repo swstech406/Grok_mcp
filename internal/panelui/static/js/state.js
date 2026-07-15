@@ -1,5 +1,19 @@
 import { readPageFromLocation } from "./router.js";
 
+export const COLLECTION_PAGE_SIZE = 50;
+
+function createPaginationState() {
+  return {
+    cursor: "",
+    nextCursor: "",
+    previousCursors: [],
+    hasMore: false,
+    totalCount: 0,
+    activeCount: 0,
+    assignedUserCount: 0
+  };
+}
+
 export const state = {
   authenticated: false,
   user: null,
@@ -17,6 +31,13 @@ export const state = {
     usagePeriod: "24h",
     userSearch: ""
   },
+  pagination: {
+    keys: createPaginationState(),
+    users: createPaginationState(),
+    tiers: createPaginationState(),
+    invites: createPaginationState(),
+    usageRecords: createPaginationState()
+  },
   data: {
     keys: null,
     overviewUsage: null,
@@ -33,6 +54,61 @@ export function clearCachedData() {
   for (const dataKey of Object.keys(state.data)) {
     state.data[dataKey] = null;
   }
+  for (const paginationKey of Object.keys(state.pagination)) {
+    resetPagination(paginationKey);
+  }
+}
+
+export function resetPagination(collectionName) {
+  if (!Object.hasOwn(state.pagination, collectionName)) {
+    return;
+  }
+  state.pagination[collectionName] = createPaginationState();
+}
+
+export function movePaginationCursor(collectionName, direction) {
+  const pagination = state.pagination[collectionName];
+  if (!pagination) {
+    return null;
+  }
+  const snapshot = {
+    cursor: pagination.cursor,
+    previousCursors: [...pagination.previousCursors]
+  };
+  if (direction === "next") {
+    if (!pagination.hasMore || !pagination.nextCursor) {
+      return null;
+    }
+    pagination.previousCursors.push(pagination.cursor);
+    pagination.cursor = pagination.nextCursor;
+    return snapshot;
+  }
+  if (direction === "previous" && pagination.previousCursors.length > 0) {
+    pagination.cursor = pagination.previousCursors.pop() || "";
+    return snapshot;
+  }
+  return null;
+}
+
+export function restorePaginationCursor(collectionName, snapshot) {
+  const pagination = state.pagination[collectionName];
+  if (!pagination || !snapshot) {
+    return;
+  }
+  pagination.cursor = snapshot.cursor;
+  pagination.previousCursors = [...snapshot.previousCursors];
+}
+
+function commitPagination(collectionName, response) {
+  const pagination = state.pagination[collectionName];
+  if (!pagination) {
+    return;
+  }
+  pagination.nextCursor = String(response?.next_cursor || "");
+  pagination.hasMore = Boolean(response?.has_more && pagination.nextCursor);
+  pagination.totalCount = Number(response?.total_count ?? pagination.totalCount ?? 0);
+  pagination.activeCount = Number(response?.active_count ?? pagination.activeCount ?? 0);
+  pagination.assignedUserCount = Number(response?.assigned_user_count ?? pagination.assignedUserCount ?? 0);
 }
 
 export function clearAuthenticatedState() {
@@ -75,24 +151,31 @@ export function commitPageData(page, pageResult) {
   switch (page) {
     case "overview":
       state.user = pageResult.user;
-      state.data.keys = pageResult.keys;
+      resetPagination("keys");
+      state.data.keys = pageResult.keyResponse?.keys || [];
+      commitPagination("keys", pageResult.keyResponse);
       state.data.overviewUsage = pageResult.overviewUsage;
       break;
     case "keys":
-      state.data.keys = pageResult.keys;
+      state.data.keys = pageResult.keyResponse?.keys || [];
+      commitPagination("keys", pageResult.keyResponse);
       break;
     case "usage":
       state.data.usage = pageResult.usage;
+      commitPagination("usageRecords", pageResult.usage);
       break;
     case "users":
-      state.data.users = pageResult.users;
-      state.data.tiers = pageResult.tiers;
+      state.data.users = pageResult.userResponse?.users || [];
+      state.data.tiers = pageResult.tierResponse?.tiers || [];
+      commitPagination("users", pageResult.userResponse);
       break;
     case "tiers":
-      state.data.tiers = pageResult.tiers;
+      state.data.tiers = pageResult.tierResponse?.tiers || [];
+      commitPagination("tiers", pageResult.tierResponse);
       break;
     case "invites":
-      state.data.invites = pageResult.invites;
+      state.data.invites = pageResult.inviteResponse?.invite_codes || [];
+      commitPagination("invites", pageResult.inviteResponse);
       break;
     case "settings":
       state.data.settings = pageResult.settings;
@@ -112,7 +195,9 @@ export function normalizeUsage(usage) {
     current_rpm: Number(usage?.current_rpm || 0),
     by_tool: usage?.by_tool || {},
     traffic_buckets: usage?.traffic_buckets || [],
-    records: usage?.records || []
+    records: usage?.records || [],
+    next_cursor: String(usage?.next_cursor || ""),
+    has_more: Boolean(usage?.has_more)
   };
 }
 

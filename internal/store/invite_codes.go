@@ -71,6 +71,52 @@ func (s *SQLiteStore) ListInviteCodes(ctx context.Context) ([]*InviteCode, error
 	return inviteCodes, rows.Err()
 }
 
+func (s *SQLiteStore) ListInviteCodesPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*InviteCodePage, error) {
+	pageLimit := normalizePanelPageLimit(limit)
+	query := `SELECT ` + inviteCodeColumns + ` FROM invite_codes`
+	queryArgs := make([]any, 0, 4)
+	if cursor != nil {
+		cursorTimestamp := formatTime(cursor.Timestamp.UTC())
+		query += ` WHERE created_at < ? OR (created_at = ? AND id < ?)`
+		queryArgs = append(queryArgs, cursorTimestamp, cursorTimestamp, cursor.ID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	queryArgs = append(queryArgs, pageLimit+1)
+
+	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	inviteCodes := make([]*InviteCode, 0, pageLimit+1)
+	for rows.Next() {
+		inviteCode, scanErr := scanInviteCode(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		inviteCodes = append(inviteCodes, inviteCode)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &InviteCodePage{}
+	if len(inviteCodes) > pageLimit {
+		page.HasMore = true
+		inviteCodes = inviteCodes[:pageLimit]
+	}
+	page.InviteCodes = inviteCodes
+	if page.HasMore && len(inviteCodes) > 0 {
+		lastInviteCode := inviteCodes[len(inviteCodes)-1]
+		page.NextCursor = &TimeIDCursor{Timestamp: lastInviteCode.CreatedAt, ID: lastInviteCode.ID}
+	}
+	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM invite_codes`).Scan(&page.TotalCount); err != nil {
+		return nil, err
+	}
+	return page, nil
+}
+
 func (s *SQLiteStore) CreateInviteCode(ctx context.Context, createdByUserID string, registrationLimit int) (*InviteCode, string, error) {
 	createdByUserID = strings.TrimSpace(createdByUserID)
 	if registrationLimit <= 0 {

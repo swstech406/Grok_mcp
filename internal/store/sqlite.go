@@ -324,6 +324,65 @@ func (s *SQLiteStore) ListKeysByUser(ctx context.Context, userID string) ([]*API
 	return keys, rows.Err()
 }
 
+func normalizePanelPageLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
+func (s *SQLiteStore) ListKeysByUserPage(ctx context.Context, userID string, cursor *TimeIDCursor, limit int) (*APIKeyPage, error) {
+	pageLimit := normalizePanelPageLimit(limit)
+	query := `SELECT ` + keyColumns + ` FROM apikeys WHERE user_id = ?`
+	queryArgs := []any{userID}
+	if cursor != nil {
+		cursorTimestamp := formatTime(cursor.Timestamp.UTC())
+		query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+		queryArgs = append(queryArgs, cursorTimestamp, cursorTimestamp, cursor.ID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	queryArgs = append(queryArgs, pageLimit+1)
+
+	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := make([]*APIKey, 0, pageLimit+1)
+	for rows.Next() {
+		apiKey, scanErr := scanAPIKey(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		keys = append(keys, apiKey)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &APIKeyPage{}
+	if len(keys) > pageLimit {
+		page.HasMore = true
+		keys = keys[:pageLimit]
+	}
+	page.Keys = keys
+	if page.HasMore && len(keys) > 0 {
+		lastKey := keys[len(keys)-1]
+		page.NextCursor = &TimeIDCursor{Timestamp: lastKey.CreatedAt, ID: lastKey.ID}
+	}
+	if err := s.readDB.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END), 0) FROM apikeys WHERE user_id = ?`,
+		userID,
+	).Scan(&page.TotalCount, &page.ActiveCount); err != nil {
+		return nil, err
+	}
+	return page, nil
+}
+
 func (s *SQLiteStore) ListKeys(ctx context.Context) ([]*APIKey, error) {
 	rows, err := s.readDB.QueryContext(ctx, `SELECT `+keyColumns+` FROM apikeys ORDER BY created_at DESC`)
 	if err != nil {
@@ -621,9 +680,12 @@ func (s *SQLiteStore) GetGlobalStats(ctx context.Context, since time.Time) (*Usa
 	return s.queryUsageStats(ctx, usageStatsGlobal, nil, since)
 }
 
-const usageTrafficBucketCount = 8
+const (
+	usageTrafficBucketCount = 8
+	usageRecordPageSize     = 50
+)
 
-// queryUsageStats 按条件聚合 usage_log，并拉取最近 500 条明细（按时间倒序）。
+// queryUsageStats 按条件聚合 usage_log，并拉取首屏明细（按时间与 ID 倒序）。
 // 流量桶与最近一分钟调用数均直接由 SQLite 对完整数据集聚合，避免被明细上限截断。
 func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope, whereArgs []any, since time.Time) (*UsageStats, error) {
 	where, ok := usageStatsWhere[scope]
@@ -648,38 +710,12 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 		}
 	}
 
-	recRows, err := s.readDB.QueryContext(ctx,
-		`SELECT id, key_id, tool_name, timestamp, duration_ms, success FROM usage_log WHERE `+where+` AND timestamp >= ? ORDER BY timestamp DESC LIMIT 500`,
-		args...,
-	)
+	recordPage, err := s.queryUsageRecordPage(ctx, where, whereArgs, sinceUTC, nil, usageRecordPageSize)
 	if err != nil {
 		return nil, err
 	}
-	defer recRows.Close()
-
-	for recRows.Next() {
-		var r UsageRecord
-		var ts string
-		var success int
-		if err := recRows.Scan(&r.ID, &r.KeyID, &r.ToolName, &ts, &r.DurationMs, &success); err != nil {
-			return nil, err
-		}
-		r.Success = success != 0
-		r.Timestamp, err = parseTime(ts)
-		if err != nil {
-			return nil, err
-		}
-		stats.Records = append(stats.Records, r)
-	}
-	if err := recRows.Err(); err != nil {
-		return nil, err
-	}
-	if err := recRows.Close(); err != nil {
-		return nil, err
-	}
-	if err := s.loadUsageDebugBodySummaries(ctx, stats.Records); err != nil {
-		return nil, err
-	}
+	stats.Records = recordPage.Records
+	stats.RecordsPage = UsageRecordPageInfo{HasMore: recordPage.HasMore, NextCursor: recordPage.NextCursor}
 	currentRPM, err := s.queryCurrentRPM(ctx, where, whereArgs, queryEnd)
 	if err != nil {
 		return nil, err
@@ -696,6 +732,91 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 	}
 	stats.TrafficBuckets = trafficBuckets
 	return stats, nil
+}
+
+func (s *SQLiteStore) ListUsageRecordsPage(
+	ctx context.Context,
+	scope UsageRecordListScope,
+	since time.Time,
+	cursor *UsageRecordCursor,
+	limit int,
+) (*UsageRecordPage, error) {
+	where := ""
+	whereArgs := make([]any, 0, 1)
+	switch {
+	case strings.TrimSpace(scope.KeyID) != "":
+		where = usageStatsWhere[usageStatsByKey]
+		whereArgs = append(whereArgs, strings.TrimSpace(scope.KeyID))
+	case scope.IncludeAllUsers:
+		where = usageStatsWhere[usageStatsGlobal]
+	case strings.TrimSpace(scope.UserID) != "":
+		where = usageStatsWhere[usageStatsByUser]
+		whereArgs = append(whereArgs, strings.TrimSpace(scope.UserID))
+	default:
+		return nil, fmt.Errorf("usage record list scope is required")
+	}
+	return s.queryUsageRecordPage(ctx, where, whereArgs, since.UTC().Truncate(time.Second), cursor, limit)
+}
+
+func (s *SQLiteStore) queryUsageRecordPage(
+	ctx context.Context,
+	where string,
+	whereArgs []any,
+	since time.Time,
+	cursor *UsageRecordCursor,
+	limit int,
+) (*UsageRecordPage, error) {
+	pageLimit := normalizePanelPageLimit(limit)
+	query := `SELECT id, key_id, tool_name, timestamp, duration_ms, success
+		FROM usage_log WHERE ` + where + ` AND timestamp >= ?`
+	queryArgs := appendUsageStatsArgs(whereArgs, formatTime(since.UTC()))
+	if cursor != nil {
+		cursorTimestamp := formatTime(cursor.Timestamp.UTC())
+		query += ` AND (timestamp < ? OR (timestamp = ? AND id < ?))`
+		queryArgs = append(queryArgs, cursorTimestamp, cursorTimestamp, cursor.ID)
+	}
+	query += ` ORDER BY timestamp DESC, id DESC LIMIT ?`
+	queryArgs = append(queryArgs, pageLimit+1)
+
+	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := make([]UsageRecord, 0, pageLimit+1)
+	for rows.Next() {
+		var record UsageRecord
+		var timestamp string
+		var success int
+		if err := rows.Scan(&record.ID, &record.KeyID, &record.ToolName, &timestamp, &record.DurationMs, &success); err != nil {
+			return nil, err
+		}
+		record.Success = success != 0
+		record.Timestamp, err = parseTime(timestamp)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &UsageRecordPage{}
+	if len(records) > pageLimit {
+		page.HasMore = true
+		records = records[:pageLimit]
+	}
+	page.Records = records
+	if page.HasMore && len(records) > 0 {
+		lastRecord := records[len(records)-1]
+		page.NextCursor = &UsageRecordCursor{Timestamp: lastRecord.Timestamp, ID: lastRecord.ID}
+	}
+	if err := s.loadUsageDebugBodySummaries(ctx, page.Records); err != nil {
+		return nil, err
+	}
+	return page, nil
 }
 
 func (s *SQLiteStore) addRawUsageAggregates(

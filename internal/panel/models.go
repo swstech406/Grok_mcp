@@ -73,6 +73,29 @@ type KeyResponse struct {
 	TotalCalls int64      `json:"total_calls"`
 }
 
+type KeysResponse struct {
+	Keys        []KeyResponse `json:"keys"`
+	NextCursor  string        `json:"next_cursor,omitempty"`
+	HasMore     bool          `json:"has_more"`
+	TotalCount  int64         `json:"total_count"`
+	ActiveCount int64         `json:"active_count"`
+}
+
+type UsersResponse struct {
+	Users      []UserResponse `json:"users"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+	HasMore    bool           `json:"has_more"`
+	TotalCount int64          `json:"total_count"`
+}
+
+type TiersResponse struct {
+	Tiers             []TierResponse `json:"tiers"`
+	NextCursor        string         `json:"next_cursor,omitempty"`
+	HasMore           bool           `json:"has_more"`
+	TotalCount        int64          `json:"total_count"`
+	AssignedUserCount int64          `json:"assigned_user_count"`
+}
+
 // UpdateUserRequest 仅允许调整 enabled/role/tier_id；限额（rpm/success_limit）
 // 由所属 tier 决定，不再支持按用户单独设置。RevokeTokens=true 强制吊销该用户所有存量 JWT。
 type UpdateUserRequest struct {
@@ -165,6 +188,9 @@ type InviteCodeResponse struct {
 
 type InviteCodesResponse struct {
 	InviteCodes []InviteCodeResponse `json:"invite_codes"`
+	NextCursor  string               `json:"next_cursor,omitempty"`
+	HasMore     bool                 `json:"has_more"`
+	TotalCount  int64                `json:"total_count"`
 }
 
 type CreateInviteCodeRequest struct {
@@ -188,6 +214,14 @@ type UsageStatsResponse struct {
 	ByTool         map[string]int64 `json:"by_tool"`
 	TrafficBuckets []UsageBucketDTO `json:"traffic_buckets"`
 	Records        []UsageRecordDTO `json:"records,omitempty"`
+	NextCursor     string           `json:"next_cursor,omitempty"`
+	HasMore        bool             `json:"has_more"`
+}
+
+type UsageRecordsResponse struct {
+	Records    []UsageRecordDTO `json:"records"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+	HasMore    bool             `json:"has_more"`
 }
 
 type UsageBucketDTO struct {
@@ -330,7 +364,9 @@ func toKeyResponse(k *store.APIKey) KeyResponse {
 func toUsageStatsResponse(s *store.UsageStats) UsageStatsResponse {
 	out := UsageStatsResponse{
 		TotalCalls: s.TotalCalls, SuccessCalls: s.SuccessCalls, CurrentRPM: s.CurrentRPM,
-		ByTool: s.ByTool,
+		ByTool:     s.ByTool,
+		HasMore:    s.RecordsPage.HasMore,
+		NextCursor: encodeUsageRecordCursor(s.RecordsPage.NextCursor),
 	}
 	for _, bucket := range s.TrafficBuckets {
 		out.TrafficBuckets = append(out.TrafficBuckets, UsageBucketDTO{
@@ -338,17 +374,33 @@ func toUsageStatsResponse(s *store.UsageStats) UsageStatsResponse {
 		})
 	}
 	for _, r := range s.Records {
-		out.Records = append(out.Records, UsageRecordDTO{
-			ID: r.ID, KeyID: r.KeyID, ToolName: r.ToolName,
-			Timestamp: r.Timestamp, DurationMs: r.DurationMs, Success: r.Success,
-			DebugJSON:              r.DebugJSON,
-			HasDebugRequestBody:    r.HasDebugRequestBody,
-			HasDebugResponseBody:   r.HasDebugResponseBody,
-			DebugRequestBodyBytes:  r.DebugRequestBytes,
-			DebugResponseBodyBytes: r.DebugResponseBytes,
-		})
+		out.Records = append(out.Records, toUsageRecordResponse(r))
 	}
 	return out
+}
+
+func toUsageRecordsResponse(page *store.UsageRecordPage) UsageRecordsResponse {
+	response := UsageRecordsResponse{
+		Records:    make([]UsageRecordDTO, 0, len(page.Records)),
+		NextCursor: encodeUsageRecordCursor(page.NextCursor),
+		HasMore:    page.HasMore,
+	}
+	for _, record := range page.Records {
+		response.Records = append(response.Records, toUsageRecordResponse(record))
+	}
+	return response
+}
+
+func toUsageRecordResponse(record store.UsageRecord) UsageRecordDTO {
+	return UsageRecordDTO{
+		ID: record.ID, KeyID: record.KeyID, ToolName: record.ToolName,
+		Timestamp: record.Timestamp, DurationMs: record.DurationMs, Success: record.Success,
+		DebugJSON:              record.DebugJSON,
+		HasDebugRequestBody:    record.HasDebugRequestBody,
+		HasDebugResponseBody:   record.HasDebugResponseBody,
+		DebugRequestBodyBytes:  record.DebugRequestBytes,
+		DebugResponseBodyBytes: record.DebugResponseBytes,
+	}
 }
 
 func toUsageRecordDetailResponse(record *store.UsageRecord) UsageRecordDetailDTO {

@@ -69,6 +69,53 @@ func (s *SQLiteStore) ListTiers(ctx context.Context) ([]*Tier, error) {
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) ListTiersPage(ctx context.Context, cursor *TierCursor, limit int) (*TierPage, error) {
+	pageLimit := normalizePanelPageLimit(limit)
+	query := `SELECT ` + tierColumns + ` FROM tiers`
+	queryArgs := make([]any, 0, 7)
+	if cursor != nil {
+		query += ` WHERE level > ?
+			OR (level = ? AND name > ?)
+			OR (level = ? AND name = ? AND id > ?)`
+		queryArgs = append(queryArgs, cursor.Level, cursor.Level, cursor.Name, cursor.Level, cursor.Name, cursor.ID)
+	}
+	query += ` ORDER BY level ASC, name ASC, id ASC LIMIT ?`
+	queryArgs = append(queryArgs, pageLimit+1)
+
+	rows, err := s.readDB.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tiers := make([]*Tier, 0, pageLimit+1)
+	for rows.Next() {
+		tier, scanErr := scanTier(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		tiers = append(tiers, tier)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &TierPage{}
+	if len(tiers) > pageLimit {
+		page.HasMore = true
+		tiers = tiers[:pageLimit]
+	}
+	page.Tiers = tiers
+	if page.HasMore && len(tiers) > 0 {
+		lastTier := tiers[len(tiers)-1]
+		page.NextCursor = &TierCursor{Level: lastTier.Level, Name: lastTier.Name, ID: lastTier.ID}
+	}
+	if err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM tiers`).Scan(&page.TotalCount); err != nil {
+		return nil, err
+	}
+	return page, nil
+}
+
 func (s *SQLiteStore) CreateTier(ctx context.Context, name string, level, rpm, successLimit int) (*Tier, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {

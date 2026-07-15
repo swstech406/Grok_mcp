@@ -205,6 +205,74 @@ type UsageStats struct {
 	ByTool         map[string]int64
 	TrafficBuckets []UsageBucket
 	Records        []UsageRecord
+	RecordsPage    UsageRecordPageInfo
+}
+
+// TimeIDCursor is a stable keyset boundary for collections ordered by time and ID.
+type TimeIDCursor struct {
+	Timestamp time.Time
+	ID        string
+}
+
+// TierCursor is a stable keyset boundary for tiers ordered by level, name, and ID.
+type TierCursor struct {
+	Level int
+	Name  string
+	ID    string
+}
+
+// UsageRecordCursor is a stable keyset boundary for usage records ordered newest first.
+type UsageRecordCursor struct {
+	Timestamp time.Time
+	ID        int64
+}
+
+type UsageRecordPageInfo struct {
+	HasMore    bool
+	NextCursor *UsageRecordCursor
+}
+
+type APIKeyPage struct {
+	Keys        []*APIKey
+	TotalCount  int64
+	ActiveCount int64
+	HasMore     bool
+	NextCursor  *TimeIDCursor
+}
+
+type UserPage struct {
+	Users      []*User
+	TotalCount int64
+	HasMore    bool
+	NextCursor *TimeIDCursor
+}
+
+type TierPage struct {
+	Tiers      []*Tier
+	TotalCount int64
+	HasMore    bool
+	NextCursor *TierCursor
+}
+
+type InviteCodePage struct {
+	InviteCodes []*InviteCode
+	TotalCount  int64
+	HasMore     bool
+	NextCursor  *TimeIDCursor
+}
+
+type UsageRecordPage struct {
+	Records    []UsageRecord
+	HasMore    bool
+	NextCursor *UsageRecordCursor
+}
+
+// UsageRecordListScope constrains a usage-history page to one key, one user,
+// or all users. IncludeAllUsers takes precedence over UserID.
+type UsageRecordListScope struct {
+	KeyID           string
+	UserID          string
+	IncludeAllUsers bool
 }
 
 // UsageRecordScope constrains access to a single usage record. Administrators
@@ -279,6 +347,7 @@ type Store interface {
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	ListUsers(ctx context.Context) ([]*User, error)
+	ListUsersPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*UserPage, error)
 	UpdateUser(ctx context.Context, id string, updates UserUpdates) (*User, error)
 	DeleteUser(ctx context.Context, id string) error
 	CountUsers(ctx context.Context) (int64, error)
@@ -290,6 +359,7 @@ type Store interface {
 	GetTierByID(ctx context.Context, id string) (*Tier, error)
 	GetTierByName(ctx context.Context, name string) (*Tier, error)
 	ListTiers(ctx context.Context) ([]*Tier, error)
+	ListTiersPage(ctx context.Context, cursor *TierCursor, limit int) (*TierPage, error)
 	CreateTier(ctx context.Context, name string, level, rpm, successLimit int) (*Tier, error)
 	UpdateTier(ctx context.Context, id string, updates TierUpdates) (*Tier, error)
 	DeleteTier(ctx context.Context, id string) error
@@ -301,6 +371,7 @@ type Store interface {
 	GetKeyByHash(ctx context.Context, hash string) (*APIKey, error)
 	ListKeys(ctx context.Context) ([]*APIKey, error)
 	ListKeysByUser(ctx context.Context, userID string) ([]*APIKey, error)
+	ListKeysByUserPage(ctx context.Context, userID string, cursor *TimeIDCursor, limit int) (*APIKeyPage, error)
 	GetKeyByID(ctx context.Context, id string) (*APIKey, error)
 	UpdateKey(ctx context.Context, id string, updates KeyUpdates) (*APIKey, error)
 	DeleteKey(ctx context.Context, id string) error
@@ -308,8 +379,10 @@ type Store interface {
 	GetUsageStats(ctx context.Context, keyID string, since time.Time) (*UsageStats, error)
 	GetUserUsageStats(ctx context.Context, userID string, since time.Time) (*UsageStats, error)
 	GetGlobalStats(ctx context.Context, since time.Time) (*UsageStats, error)
+	ListUsageRecordsPage(ctx context.Context, scope UsageRecordListScope, since time.Time, cursor *UsageRecordCursor, limit int) (*UsageRecordPage, error)
 	GetUsageRecordDetail(ctx context.Context, usageID int64, scope UsageRecordScope) (*UsageRecord, error)
 	ListInviteCodes(ctx context.Context) ([]*InviteCode, error)
+	ListInviteCodesPage(ctx context.Context, cursor *TimeIDCursor, limit int) (*InviteCodePage, error)
 	CreateInviteCode(ctx context.Context, createdByUserID string, registrationLimit int) (*InviteCode, string, error)
 	UpdateInviteCode(ctx context.Context, id string, updates InviteCodeUpdates) (*InviteCode, error)
 	DeleteInviteCode(ctx context.Context, id string) error

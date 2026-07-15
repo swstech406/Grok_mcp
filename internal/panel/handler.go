@@ -51,6 +51,7 @@ func NewMux(h *Handler) http.Handler {
 	authenticated.HandleFunc("DELETE /panel/v1/keys/{id}", h.deleteKey)
 	authenticated.HandleFunc("GET /panel/v1/keys/{id}/usage", h.keyUsage)
 	authenticated.HandleFunc("GET /panel/v1/usage", h.userUsage)
+	authenticated.HandleFunc("GET /panel/v1/usage/records", h.userUsageRecords)
 	authenticated.HandleFunc("GET /panel/v1/usage/records/{id}", h.usageRecordDetail)
 	h.registerAdminRoutes(authenticated)
 
@@ -355,17 +356,33 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	keys, err := h.Store.ListKeysByUser(r.Context(), user.ID)
+	limit, err := parsePanelPageLimit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cursor, err := parseTimeIDCursor(r, cursorKindKeys)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.Store.ListKeysByUserPage(r.Context(), user.ID, cursor, limit)
 	if err != nil {
 		log.Printf("list keys for user %s failed: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "failed to load keys")
 		return
 	}
-	out := make([]KeyResponse, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, toKeyResponse(k))
+	response := KeysResponse{
+		Keys:        make([]KeyResponse, 0, len(page.Keys)),
+		NextCursor:  encodeTimeIDCursor(cursorKindKeys, page.NextCursor),
+		HasMore:     page.HasMore,
+		TotalCount:  page.TotalCount,
+		ActiveCount: page.ActiveCount,
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
+	for _, apiKey := range page.Keys {
+		response.Keys = append(response.Keys, toKeyResponse(apiKey))
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
@@ -509,6 +526,36 @@ func (h *Handler) userUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toUsageStatsResponse(stats))
 }
 
+func (h *Handler) userUsageRecords(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	since, ok := parseSince(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid 'since' query parameter; expected RFC3339")
+		return
+	}
+	limit, err := parsePanelPageLimit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cursor, err := parseUsageRecordCursor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.Store.ListUsageRecordsPage(r.Context(), store.UsageRecordListScope{UserID: user.ID}, since, cursor, limit)
+	if err != nil {
+		log.Printf("usage record page for user %s failed: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "failed to load usage records")
+		return
+	}
+	writeJSON(w, http.StatusOK, toUsageRecordsResponse(page))
+}
+
 func (h *Handler) usageRecordDetail(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -539,33 +586,54 @@ func (h *Handler) usageRecordDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.Store.ListUsers(r.Context())
+	limit, err := parsePanelPageLimit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cursor, err := parseTimeIDCursor(r, cursorKindUsers)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.Store.ListUsersPage(r.Context(), cursor, limit)
 	if err != nil {
 		log.Printf("admin list users failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to load users")
 		return
 	}
-	tiers, err := h.Store.ListTiers(r.Context())
-	if err != nil {
-		log.Printf("admin list tiers while listing users failed: %v", err)
-		// 继续返回用户列表，但 limits 将标记 unavailable。
-		tiers = nil
+	tierByID := make(map[string]*store.Tier)
+	for _, user := range page.Users {
+		tierID := strings.TrimSpace(user.TierID)
+		if tierID == "" {
+			continue
+		}
+		if _, alreadyLoaded := tierByID[tierID]; alreadyLoaded {
+			continue
+		}
+		tier, loadErr := h.Store.GetTierByID(r.Context(), tierID)
+		if loadErr != nil {
+			log.Printf("load tier %q while listing users failed: %v", tierID, loadErr)
+			continue
+		}
+		tierByID[tierID] = tier
 	}
-	tierByID := make(map[string]*store.Tier, len(tiers))
-	for _, t := range tiers {
-		tierByID[t.ID] = t
+	response := UsersResponse{
+		Users:      make([]UserResponse, 0, len(page.Users)),
+		NextCursor: encodeTimeIDCursor(cursorKindUsers, page.NextCursor),
+		HasMore:    page.HasMore,
+		TotalCount: page.TotalCount,
 	}
-	out := make([]UserResponse, 0, len(users))
-	for _, u := range users {
+	for _, u := range page.Users {
 		tier := tierByID[u.TierID]
 		if tier == nil && strings.TrimSpace(u.TierID) != "" {
 			log.Printf("user %s tier_id %q missing from tier list; limits unavailable", u.ID, u.TierID)
 		} else if strings.TrimSpace(u.TierID) == "" {
 			log.Printf("user %s has empty tier_id; limits unavailable", u.ID)
 		}
-		out = append(out, toUserResponseWithTier(u, tier))
+		response.Users = append(response.Users, toUserResponseWithTier(u, tier))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": out})
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) adminGetUser(w http.ResponseWriter, r *http.Request) {
@@ -663,18 +731,34 @@ func (h *Handler) adminUserUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminListTiers(w http.ResponseWriter, r *http.Request) {
-	tiers, err := h.Store.ListTiers(r.Context())
+	limit, err := parsePanelPageLimit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cursor, err := parseTierCursor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	page, err := h.Store.ListTiersPage(r.Context(), cursor, limit)
 	if err != nil {
 		log.Printf("admin list tiers failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to load tiers")
 		return
 	}
-	out := make([]TierResponse, 0, len(tiers))
-	for _, t := range tiers {
-		count, _ := h.Store.CountUsersByTier(r.Context(), t.ID)
-		out = append(out, toTierResponse(t, count))
+	response := TiersResponse{
+		Tiers:      make([]TierResponse, 0, len(page.Tiers)),
+		NextCursor: encodeTierCursor(page.NextCursor),
+		HasMore:    page.HasMore,
+		TotalCount: page.TotalCount,
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tiers": out})
+	for _, t := range page.Tiers {
+		count, _ := h.Store.CountUsersByTier(r.Context(), t.ID)
+		response.Tiers = append(response.Tiers, toTierResponse(t, count))
+	}
+	response.AssignedUserCount, _ = h.Store.CountUsers(r.Context())
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) adminCreateTier(w http.ResponseWriter, r *http.Request) {

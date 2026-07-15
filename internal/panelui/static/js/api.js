@@ -75,15 +75,7 @@ export class PanelAPI {
       throw new APIError("无法连接 Grok MCP 后端，请确认服务地址与运行状态。", 0);
     }
 
-    const responseText = response.status === 204 ? "" : await response.text();
-    let responseData = null;
-    if (responseText) {
-      try {
-        responseData = JSON.parse(responseText);
-      } catch {
-        responseData = responseText;
-      }
-    }
+    const responseData = await parseResponseData(response);
 
     if (!response.ok) {
       if (response.status === 401 && options.auth !== false) {
@@ -97,6 +89,44 @@ export class PanelAPI {
 
     return responseData;
   }
+}
+
+async function parseResponseData(response) {
+  if (response.status === 204) {
+    return null;
+  }
+
+  const contentType = String(response.headers.get("Content-Type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    try {
+      return await response.json();
+    } catch (parseError) {
+      if (parseError?.name === "AbortError") {
+        throw parseError;
+      }
+      if (!response.ok) {
+        return null;
+      }
+      throw new APIError("后端返回了无效的 JSON 响应。", response.status);
+    }
+  }
+
+  return response.ok ? null : await response.text();
+}
+
+function buildCollectionPath(path, { cursor = "", limit = 50, since = "" } = {}) {
+  const query = new URLSearchParams();
+  if (since) {
+    query.set("since", since);
+  }
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+  if (limit) {
+    query.set("limit", String(limit));
+  }
+  const queryString = query.toString();
+  return queryString ? `${path}?${queryString}` : path;
 }
 
 function translateBackendError(message, status) {
@@ -176,7 +206,8 @@ export function fetchCurrentUser(options = {}) {
 }
 
 export function fetchKeys(options = {}) {
-  return panelAPI.request("/panel/v1/keys", options);
+  const { cursor = "", limit = 50, ...requestOptions } = options;
+  return panelAPI.request(buildCollectionPath("/panel/v1/keys", { cursor, limit }), requestOptions);
 }
 
 export function createKey(keyData) {
@@ -198,8 +229,8 @@ export function deleteKey(keyIdentifier) {
   return panelAPI.request(`/panel/v1/keys/${encodeURIComponent(keyIdentifier)}`, { method: "DELETE" });
 }
 
-export function fetchKeyUsage(keyIdentifier) {
-  return panelAPI.request(`/panel/v1/keys/${encodeURIComponent(keyIdentifier)}/usage`);
+export function fetchKeyUsage(keyIdentifier, options = {}) {
+  return panelAPI.request(`/panel/v1/keys/${encodeURIComponent(keyIdentifier)}/usage`, options);
 }
 
 export function fetchUsage(since = "", options = {}) {
@@ -207,12 +238,18 @@ export function fetchUsage(since = "", options = {}) {
 	return panelAPI.request(`/panel/v1/usage${sinceQuery}`, options);
 }
 
+export function fetchUsageRecords(since = "", options = {}) {
+  const { cursor = "", limit = 50, ...requestOptions } = options;
+  return panelAPI.request(buildCollectionPath("/panel/v1/usage/records", { since, cursor, limit }), requestOptions);
+}
+
 export function fetchUsageRecordDetail(recordIdentifier, options = {}) {
 	return panelAPI.request(`/panel/v1/usage/records/${encodeURIComponent(recordIdentifier)}`, options);
 }
 
 export function fetchAdminUsers(options = {}) {
-  return panelAPI.request("/panel/v1/admin/users", options);
+  const { cursor = "", limit = 50, ...requestOptions } = options;
+  return panelAPI.request(buildCollectionPath("/panel/v1/admin/users", { cursor, limit }), requestOptions);
 }
 
 export function createAdminUser(userData) {
@@ -230,12 +267,13 @@ export function deleteAdminUser(userIdentifier) {
   return panelAPI.request(`/panel/v1/admin/users/${encodeURIComponent(userIdentifier)}`, { method: "DELETE" });
 }
 
-export function fetchAdminUserUsage(userIdentifier) {
-  return panelAPI.request(`/panel/v1/admin/users/${encodeURIComponent(userIdentifier)}/usage`);
+export function fetchAdminUserUsage(userIdentifier, options = {}) {
+  return panelAPI.request(`/panel/v1/admin/users/${encodeURIComponent(userIdentifier)}/usage`, options);
 }
 
 export function fetchTiers(options = {}) {
-  return panelAPI.request("/panel/v1/admin/tiers", options);
+  const { cursor = "", limit = 50, ...requestOptions } = options;
+  return panelAPI.request(buildCollectionPath("/panel/v1/admin/tiers", { cursor, limit }), requestOptions);
 }
 
 export function createTier(tierData) {
@@ -254,7 +292,8 @@ export function deleteTier(tierIdentifier) {
 }
 
 export function fetchInviteCodes(options = {}) {
-  return panelAPI.request("/panel/v1/admin/invite-codes", options);
+  const { cursor = "", limit = 50, ...requestOptions } = options;
+  return panelAPI.request(buildCollectionPath("/panel/v1/admin/invite-codes", { cursor, limit }), requestOptions);
 }
 
 export function createInviteCode(inviteCodeData) {
