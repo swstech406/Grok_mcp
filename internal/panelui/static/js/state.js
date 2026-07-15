@@ -1,13 +1,15 @@
 import { readPageFromLocation } from "./router.js";
+import { COLLECTION_PAGE_SIZE, COLLECTION_PAGE_SIZE_OPTIONS } from "./pagination-config.js";
 
-export const COLLECTION_PAGE_SIZE = 50;
+export { COLLECTION_PAGE_SIZE, COLLECTION_PAGE_SIZE_OPTIONS } from "./pagination-config.js";
 
-function createPaginationState() {
+function createPaginationState(pageSize = COLLECTION_PAGE_SIZE) {
   return {
     cursor: "",
     nextCursor: "",
     previousCursors: [],
     hasMore: false,
+    pageSize,
     totalCount: 0,
     activeCount: 0,
     assignedUserCount: 0
@@ -55,15 +57,29 @@ export function clearCachedData() {
     state.data[dataKey] = null;
   }
   for (const paginationKey of Object.keys(state.pagination)) {
-    resetPagination(paginationKey);
+    resetPagination(paginationKey, { preservePageSize: false });
   }
 }
 
-export function resetPagination(collectionName) {
+export function resetPagination(collectionName, options = {}) {
   if (!Object.hasOwn(state.pagination, collectionName)) {
     return;
   }
-  state.pagination[collectionName] = createPaginationState();
+  const preservePageSize = options.preservePageSize !== false;
+  const currentPageSize = preservePageSize
+    ? state.pagination[collectionName]?.pageSize
+    : COLLECTION_PAGE_SIZE;
+  state.pagination[collectionName] = createPaginationState(currentPageSize);
+}
+
+export function setPaginationPageSize(collectionName, requestedPageSize) {
+  const pagination = state.pagination[collectionName];
+  const pageSize = Number(requestedPageSize);
+  if (!pagination || !COLLECTION_PAGE_SIZE_OPTIONS.includes(pageSize) || pagination.pageSize === pageSize) {
+    return false;
+  }
+  state.pagination[collectionName] = createPaginationState(pageSize);
+  return true;
 }
 
 export function movePaginationCursor(collectionName, direction) {

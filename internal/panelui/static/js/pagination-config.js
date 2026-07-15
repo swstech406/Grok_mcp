@@ -1,0 +1,2 @@
+export const COLLECTION_PAGE_SIZE = 50;
+export const COLLECTION_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];

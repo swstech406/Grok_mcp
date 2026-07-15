@@ -27,6 +27,7 @@ import {
   clearAuthenticatedState,
   clearCachedData,
   COLLECTION_PAGE_SIZE,
+  COLLECTION_PAGE_SIZE_OPTIONS,
   compareTiers,
   movePaginationCursor,
   normalizeUsage,
@@ -34,6 +35,7 @@ import {
   resetPagination,
   replaceItemByIdentifier,
   restorePaginationCursor,
+  setPaginationPageSize,
   state
 } from "./state.js";
 import { createFormDataObject } from "./utils.js";
@@ -53,9 +55,11 @@ export function createApplicationEvents({
 
   function registerEventHandlers() {
     applicationElement.addEventListener("click", handleApplicationClick);
+    applicationElement.addEventListener("change", handleApplicationChange);
     applicationElement.addEventListener("submit", handleFormSubmit);
     applicationElement.addEventListener("input", handleApplicationInput);
     modalRegionElement.addEventListener("click", handleModalClick);
+    modalRegionElement.addEventListener("change", handleModalChange);
     modalRegionElement.addEventListener("submit", handleFormSubmit);
     window.addEventListener("hashchange", handleLocationChange);
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -192,7 +196,7 @@ export function createApplicationEvents({
         openUserUsageSummaryModal();
         break;
       case "change-user-usage-page":
-        changeUserUsagePage(actionElement.dataset.page);
+        await changeUserUsagePage(actionElement.dataset.direction);
         break;
       case "copy-debug-json":
         if (state.modal?.type === "debugJSON") {
@@ -232,6 +236,37 @@ export function createApplicationEvents({
       default:
         break;
     }
+  }
+
+  async function handleApplicationChange(event) {
+    const actionElement = event.target.closest('[data-action="change-list-page-size"]');
+    if (!actionElement) {
+      return;
+    }
+
+    const collectionName = actionElement.dataset.list;
+    if (collectionName !== "usageRecords" || state.currentPage !== "usage") {
+      return;
+    }
+
+    const previousPageSize = state.pagination.usageRecords.pageSize;
+    if (!setPaginationPageSize(collectionName, actionElement.value)) {
+      return;
+    }
+
+    const loaded = await loadCurrentPage({ refreshing: true });
+    if (!loaded && state.authenticated) {
+      setPaginationPageSize(collectionName, previousPageSize);
+      renderApplication();
+    }
+  }
+
+  async function handleModalChange(event) {
+    const actionElement = event.target.closest('[data-action="change-user-usage-page-size"]');
+    if (!actionElement) {
+      return;
+    }
+    await changeUserUsagePageSize(actionElement.value);
   }
 
   function handleApplicationInput(event) {
@@ -695,26 +730,64 @@ export function createApplicationEvents({
       userIdentifier,
       username: user?.username || "用户",
       loading: true,
-      usage: null
+      loadingRecords: false,
+      usage: null,
+      recentRecords: null,
+      pageSize: 20,
+      cursor: "",
+      nextCursor: "",
+      previousCursors: [],
+      hasMore: false
     });
+    await loadAdminUserUsagePage({ closeModalOnError: true });
+  }
+
+  async function loadAdminUserUsagePage(options = {}) {
+    const modal = state.modal;
+    if (!modal || !["userUsage", "userUsageLogs"].includes(modal.type)) {
+      return false;
+    }
+
+    const userIdentifier = modal.userIdentifier;
+    const requestedCursor = modal.cursor;
+    const requestedPageSize = modal.pageSize;
     const requestContext = startModalRequest();
     try {
-      const usage = await fetchAdminUserUsage(userIdentifier, { signal: requestContext.requestController.signal });
+      const usageResponse = await fetchAdminUserUsage(userIdentifier, {
+        signal: requestContext.requestController.signal,
+        cursor: requestedCursor,
+        limit: requestedPageSize
+      });
       if (isCurrentModalRequest(requestContext)
-        && state.modal?.type === "userUsage"
+        && ["userUsage", "userUsageLogs"].includes(state.modal?.type)
         && state.modal.userIdentifier === userIdentifier) {
+        const usage = normalizeUsage(usageResponse);
         state.modal.loading = false;
-        state.modal.usage = normalizeUsage(usage);
+        state.modal.loadingRecords = false;
+        state.modal.usage = usage;
+        state.modal.nextCursor = usage.next_cursor;
+        state.modal.hasMore = Boolean(usage.has_more && usage.next_cursor);
+        if (!Array.isArray(state.modal.recentRecords)) {
+          state.modal.recentRecords = usage.records.slice(0, 8);
+        }
         renderModalRegion();
+        return true;
       }
     } catch (error) {
       if (error?.name !== "AbortError" && isCurrentModalRequest(requestContext) && !handleSessionError(error)) {
-        closeModal();
+        if (options.closeModalOnError) {
+          closeModal();
+        } else if (["userUsage", "userUsageLogs"].includes(state.modal?.type)) {
+          state.modal.loading = false;
+          state.modal.loadingRecords = false;
+          renderModalRegion();
+        }
         showToast("无法加载用户用量", getErrorMessage(error), "error");
       }
     } finally {
       finishModalRequest(requestContext);
     }
+    return false;
   }
 
   function openUserUsageLogsModal() {
@@ -723,7 +796,6 @@ export function createApplicationEvents({
     }
 
     state.modal.type = "userUsageLogs";
-    state.modal.page = 1;
     renderModalRegion();
   }
 
@@ -733,20 +805,80 @@ export function createApplicationEvents({
     }
 
     state.modal.type = "userUsage";
-    delete state.modal.page;
     renderModalRegion();
   }
 
-  function changeUserUsagePage(requestedPage) {
-    if (state.modal?.type !== "userUsageLogs") {
+  async function changeUserUsagePage(direction) {
+    if (state.modal?.type !== "userUsageLogs" || state.modal.loadingRecords) {
       return;
     }
 
-    const usageRecordCount = state.modal.usage?.records?.length || 0;
-    const totalPages = Math.max(1, Math.ceil(usageRecordCount / 20));
-    const normalizedPage = Math.min(Math.max(Number(requestedPage || 1), 1), totalPages);
-    state.modal.page = normalizedPage;
+    const paginationSnapshot = createUserUsagePaginationSnapshot(state.modal);
+    if (direction === "next") {
+      if (!state.modal.hasMore || !state.modal.nextCursor) {
+        return;
+      }
+      state.modal.previousCursors.push(state.modal.cursor);
+      state.modal.cursor = state.modal.nextCursor;
+    } else if (direction === "previous" && state.modal.previousCursors.length > 0) {
+      state.modal.cursor = state.modal.previousCursors.pop() || "";
+    } else {
+      return;
+    }
+
+    state.modal.loadingRecords = true;
     renderModalRegion();
+    const loaded = await loadAdminUserUsagePage();
+    if (!loaded && state.modal?.type === "userUsageLogs") {
+      restoreUserUsagePaginationSnapshot(state.modal, paginationSnapshot);
+      renderModalRegion();
+    }
+  }
+
+  async function changeUserUsagePageSize(requestedPageSize) {
+    if (state.modal?.type !== "userUsageLogs" || state.modal.loadingRecords) {
+      return;
+    }
+
+    const pageSize = Number(requestedPageSize);
+    if (!COLLECTION_PAGE_SIZE_OPTIONS.includes(pageSize) || pageSize === state.modal.pageSize) {
+      return;
+    }
+
+    const paginationSnapshot = createUserUsagePaginationSnapshot(state.modal);
+    state.modal.pageSize = pageSize;
+    state.modal.cursor = "";
+    state.modal.nextCursor = "";
+    state.modal.previousCursors = [];
+    state.modal.hasMore = false;
+    state.modal.loadingRecords = true;
+    renderModalRegion();
+    const loaded = await loadAdminUserUsagePage();
+    if (!loaded && state.modal?.type === "userUsageLogs") {
+      restoreUserUsagePaginationSnapshot(state.modal, paginationSnapshot);
+      renderModalRegion();
+    }
+  }
+
+  function createUserUsagePaginationSnapshot(modal) {
+    return {
+      cursor: modal.cursor,
+      nextCursor: modal.nextCursor,
+      previousCursors: [...modal.previousCursors],
+      hasMore: modal.hasMore,
+      pageSize: modal.pageSize,
+      usage: modal.usage
+    };
+  }
+
+  function restoreUserUsagePaginationSnapshot(modal, snapshot) {
+    modal.cursor = snapshot.cursor;
+    modal.nextCursor = snapshot.nextCursor;
+    modal.previousCursors = [...snapshot.previousCursors];
+    modal.hasMore = snapshot.hasMore;
+    modal.pageSize = snapshot.pageSize;
+    modal.usage = snapshot.usage;
+    modal.loadingRecords = false;
   }
 
   function confirmDeleteUser(userIdentifier) {

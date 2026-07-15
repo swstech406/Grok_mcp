@@ -517,7 +517,17 @@ func (h *Handler) userUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid 'since' query parameter; expected RFC3339")
 		return
 	}
-	stats, err := h.Store.GetUserUsageStats(r.Context(), user.ID, since)
+	limit, err := parsePanelPageLimit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cursor, err := parseUsageRecordCursor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	stats, err := h.Store.GetUserUsageStatsPage(r.Context(), user.ID, since, cursor, limit)
 	if err != nil {
 		log.Printf("usage stats for user %s failed: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "failed to load usage")
@@ -721,7 +731,17 @@ func (h *Handler) adminUserUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid 'since' query parameter; expected RFC3339")
 		return
 	}
-	stats, err := h.Store.GetUserUsageStats(r.Context(), id, since)
+	limit, err := parsePanelPageLimit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cursor, err := parseUsageRecordCursor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	stats, err := h.Store.GetUserUsageStatsPage(r.Context(), id, since, cursor, limit)
 	if err != nil {
 		log.Printf("admin usage stats for user %s failed: %v", id, err)
 		writeError(w, http.StatusInternalServerError, "failed to load usage")

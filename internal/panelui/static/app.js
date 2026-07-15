@@ -176,8 +176,9 @@ async function loadPageData(page, signal) {
     case "usage": {
       const since = getUsagePeriodSince(state.filters.usagePeriod);
       const cursor = state.pagination.usageRecords.cursor;
+      const pageSize = state.pagination.usageRecords.pageSize;
       if (cursor) {
-        const recordPage = await fetchUsageRecords(since, { signal, cursor, limit: COLLECTION_PAGE_SIZE });
+        const recordPage = await fetchUsageRecords(since, { signal, cursor, limit: pageSize });
         return {
           usage: normalizeUsage({
             ...(state.data.usage || {}),
@@ -187,7 +188,7 @@ async function loadPageData(page, signal) {
           })
         };
       }
-      const usage = await fetchUsage(since, { signal });
+      const usage = await fetchUsage(since, { signal, limit: pageSize });
       return { usage: normalizeUsage(usage) };
     }
     case "users": {

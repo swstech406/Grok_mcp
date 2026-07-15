@@ -433,11 +433,7 @@ func (s *SQLiteStore) DeleteUser(ctx context.Context, id string) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	for _, keyID := range keyIDs {
-		if _, err := s.debugDB.ExecContext(ctx, `DELETE FROM usage_debug WHERE key_id = ?`, keyID); err != nil {
-			return fmt.Errorf("delete user debug usage: %w", err)
-		}
-	}
+	s.deleteUsageDebugByKeyIDsBestEffort(keyIDs)
 	return nil
 }
 

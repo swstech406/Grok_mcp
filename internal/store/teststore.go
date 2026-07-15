@@ -82,6 +82,9 @@ func (TestStore) GetUsageStats(context.Context, string, time.Time) (*UsageStats,
 func (TestStore) GetUserUsageStats(context.Context, string, time.Time) (*UsageStats, error) {
 	return nil, nil
 }
+func (TestStore) GetUserUsageStatsPage(context.Context, string, time.Time, *UsageRecordCursor, int) (*UsageStats, error) {
+	return nil, nil
+}
 func (TestStore) GetGlobalStats(context.Context, time.Time) (*UsageStats, error) {
 	return nil, nil
 }

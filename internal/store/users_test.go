@@ -258,6 +258,35 @@ func TestDeleteUserRemovesUserKeysAndUsage(t *testing.T) {
 	}
 }
 
+func TestDeleteUserSucceedsWhenDebugCleanupFails(t *testing.T) {
+	store := openTestDB(t)
+	ctx := context.Background()
+	user, err := store.CreateUser(ctx, "debug-cleanup-failure", "hash", RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CreateKey(ctx, user.ID, "temporary key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.debugDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteUser(ctx, user.ID); err != nil {
+		t.Fatalf("primary deletion should succeed despite debug cleanup failure: %v", err)
+	}
+	if _, err := store.GetUserByID(ctx, user.ID); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected user to be deleted from the primary database, got %v", err)
+	}
+	keys, err := store.ListKeysByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("expected user keys to be deleted, got %d", len(keys))
+	}
+}
+
 func TestDeleteUserClearsInviteCodeCreatorReference(t *testing.T) {
 	store := openTestDB(t)
 	ctx := context.Background()

@@ -23,6 +23,8 @@ const timeLayout = "2006-01-02 15:04:05"
 
 const sqliteReadPoolSize = 4
 
+const debugCleanupTimeout = 5 * time.Second
+
 // SQLiteStore 使用纯 Go 驱动 modernc.org/sqlite。写连接保持串行，读取连接池用于发挥 WAL 的并发读取能力。
 type SQLiteStore struct {
 	db           *sql.DB
@@ -461,10 +463,31 @@ func (s *SQLiteStore) DeleteKey(ctx context.Context, id string) error {
 	if n == 0 {
 		return fmt.Errorf("api key not found")
 	}
-	if _, err := s.debugDB.ExecContext(ctx, `DELETE FROM usage_debug WHERE key_id = ?`, id); err != nil {
-		return fmt.Errorf("delete API key debug usage: %w", err)
-	}
+	s.deleteUsageDebugByKeyIDsBestEffort([]string{id})
 	return nil
+}
+
+// deleteUsageDebugByKeyIDsBestEffort keeps auxiliary debug cleanup from
+// changing the result of an already committed primary-database deletion.
+func (s *SQLiteStore) deleteUsageDebugByKeyIDsBestEffort(keyIDs []string) {
+	if len(keyIDs) == 0 {
+		return
+	}
+
+	cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), debugCleanupTimeout)
+	defer cancelCleanup()
+
+	placeholders := make([]string, len(keyIDs))
+	arguments := make([]any, len(keyIDs))
+	for keyIndex, keyID := range keyIDs {
+		placeholders[keyIndex] = "?"
+		arguments[keyIndex] = keyID
+	}
+
+	_, _ = s.debugDB.ExecContext(cleanupContext,
+		`DELETE FROM usage_debug WHERE key_id IN (`+strings.Join(placeholders, ", ")+`)`,
+		arguments...,
+	)
 }
 
 func (s *SQLiteStore) RecordUsage(ctx context.Context, record UsageRecord) error {
@@ -669,15 +692,25 @@ func buildUsageRollupStatsAggregateQuery(source usageRollupSource, where string)
 }
 
 func (s *SQLiteStore) GetUsageStats(ctx context.Context, keyID string, since time.Time) (*UsageStats, error) {
-	return s.queryUsageStats(ctx, usageStatsByKey, []any{keyID}, since)
+	return s.queryUsageStats(ctx, usageStatsByKey, []any{keyID}, since, nil, usageRecordPageSize)
 }
 
 func (s *SQLiteStore) GetUserUsageStats(ctx context.Context, userID string, since time.Time) (*UsageStats, error) {
-	return s.queryUsageStats(ctx, usageStatsByUser, []any{userID}, since)
+	return s.GetUserUsageStatsPage(ctx, userID, since, nil, usageRecordPageSize)
+}
+
+func (s *SQLiteStore) GetUserUsageStatsPage(
+	ctx context.Context,
+	userID string,
+	since time.Time,
+	cursor *UsageRecordCursor,
+	limit int,
+) (*UsageStats, error) {
+	return s.queryUsageStats(ctx, usageStatsByUser, []any{userID}, since, cursor, limit)
 }
 
 func (s *SQLiteStore) GetGlobalStats(ctx context.Context, since time.Time) (*UsageStats, error) {
-	return s.queryUsageStats(ctx, usageStatsGlobal, nil, since)
+	return s.queryUsageStats(ctx, usageStatsGlobal, nil, since, nil, usageRecordPageSize)
 }
 
 const (
@@ -685,9 +718,16 @@ const (
 	usageRecordPageSize     = 50
 )
 
-// queryUsageStats 按条件聚合 usage_log，并拉取首屏明细（按时间与 ID 倒序）。
+// queryUsageStats 按条件聚合 usage_log，并拉取请求的明细页（按时间与 ID 倒序）。
 // 流量桶与最近一分钟调用数均直接由 SQLite 对完整数据集聚合，避免被明细上限截断。
-func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope, whereArgs []any, since time.Time) (*UsageStats, error) {
+func (s *SQLiteStore) queryUsageStats(
+	ctx context.Context,
+	scope usageStatsScope,
+	whereArgs []any,
+	since time.Time,
+	recordCursor *UsageRecordCursor,
+	recordLimit int,
+) (*UsageStats, error) {
 	where, ok := usageStatsWhere[scope]
 	if !ok {
 		return nil, fmt.Errorf("invalid usage stats scope")
@@ -710,7 +750,7 @@ func (s *SQLiteStore) queryUsageStats(ctx context.Context, scope usageStatsScope
 		}
 	}
 
-	recordPage, err := s.queryUsageRecordPage(ctx, where, whereArgs, sinceUTC, nil, usageRecordPageSize)
+	recordPage, err := s.queryUsageRecordPage(ctx, where, whereArgs, sinceUTC, recordCursor, recordLimit)
 	if err != nil {
 		return nil, err
 	}

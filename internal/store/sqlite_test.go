@@ -624,6 +624,27 @@ func TestListUpdateDeleteKey(t *testing.T) {
 	}
 }
 
+func TestDeleteKeySucceedsWhenDebugCleanupFails(t *testing.T) {
+	store := openTestDB(t)
+	ctx := context.Background()
+	userID := testUserID(t, store)
+
+	key, _, err := store.CreateKey(ctx, userID, "debug-cleanup-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.debugDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteKey(ctx, key.ID); err != nil {
+		t.Fatalf("primary deletion should succeed despite debug cleanup failure: %v", err)
+	}
+	if _, err := store.GetKeyByID(ctx, key.ID); err == nil {
+		t.Fatal("expected API key to be deleted from the primary database")
+	}
+}
+
 func TestUsageStats(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()

@@ -177,6 +177,117 @@ func TestUsageRecordDetailLoadsBodiesOnDemandAndEnforcesOwnership(t *testing.T) 
 	}
 }
 
+func TestUsageEndpointsApplyRequestedDatabasePageSizeAndCursor(t *testing.T) {
+	testServer, sqliteStore, configuration := panelTestServer(t)
+	defer testServer.Close()
+	ctx := context.Background()
+
+	administrator, err := sqliteStore.CreateUser(ctx, "usage-pagination-admin", "hash", store.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetUser, err := sqliteStore.CreateUser(ctx, "usage-pagination-target", "hash", store.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUser, err := sqliteStore.CreateUser(ctx, "usage-pagination-other", "hash", store.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetKey, _, err := sqliteStore.CreateKey(ctx, targetUser.ID, "target-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKey, _, err := sqliteStore.CreateKey(ctx, otherUser.ID, "other-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recordTimestamp := time.Now().UTC().Truncate(time.Second)
+	for recordIndex := 0; recordIndex < 35; recordIndex++ {
+		if err := sqliteStore.RecordUsage(ctx, store.UsageRecord{
+			KeyID:      targetKey.ID,
+			ToolName:   "grok_web_search",
+			Timestamp:  recordTimestamp,
+			DurationMs: int64(recordIndex),
+			Success:    true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for recordIndex := 0; recordIndex < 5; recordIndex++ {
+		if err := sqliteStore.RecordUsage(ctx, store.UsageRecord{
+			KeyID:      otherKey.ID,
+			ToolName:   "grok_x_search",
+			Timestamp:  recordTimestamp,
+			DurationMs: int64(recordIndex),
+			Success:    true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	issueToken := func(user *store.User) string {
+		t.Helper()
+		token, _, issueErr := auth.IssuePanelToken(configuration.JWTSecret, user, 0)
+		if issueErr != nil {
+			t.Fatal(issueErr)
+		}
+		return token
+	}
+	requestUsage := func(path, token string) UsageStatsResponse {
+		t.Helper()
+		request, requestErr := http.NewRequest(http.MethodGet, testServer.URL+path, nil)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		response, requestErr := http.DefaultClient.Do(withJWT(request, token))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			var responseBuffer bytes.Buffer
+			_, _ = responseBuffer.ReadFrom(response.Body)
+			t.Fatalf("GET %s returned %d: %s", path, response.StatusCode, responseBuffer.String())
+		}
+		var usageResponse UsageStatsResponse
+		if decodeErr := json.NewDecoder(response.Body).Decode(&usageResponse); decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		return usageResponse
+	}
+
+	targetToken := issueToken(targetUser)
+	firstPage := requestUsage("/panel/v1/usage?limit=10", targetToken)
+	if firstPage.TotalCalls != 35 || len(firstPage.Records) != 10 || !firstPage.HasMore || firstPage.NextCursor == "" {
+		t.Fatalf("unexpected first user page: %+v", firstPage)
+	}
+	secondPage := requestUsage("/panel/v1/usage?limit=10&cursor="+firstPage.NextCursor, targetToken)
+	if len(secondPage.Records) != 10 {
+		t.Fatalf("second user page contains %d records, want 10", len(secondPage.Records))
+	}
+	firstPageRecordIDs := make(map[int64]struct{}, len(firstPage.Records))
+	for _, record := range firstPage.Records {
+		firstPageRecordIDs[record.ID] = struct{}{}
+	}
+	for _, record := range secondPage.Records {
+		if _, duplicated := firstPageRecordIDs[record.ID]; duplicated {
+			t.Fatalf("usage record %d appeared in both cursor pages", record.ID)
+		}
+	}
+
+	adminToken := issueToken(administrator)
+	adminPage := requestUsage("/panel/v1/admin/users/"+targetUser.ID+"/usage?limit=20", adminToken)
+	if adminPage.TotalCalls != 35 || len(adminPage.Records) != 20 || !adminPage.HasMore {
+		t.Fatalf("unexpected admin target-user page: %+v", adminPage)
+	}
+	completeAdminPage := requestUsage("/panel/v1/admin/users/"+targetUser.ID+"/usage?limit=100", adminToken)
+	if completeAdminPage.TotalCalls != 35 || len(completeAdminPage.Records) != 35 || completeAdminPage.HasMore {
+		t.Fatalf("unexpected 100-record admin page: %+v", completeAdminPage)
+	}
+}
+
 func TestAdminUpdateUserRejectsSelfDisableAndDowngrade(t *testing.T) {
 	ts, st, cfg := panelTestServer(t)
 	defer ts.Close()

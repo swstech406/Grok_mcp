@@ -196,7 +196,7 @@ type UsageBucket struct {
 	Calls int64
 }
 
-// UsageStats 聚合某段时间内的调用统计；Records 最多返回保留期内最近 500 条原始明细，
+// UsageStats 聚合某段时间内的调用统计；Records 保存调用方请求的数据库记录页，
 // CurrentRPM 基于原始日志，历史总量与 TrafficBuckets 会合并小时级和日级聚合。
 type UsageStats struct {
 	TotalCalls     int64
@@ -378,6 +378,7 @@ type Store interface {
 	RecordUsage(ctx context.Context, record UsageRecord) error
 	GetUsageStats(ctx context.Context, keyID string, since time.Time) (*UsageStats, error)
 	GetUserUsageStats(ctx context.Context, userID string, since time.Time) (*UsageStats, error)
+	GetUserUsageStatsPage(ctx context.Context, userID string, since time.Time, cursor *UsageRecordCursor, limit int) (*UsageStats, error)
 	GetGlobalStats(ctx context.Context, since time.Time) (*UsageStats, error)
 	ListUsageRecordsPage(ctx context.Context, scope UsageRecordListScope, since time.Time, cursor *UsageRecordCursor, limit int) (*UsageRecordPage, error)
 	GetUsageRecordDetail(ctx context.Context, usageID int64, scope UsageRecordScope) (*UsageRecord, error)

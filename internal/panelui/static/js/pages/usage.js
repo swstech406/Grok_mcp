@@ -39,7 +39,7 @@ export function renderUsagePage(state) {
     <article class="data-card">
       <header class="card-header"><div><h2>最近调用</h2><p>请求结果与耗时明细</p></div></header>
       ${renderUsageRecords(usage.records)}
-      ${renderCollectionPagination("usageRecords", state.pagination.usageRecords, usage.records.length)}
+      ${renderCollectionPagination("usageRecords", state.pagination.usageRecords, usage.records.length, { showPageSizeSelector: true })}
     </article>
   `;
 }

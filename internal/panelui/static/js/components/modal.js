@@ -3,6 +3,7 @@ import { renderIcon } from "./icons.js";
 import { renderMetricCard } from "./metric-card.js";
 import { renderChart } from "./usage-chart.js";
 import { renderUsageRecords } from "./usage-records.js";
+import { COLLECTION_PAGE_SIZE_OPTIONS } from "../pagination-config.js";
 
 export function renderModal(state) {
   const modal = state.modal;
@@ -313,7 +314,7 @@ function renderEditUserModal(modal, tiers, currentUser) {
 
 function renderUserUsageModal(modal) {
   const usage = modal.usage;
-  const usageRecords = usage?.records || [];
+  const recentRecords = modal.recentRecords || usage?.records?.slice(0, 8) || [];
   const body = modal.loading ? '<div class="skeleton" style="height:380px"></div>' : `
     <section class="metric-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
       ${renderMetricCard("总调用", formatNumber(usage?.total_calls), "全部密钥", "activity", "#eeeaff", "#7667f4", false, "trend", usage?.traffic_buckets)}
@@ -321,11 +322,11 @@ function renderUserUsageModal(modal) {
       ${renderMetricCard("当前 RPM", formatNumber(usage?.current_rpm), "最近一分钟", "chart", "#e8f1ff", "#3d83f6", false, "pulse", usage?.current_rpm)}
     </section>
     <div class="chart-wrap">${renderChart(usage?.traffic_buckets || [])}</div>
-    ${renderUsageRecords(usageRecords.slice(0, 8))}
+    ${renderUsageRecords(recentRecords)}
   `;
   const footer = `
     <button class="button button-secondary" type="button" data-action="close-modal">关闭</button>
-    ${!modal.loading && usageRecords.length > 8 ? `<button class="button button-primary" type="button" data-action="view-user-usage-logs">${renderIcon("activity")} 查看全部调用记录（${escapeHTML(formatNumber(usageRecords.length))}）</button>` : ""}
+    ${!modal.loading && recentRecords.length > 0 ? `<button class="button button-primary" type="button" data-action="view-user-usage-logs">${renderIcon("activity")} 查看调用记录</button>` : ""}
   `;
   return renderModalFrame({ title: `${modal.username || "用户"} 的调用分析`, description: "聚合该用户全部 API 密钥的调用数据，最近活动仅展示前 8 条。", body, footer, wide: true });
 }
@@ -333,11 +334,9 @@ function renderUserUsageModal(modal) {
 function renderUserUsageLogsModal(modal) {
   const usage = modal.usage;
   const usageRecords = usage?.records || [];
-  const pageSize = 20;
-  const totalPages = Math.max(1, Math.ceil(usageRecords.length / pageSize));
-  const currentPage = Math.min(Math.max(Number(modal.page || 1), 1), totalPages);
-  const pageStartIndex = (currentPage - 1) * pageSize;
-  const visibleRecords = usageRecords.slice(pageStartIndex, pageStartIndex + pageSize);
+  const currentPage = (modal.previousCursors?.length || 0) + 1;
+  const previousPageAvailable = (modal.previousCursors?.length || 0) > 0;
+  const nextPageAvailable = Boolean(modal.hasMore && modal.nextCursor);
   const failedCalls = Math.max(0, Number(usage?.total_calls || 0) - Number(usage?.success_calls || 0));
 
   const body = `
@@ -346,13 +345,19 @@ function renderUserUsageLogsModal(modal) {
       ${renderMetricCard("成功调用", formatNumber(usage?.success_calls), formatPercent(getSuccessRate(usage)), "shield", "#e8f8ef", "#238a54")}
       ${renderMetricCard("失败调用", formatNumber(failedCalls), "不计入成功调用额度", "alert", "#fff1f0", "#d84a45")}
     </section>
-    ${renderUsageRecords(visibleRecords)}
+    ${modal.loadingRecords ? '<div class="skeleton" style="height:320px"></div>' : renderUsageRecords(usageRecords)}
   `;
   const footer = `
-    <button class="button button-secondary" type="button" data-action="view-user-usage-summary">返回用量摘要</button>
-    <span class="muted" style="margin-right:auto;font-size:12px">第 ${escapeHTML(formatNumber(currentPage))} / ${escapeHTML(formatNumber(totalPages))} 页，共 ${escapeHTML(formatNumber(usageRecords.length))} 条记录</span>
-    <button class="button button-secondary" type="button" data-action="change-user-usage-page" data-page="${currentPage - 1}" ${currentPage <= 1 ? "disabled" : ""}>上一页</button>
-    <button class="button button-primary" type="button" data-action="change-user-usage-page" data-page="${currentPage + 1}" ${currentPage >= totalPages ? "disabled" : ""}>下一页</button>
+    <button class="button button-secondary" type="button" data-action="view-user-usage-summary" ${modal.loadingRecords ? "disabled" : ""}>返回用量摘要</button>
+    <span class="muted modal-pagination-status">第 ${escapeHTML(formatNumber(currentPage))} 页 · 本页 ${escapeHTML(formatNumber(usageRecords.length))} 条</span>
+    <label class="pagination-page-size">
+      <span>每页</span>
+      <select class="select-input" data-action="change-user-usage-page-size" aria-label="每页显示条数" ${modal.loadingRecords ? "disabled" : ""}>
+        ${COLLECTION_PAGE_SIZE_OPTIONS.map((pageSize) => `<option value="${pageSize}" ${Number(modal.pageSize) === pageSize ? "selected" : ""}>${pageSize} 条</option>`).join("")}
+      </select>
+    </label>
+    <button class="button button-secondary" type="button" data-action="change-user-usage-page" data-direction="previous" ${!modal.loadingRecords && previousPageAvailable ? "" : "disabled"}>上一页</button>
+    <button class="button button-primary" type="button" data-action="change-user-usage-page" data-direction="next" ${!modal.loadingRecords && nextPageAvailable ? "" : "disabled"}>下一页</button>
   `;
 
   return renderModalFrame({

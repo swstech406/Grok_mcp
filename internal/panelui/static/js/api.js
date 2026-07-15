@@ -234,8 +234,8 @@ export function fetchKeyUsage(keyIdentifier, options = {}) {
 }
 
 export function fetchUsage(since = "", options = {}) {
-	const sinceQuery = since ? `?since=${encodeURIComponent(since)}` : "";
-	return panelAPI.request(`/panel/v1/usage${sinceQuery}`, options);
+  const { cursor = "", limit = 50, ...requestOptions } = options;
+  return panelAPI.request(buildCollectionPath("/panel/v1/usage", { since, cursor, limit }), requestOptions);
 }
 
 export function fetchUsageRecords(since = "", options = {}) {
@@ -268,7 +268,11 @@ export function deleteAdminUser(userIdentifier) {
 }
 
 export function fetchAdminUserUsage(userIdentifier, options = {}) {
-  return panelAPI.request(`/panel/v1/admin/users/${encodeURIComponent(userIdentifier)}/usage`, options);
+  const { since = "", cursor = "", limit = 50, ...requestOptions } = options;
+  return panelAPI.request(buildCollectionPath(
+    `/panel/v1/admin/users/${encodeURIComponent(userIdentifier)}/usage`,
+    { since, cursor, limit }
+  ), requestOptions);
 }
 
 export function fetchTiers(options = {}) {
