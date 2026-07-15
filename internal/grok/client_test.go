@@ -1,7 +1,10 @@
 package grok
 
 import (
+	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -69,6 +72,95 @@ func TestNewHTTPClientWithProxyConfiguresUpstreamIdleConnectionPool(t *testing.T
 	}
 	if transport.MaxIdleConnsPerHost != upstreamIdleConnectionPoolSize {
 		t.Fatalf("expected MaxIdleConnsPerHost %d, got %d", upstreamIdleConnectionPoolSize, transport.MaxIdleConnsPerHost)
+	}
+}
+
+func TestNewHTTPClientWithProxyUsesPhaseTimeoutsWithoutSSELifecycleTimeout(t *testing.T) {
+	phaseTimeout := 40 * time.Millisecond
+	client, err := newHTTPClientWithProxy(phaseTimeout, "", false)
+	if err != nil {
+		t.Fatalf("newHTTPClientWithProxy failed: %v", err)
+	}
+
+	if client.Timeout != 0 {
+		t.Fatalf("expected no total HTTP client timeout, got %v", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("expected connection timeout dialer")
+	}
+	if transport.TLSHandshakeTimeout != phaseTimeout {
+		t.Fatalf("expected TLS handshake timeout %v, got %v", phaseTimeout, transport.TLSHandshakeTimeout)
+	}
+	if transport.ResponseHeaderTimeout != phaseTimeout {
+		t.Fatalf("expected response header timeout %v, got %v", phaseTimeout, transport.ResponseHeaderTimeout)
+	}
+}
+
+func TestHTTPClientAllowsSSEBodyToOutlivePhaseTimeout(t *testing.T) {
+	phaseTimeout := 40 * time.Millisecond
+	streamDelay := 120 * time.Millisecond
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
+		responseWriter.Header().Set("Content-Type", "text/event-stream")
+		responseWriter.WriteHeader(http.StatusOK)
+		responseWriter.(http.Flusher).Flush()
+
+		time.Sleep(streamDelay)
+		_, _ = io.WriteString(responseWriter, "data: completed\n\n")
+	}))
+	defer server.Close()
+
+	client, err := newHTTPClientWithProxy(phaseTimeout, "", false)
+	if err != nil {
+		t.Fatalf("newHTTPClientWithProxy failed: %v", err)
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("request failed after response headers: %v", err)
+	}
+	defer response.Body.Close()
+
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read delayed SSE body: %v", err)
+	}
+	if string(responseBody) != "data: completed\n\n" {
+		t.Fatalf("unexpected response body: %q", responseBody)
+	}
+}
+
+func TestHTTPClientLimitsResponseHeaderWait(t *testing.T) {
+	phaseTimeout := 40 * time.Millisecond
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
+		time.Sleep(120 * time.Millisecond)
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, err := newHTTPClientWithProxy(phaseTimeout, "", false)
+	if err != nil {
+		t.Fatalf("newHTTPClientWithProxy failed: %v", err)
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	response, err := client.Do(request)
+	if response != nil {
+		response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("expected response header timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout awaiting response headers") {
+		t.Fatalf("expected response header timeout error, got %v", err)
 	}
 }
 

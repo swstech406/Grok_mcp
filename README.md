@@ -274,7 +274,7 @@ Accepts no arguments. It reads CPA `GET /v1/models`, trims and deduplicates IDs,
 | `CPA_BASE_URL` | `http://127.0.0.1:8317` | CPA root URL. |
 | `GROK_UPSTREAM_PROTOCOL` | `responses` | Search protocol: `responses`, `chat_completions`, or `anthropic_messages`. |
 | `GROK_MODEL` | `grok-4.3` | Default Grok model. |
-| `GROK_HTTP_TIMEOUT` | `120` | Upstream timeout in seconds. |
+| `GROK_HTTP_TIMEOUT` | `120` | Per-phase timeout in seconds for upstream connection establishment, TLS handshake, and response headers. It does not limit an active SSE response body; caller cancellation defines the total search lifetime. |
 | `GROK_HTTP_ADDR` | `:8080` | HTTP listen address. Requires restart to change. |
 | `GROK_DB_PATH` | `./grok-mcp.db` | SQLite database path. Requires restart to change. |
 | `GROK_USAGE_RAW_RETENTION_DAYS` | `7` | Raw usage and debug-detail retention before hourly compaction. |

@@ -271,7 +271,7 @@ claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
 | `CPA_BASE_URL` | `http://127.0.0.1:8317` | CPA 根地址。 |
 | `GROK_UPSTREAM_PROTOCOL` | `responses` | 搜索协议：`responses`、`chat_completions` 或 `anthropic_messages`。 |
 | `GROK_MODEL` | `grok-4.3` | 默认 Grok 模型。 |
-| `GROK_HTTP_TIMEOUT` | `120` | 上游超时秒数。 |
+| `GROK_HTTP_TIMEOUT` | `120` | 上游连接、TLS 握手和响应头各阶段的超时秒数，不限制已建立 SSE 响应体的持续时间；总搜索生命周期由调用方取消控制。 |
 | `GROK_HTTP_ADDR` | `:8080` | HTTP 监听地址，修改后需要重启。 |
 | `GROK_DB_PATH` | `./grok-mcp.db` | SQLite 路径，修改后需要重启。 |
 | `GROK_USAGE_RAW_RETENTION_DAYS` | `7` | 原始用量和 debug 明细保留期限，之后压缩为小时级数据。 |

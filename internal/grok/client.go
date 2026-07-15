@@ -3,9 +3,12 @@ package grok
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
@@ -100,11 +103,17 @@ func (c *Client) snapshot() clientSnapshot {
 	}
 }
 
-func newHTTPClientWithProxy(timeout time.Duration, proxyURL string, proxyEnabled bool) (*http.Client, error) {
-	if timeout <= 0 {
-		timeout = defaultTimeoutFallback()
+func newHTTPClientWithProxy(phaseTimeout time.Duration, proxyURL string, proxyEnabled bool) (*http.Client, error) {
+	if phaseTimeout <= 0 {
+		phaseTimeout = defaultTimeoutFallback()
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   phaseTimeout,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = phaseTimeout
+	transport.ResponseHeaderTimeout = phaseTimeout
 	transport.MaxIdleConns = upstreamIdleConnectionPoolSize
 	transport.MaxIdleConnsPerHost = upstreamIdleConnectionPoolSize
 	explicitProxyURL := strings.TrimSpace(proxyURL)
@@ -123,7 +132,6 @@ func newHTTPClientWithProxy(timeout time.Duration, proxyURL string, proxyEnabled
 		transport.Proxy = http.ProxyFromEnvironment
 	}
 	return &http.Client{
-		Timeout:   timeout,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -189,6 +197,8 @@ func (s clientSnapshot) postJSON(ctx context.Context, endpoint string, body []by
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	requestTimings := newUpstreamRequestTimings()
+	httpReq = httpReq.WithContext(httptrace.WithClientTrace(httpReq.Context(), requestTimings.clientTrace()))
 	httpReq.Header.Set("Content-Type", "application/json")
 	if anthropicHeaders {
 		// CPA protects every /v1 route with its Bearer key while Anthropic-compatible
@@ -203,10 +213,98 @@ func (s clientSnapshot) postJSON(ctx context.Context, endpoint string, body []by
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	resp, err := s.httpClient.Do(httpReq)
+	requestTimings.log(s.log, endpoint, err)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	return resp, nil
+}
+
+type upstreamRequestTimings struct {
+	mu sync.Mutex
+
+	requestStartedAt      time.Time
+	connectStartedAt      time.Time
+	tlsStartedAt          time.Time
+	responseHeadersWaitAt time.Time
+
+	connectDuration         time.Duration
+	tlsDuration             time.Duration
+	responseHeadersDuration time.Duration
+	connectionReused        bool
+}
+
+func newUpstreamRequestTimings() *upstreamRequestTimings {
+	return &upstreamRequestTimings{requestStartedAt: time.Now()}
+}
+
+func (timings *upstreamRequestTimings) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		ConnectStart: func(_, _ string) {
+			timings.mu.Lock()
+			if timings.connectStartedAt.IsZero() {
+				timings.connectStartedAt = time.Now()
+			}
+			timings.mu.Unlock()
+		},
+		ConnectDone: func(_, _ string, _ error) {
+			timings.mu.Lock()
+			if !timings.connectStartedAt.IsZero() {
+				timings.connectDuration = time.Since(timings.connectStartedAt)
+			}
+			timings.mu.Unlock()
+		},
+		GotConn: func(connectionInfo httptrace.GotConnInfo) {
+			timings.mu.Lock()
+			timings.connectionReused = connectionInfo.Reused
+			timings.mu.Unlock()
+		},
+		TLSHandshakeStart: func() {
+			timings.mu.Lock()
+			timings.tlsStartedAt = time.Now()
+			timings.mu.Unlock()
+		},
+		TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+			timings.mu.Lock()
+			if !timings.tlsStartedAt.IsZero() {
+				timings.tlsDuration = time.Since(timings.tlsStartedAt)
+			}
+			timings.mu.Unlock()
+		},
+		WroteRequest: func(_ httptrace.WroteRequestInfo) {
+			timings.mu.Lock()
+			timings.responseHeadersWaitAt = time.Now()
+			timings.mu.Unlock()
+		},
+		GotFirstResponseByte: func() {
+			timings.mu.Lock()
+			if !timings.responseHeadersWaitAt.IsZero() {
+				timings.responseHeadersDuration = time.Since(timings.responseHeadersWaitAt)
+			}
+			timings.mu.Unlock()
+		},
+	}
+}
+
+func (timings *upstreamRequestTimings) log(logger *logx.Logger, endpoint string, requestErr error) {
+	timings.mu.Lock()
+	connectDuration := timings.connectDuration
+	tlsDuration := timings.tlsDuration
+	responseHeadersDuration := timings.responseHeadersDuration
+	connectionReused := timings.connectionReused
+	totalDuration := time.Since(timings.requestStartedAt)
+	timings.mu.Unlock()
+
+	logger.Debugf(
+		"upstream request timings endpoint=%s connect=%s reused=%t tls=%s response_headers=%s total_to_headers=%s error=%v",
+		endpoint,
+		connectDuration,
+		connectionReused,
+		tlsDuration,
+		responseHeadersDuration,
+		totalDuration,
+		requestErr,
+	)
 }
 
 // httpError 在非 2xx 响应时返回分类错误，仅包含状态码，不透传响应体（可能含上游敏感信息）。
