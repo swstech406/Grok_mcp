@@ -15,6 +15,8 @@ import (
 	"github.com/grok-mcp/internal/logx"
 )
 
+const upstreamIdleConnectionPoolSize = 100
+
 // Client 通过 HTTP 访问上游 CPA 网关的 /v1/responses 端点（SSE 流式）。
 type Client struct {
 	mu           sync.RWMutex
@@ -67,13 +69,21 @@ func (c *Client) ApplyServerSettings(settings config.ServerSettings) error {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	previousHTTPClient := c.httpClient
 	c.baseURL = settings.CPABaseURL
 	c.apiKey = settings.CPAAPIKey
 	c.protocol = protocol
 	c.defaultModel = settings.Model
 	c.httpClient = httpClient
 	c.debugState.SetEnabled(settings.Debug)
+	c.mu.Unlock()
+
+	// Existing requests retain their client snapshot. Closing only idle
+	// connections releases resources from the replaced transport without
+	// interrupting those in-flight requests.
+	if previousHTTPClient != nil {
+		previousHTTPClient.CloseIdleConnections()
+	}
 	return nil
 }
 
@@ -95,6 +105,8 @@ func newHTTPClientWithProxy(timeout time.Duration, proxyURL string, proxyEnabled
 		timeout = defaultTimeoutFallback()
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = upstreamIdleConnectionPoolSize
+	transport.MaxIdleConnsPerHost = upstreamIdleConnectionPoolSize
 	explicitProxyURL := strings.TrimSpace(proxyURL)
 	if proxyEnabled {
 		if explicitProxyURL == "" {

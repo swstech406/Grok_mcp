@@ -54,6 +54,24 @@ func TestNewHTTPClientWithProxyFallsBackToEnvironment(t *testing.T) {
 	}
 }
 
+func TestNewHTTPClientWithProxyConfiguresUpstreamIdleConnectionPool(t *testing.T) {
+	client, err := newHTTPClientWithProxy(time.Second, "", false)
+	if err != nil {
+		t.Fatalf("newHTTPClientWithProxy failed: %v", err)
+	}
+
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if transport.MaxIdleConns != upstreamIdleConnectionPoolSize {
+		t.Fatalf("expected MaxIdleConns %d, got %d", upstreamIdleConnectionPoolSize, transport.MaxIdleConns)
+	}
+	if transport.MaxIdleConnsPerHost != upstreamIdleConnectionPoolSize {
+		t.Fatalf("expected MaxIdleConnsPerHost %d, got %d", upstreamIdleConnectionPoolSize, transport.MaxIdleConnsPerHost)
+	}
+}
+
 func TestNewHTTPClientWithProxyRejectsEnabledProxyWithoutURL(t *testing.T) {
 	_, err := newHTTPClientWithProxy(time.Second, " ", true)
 	if err == nil || !strings.Contains(err.Error(), "proxy URL is required when proxy is enabled") {
@@ -104,6 +122,41 @@ func TestApplyServerSettingsUpdatesSharedDebugState(t *testing.T) {
 	if debugState.Enabled() {
 		t.Fatal("failed settings update must not change shared debug state")
 	}
+}
+
+func TestApplyServerSettingsClosesReplacedClientIdleConnections(t *testing.T) {
+	configuration := &config.Config{
+		CPABaseURL:       "https://api.example.test",
+		CPAAPIKey:        "test-key",
+		UpstreamProtocol: config.UpstreamProtocolResponses,
+		Model:            "grok-4.3",
+		Timeout:          time.Second,
+		RegistrationMode: "free",
+	}
+	client := newTestClient(t, configuration)
+	replacedTransport := &closeIdleTrackingTransport{}
+
+	client.mu.Lock()
+	client.httpClient = &http.Client{Transport: replacedTransport}
+	client.mu.Unlock()
+
+	settings := configuration.ServerSettings()
+	settings.Model = "grok-4.4"
+	if err := client.ApplyServerSettings(settings); err != nil {
+		t.Fatalf("ApplyServerSettings failed: %v", err)
+	}
+	if replacedTransport.closeIdleConnectionCalls != 1 {
+		t.Fatalf("expected replaced client idle connections to close once, got %d", replacedTransport.closeIdleConnectionCalls)
+	}
+}
+
+type closeIdleTrackingTransport struct {
+	http.RoundTripper
+	closeIdleConnectionCalls int
+}
+
+func (transport *closeIdleTrackingTransport) CloseIdleConnections() {
+	transport.closeIdleConnectionCalls++
 }
 
 func newTestClient(t *testing.T, configuration *config.Config) *Client {
