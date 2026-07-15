@@ -216,6 +216,7 @@ func TestHTTPPanelAndMCPFlow(t *testing.T) {
 	defer mcpIPLimiter.Close()
 
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
+	defer authResolver.Close()
 	panelHandler := &panel.Handler{
 		Store:                 st,
 		JWTSecret:             cfg.JWTSecret,

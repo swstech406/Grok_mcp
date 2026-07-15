@@ -159,6 +159,7 @@ func TestCachedAPIKeyResolverReturnsClonesAndInvalidates(t *testing.T) {
 		tier: &store.Tier{ID: "tier-paid", RPM: 42, SuccessLimit: 84},
 	}
 	resolver := NewCachedAPIKeyResolver(st, time.Hour)
+	t.Cleanup(resolver.Close)
 
 	firstKey, firstUser, err := resolver.Resolve(context.Background(), keyHash)
 	if err != nil {
@@ -202,6 +203,7 @@ func TestCachedAPIKeyResolverReloadsAfterTTL(t *testing.T) {
 	}
 	currentTime := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
 	resolver := NewCachedAPIKeyResolver(st, time.Second)
+	t.Cleanup(resolver.Close)
 	resolver.now = func() time.Time { return currentTime }
 
 	if _, _, err := resolver.Resolve(context.Background(), keyHash); err != nil {

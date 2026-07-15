@@ -122,6 +122,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	defer mcpIPLimiter.Close()
 
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
+	defer authResolver.Close()
 	panelHandler := &panel.Handler{
 		Store:                 st,
 		JWTSecret:             cfg.JWTSecret,

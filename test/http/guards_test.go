@@ -81,6 +81,7 @@ func bootIntegrationEnv(t *testing.T, cpa *httptest.Server) *integrationEnv {
 	ts := httptest.NewServer(handler)
 	t.Cleanup(func() {
 		ts.Close()
+		authResolver.Close()
 		userLimiter.Close()
 		mcpIPLimiter.Close()
 		writer.Close()
