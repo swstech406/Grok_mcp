@@ -3,10 +3,10 @@ import { escapeHTML } from "../utils.js";
 
 export function renderConfigurationGuidePage() {
   const mcpEndpoint = buildMCPEndpoint();
-  const environmentCommand = 'export GROK_MCP_API_KEY="grok_xxx"';
-  const claudeCodeCommand = `claude mcp add --transport http grok-mcp \\
+  const environmentCommand = 'export GROK_SEARCH_MCP_API_KEY="grok_xxx"';
+  const claudeCodeCommand = `claude mcp add --transport http grok-search-mcp \\
   ${mcpEndpoint} \\
-  --header "Authorization: Bearer \${GROK_MCP_API_KEY}"`;
+  --header "Authorization: Bearer \${GROK_SEARCH_MCP_API_KEY}"`;
   const cursorConfiguration = JSON.stringify({
     mcpServers: {
       "grok-search": {
@@ -36,7 +36,7 @@ args = [
       <header class="guide-hero">
         <div class="guide-hero-copy">
           <p class="guide-eyebrow">MCP CLIENT SETUP</p>
-          <h1>连接 Grok MCP</h1>
+          <h1>连接 Grok Search MCP</h1>
           <p>创建客户端密钥，并将当前服务接入支持 Streamable HTTP 的 MCP 客户端。</p>
         </div>
         <div class="guide-endpoint-card">
@@ -102,7 +102,7 @@ args = [
                 subtitle: "命令行注册 HTTP MCP",
                 steps: [
                   "在需要使用此服务的项目终端中执行命令。",
-                  "确保 GROK_MCP_API_KEY 已设置为完整的客户端 API Key。",
+                  "确保 GROK_SEARCH_MCP_API_KEY 已设置为完整的客户端 API Key。",
                   "注册后列出 MCP 服务并确认连接状态。"
                 ],
                 codeBlocks: [{ label: "Terminal", value: `${claudeCodeCommand}\n\nclaude mcp list` }],

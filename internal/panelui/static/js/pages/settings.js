@@ -44,7 +44,7 @@ export function renderSettingsPage(state) {
         <section class="settings-section">
           <div class="settings-section-copy"><h3>搜索并发</h3><p>限制同时进行的流式搜索。容量耗尽时立即返回 503，不在服务内排队。</p></div>
           <div class="form-grid form-grid-align-fields">
-            <label class="field-group"><span class="field-label">全局搜索并发</span><input class="text-input" name="mcp_global_search_concurrency" type="number" min="1" step="1" value="${escapeHTML(settings.mcp_global_search_concurrency || 16)}" required><span class="field-hint">整个 grok-mcp 进程允许的同时在途搜索数。</span></label>
+            <label class="field-group"><span class="field-label">全局搜索并发</span><input class="text-input" name="mcp_global_search_concurrency" type="number" min="1" step="1" value="${escapeHTML(settings.mcp_global_search_concurrency || 16)}" required><span class="field-hint">整个 grok-search-mcp 进程允许的同时在途搜索数。</span></label>
             <label class="field-group"><span class="field-label">单用户搜索并发</span><input class="text-input" name="mcp_user_search_concurrency" type="number" min="1" step="1" value="${escapeHTML(settings.mcp_user_search_concurrency || 4)}" required><span class="field-hint">同一用户所有 API Key 共享，且不得超过全局上限。</span></label>
           </div>
         </section>
@@ -70,7 +70,7 @@ export function renderSettingsPage(state) {
       </form>
 
       <aside class="info-card">
-        <div class="info-card-top"><span class="info-card-icon">${renderIcon("shield")}</span><h3>运行时热更新</h3><p>这些设置保存后会立即应用到上游客户端和搜索并发控制，无需重启 grok-mcp 服务。</p></div>
+        <div class="info-card-top"><span class="info-card-icon">${renderIcon("shield")}</span><h3>运行时热更新</h3><p>这些设置保存后会立即应用到上游客户端和搜索并发控制，无需重启 grok-search-mcp 服务。</p></div>
         <div class="info-list">
           <div class="info-row"><span>服务版本</span><strong>${escapeHTML(settings.version || "未知")}</strong></div>
           <div class="info-row"><span>上游协议</span><strong>${escapeHTML(getUpstreamProtocolLabel(upstreamProtocol))}</strong></div>

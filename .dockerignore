@@ -7,7 +7,9 @@
 .mcp.json
 
 # Local build and test outputs.
+/grok-search-mcp
 /grok-mcp
+/.local-release/
 *.test
 *.out
 coverage.txt

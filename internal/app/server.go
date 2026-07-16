@@ -1,7 +1,7 @@
-// Package app is the HTTP composition root for grok-mcp.
+// Package app is the HTTP composition root for grok-search-mcp.
 //
 // It wires store, auth, rate limits, quota/usage middleware, panel API, and the
-// Streamable HTTP MCP endpoint. cmd/grok-mcp stays a thin entrypoint.
+// Streamable HTTP MCP endpoint. cmd/grok-search-mcp stays a thin entrypoint.
 package app
 
 import (
@@ -107,7 +107,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("create grok client: %w", err)
 	}
-	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "grok-mcp", Version: version.Version}, &mcp.ServerOptions{
+	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "grok-search-mcp", Version: version.Version}, &mcp.ServerOptions{
 		Instructions: mcpserver.ServerInstructions,
 	})
 	mcpserver.RegisterToolsWithLogger(mcpServer, grokClient, logx.NewWithDebugState("mcp", debugState))
@@ -188,9 +188,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	errCh := make(chan error, 1)
 	go func() {
 		if isWildcardHTTPAddr(cfg.HTTPAddr) {
-			log.Printf("WARNING: grok-mcp is listening on %s without built-in TLS; use an HTTPS reverse proxy before exposing it publicly", cfg.HTTPAddr)
+			log.Printf("WARNING: grok-search-mcp is listening on %s without built-in TLS; use an HTTPS reverse proxy before exposing it publicly", cfg.HTTPAddr)
 		}
-		log.Printf("grok-mcp HTTP listening on %s", cfg.HTTPAddr)
+		log.Printf("grok-search-mcp HTTP listening on %s", cfg.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}

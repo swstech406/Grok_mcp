@@ -43,8 +43,8 @@ function renderApplication() {
   applicationElement.innerHTML = state.authenticated ? renderShell(state) : renderAuthView(state);
   renderModalRegion();
   document.title = state.authenticated
-    ? `${pageMetadata[state.currentPage]?.title || "控制台"} · Grok MCP`
-    : "登录 · Grok MCP Control";
+    ? `${pageMetadata[state.currentPage]?.title || "控制台"} · Grok Search MCP`
+    : "登录 · Grok Search MCP Control";
 }
 
 function renderModalRegion() {

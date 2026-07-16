@@ -1,4 +1,4 @@
-// Package config 从环境变量加载 grok-mcp 的运行时配置并做基本校验。
+// Package config 从环境变量加载 grok-search-mcp 的运行时配置并做基本校验。
 package config
 
 import (
@@ -21,7 +21,7 @@ const (
 	// response-header phase. Active SSE bodies remain governed by caller context.
 	defaultTimeout                  = 120 * time.Second
 	defaultHTTPAddr                 = ":8080"
-	defaultDBPath                   = "./grok-mcp.db"
+	defaultDBPath                   = "./grok-search-mcp.db"
 	defaultUsageRawRetention        = 7 * 24 * time.Hour
 	defaultUsageHourlyRetention     = 90 * 24 * time.Hour
 	defaultUsageDailyRetention      = 730 * 24 * time.Hour
@@ -79,7 +79,7 @@ func Load() (*Config, error) {
 		UpstreamProtocol:           UpstreamProtocol(envOrDefault("GROK_UPSTREAM_PROTOCOL", string(defaultUpstreamProtocol))),
 		Model:                      envOrDefault("GROK_MODEL", defaultModel),
 		Timeout:                    defaultTimeout,
-		Debug:                      parseBoolEnv("GROK_MCP_DEBUG"),
+		Debug:                      parseAliasedBoolEnvironmentVariable("GROK_SEARCH_MCP_DEBUG", "GROK_MCP_DEBUG"),
 		HTTPAddr:                   envOrDefault("GROK_HTTP_ADDR", defaultHTTPAddr),
 		DBPath:                     envOrDefault("GROK_DB_PATH", defaultDBPath),
 		JWTSecret:                  strings.TrimSpace(os.Getenv("GROK_JWT_SECRET")),
@@ -105,7 +105,8 @@ func Load() (*Config, error) {
 	}
 	cfg.Timeout = time.Duration(timeoutSeconds) * time.Second
 
-	cfg.MCPIPRPM, err = parsePositiveIntegerEnvironmentVariable(
+	cfg.MCPIPRPM, err = parseAliasedPositiveIntegerEnvironmentVariable(
+		"GROK_SEARCH_MCP_IP_RPM",
 		"GROK_MCP_IP_RPM",
 		defaultMCPIPRPM,
 		"",
@@ -114,7 +115,8 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	cfg.MCPGlobalSearchConcurrency, err = parsePositiveIntegerEnvironmentVariable(
+	cfg.MCPGlobalSearchConcurrency, err = parseAliasedPositiveIntegerEnvironmentVariable(
+		"GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY",
 		"GROK_MCP_GLOBAL_SEARCH_CONCURRENCY",
 		defaultMCPGlobalSearchConcurrency,
 		"",
@@ -122,7 +124,8 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.MCPUserSearchConcurrency, err = parsePositiveIntegerEnvironmentVariable(
+	cfg.MCPUserSearchConcurrency, err = parseAliasedPositiveIntegerEnvironmentVariable(
+		"GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY",
 		"GROK_MCP_USER_SEARCH_CONCURRENCY",
 		defaultMCPUserSearchConcurrency,
 		"",
@@ -131,7 +134,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.MCPUserSearchConcurrency > cfg.MCPGlobalSearchConcurrency {
-		return nil, fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")
+		return nil, fmt.Errorf("GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY")
 	}
 
 	if cfg.UsageRawRetention, err = parseRetentionDays(
@@ -272,13 +275,13 @@ func normalizeServerSettings(settings ServerSettings, requireAPIKey bool) (Serve
 
 func validateSearchConcurrencyLimits(globalLimit, perUserLimit int) error {
 	if globalLimit <= 0 {
-		return fmt.Errorf("GROK_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer, got %d", globalLimit)
+		return fmt.Errorf("GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer, got %d", globalLimit)
 	}
 	if perUserLimit <= 0 {
-		return fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must be a positive integer, got %d", perUserLimit)
+		return fmt.Errorf("GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY must be a positive integer, got %d", perUserLimit)
 	}
 	if perUserLimit > globalLimit {
-		return fmt.Errorf("GROK_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")
+		return fmt.Errorf("GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY")
 	}
 	return nil
 }
@@ -334,6 +337,49 @@ func envOrDefault(key, fallback string) string {
 func parseBoolEnv(key string) bool {
 	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	return raw == "1" || raw == "true" || raw == "yes"
+}
+
+func parseAliasedBoolEnvironmentVariable(primaryEnvironmentVariable, legacyEnvironmentVariable string) bool {
+	rawValue, _ := aliasedEnvironmentVariableValue(primaryEnvironmentVariable, legacyEnvironmentVariable)
+	normalizedValue := strings.ToLower(rawValue)
+	return normalizedValue == "1" || normalizedValue == "true" || normalizedValue == "yes"
+}
+
+func parseAliasedPositiveIntegerEnvironmentVariable(
+	primaryEnvironmentVariable string,
+	legacyEnvironmentVariable string,
+	defaultValue int,
+	errorSuffix string,
+) (int, error) {
+	rawValue, configuredEnvironmentVariable := aliasedEnvironmentVariableValue(
+		primaryEnvironmentVariable,
+		legacyEnvironmentVariable,
+	)
+	if rawValue == "" {
+		return defaultValue, nil
+	}
+
+	parsedValue, err := strconv.Atoi(rawValue)
+	if err != nil || parsedValue <= 0 {
+		return 0, fmt.Errorf(
+			"%s must be a positive integer%s, got %q",
+			configuredEnvironmentVariable,
+			errorSuffix,
+			rawValue,
+		)
+	}
+
+	return parsedValue, nil
+}
+
+func aliasedEnvironmentVariableValue(primaryEnvironmentVariable, legacyEnvironmentVariable string) (string, string) {
+	if primaryValue, primaryIsConfigured := os.LookupEnv(primaryEnvironmentVariable); primaryIsConfigured {
+		return strings.TrimSpace(primaryValue), primaryEnvironmentVariable
+	}
+	if legacyValue, legacyIsConfigured := os.LookupEnv(legacyEnvironmentVariable); legacyIsConfigured {
+		return strings.TrimSpace(legacyValue), legacyEnvironmentVariable
+	}
+	return "", primaryEnvironmentVariable
 }
 
 func parsePositiveIntegerEnvironmentVariable(

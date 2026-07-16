@@ -1,5 +1,5 @@
 services:
-  grok-mcp:
+  grok-search-mcp:
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,8 +7,8 @@ services:
         GO_IMG: "${GO_IMG:-golang:1.25.12-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587}"
         RUNTIME_IMG: "${RUNTIME_IMG:-alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc}"
         GOPROXY: "${GOPROXY:-https://proxy.golang.org,direct}"
-    image: grok-mcp:latest
-    container_name: grok-mcp
+    image: grok-search-mcp:latest
+    container_name: grok-search-mcp
     restart: unless-stopped
     ports:
       # 默认映射宿主机 8080；公网暴露请放在 HTTPS 反向代理之后。
@@ -19,21 +19,21 @@ services:
       GROK_UPSTREAM_PROTOCOL: "${GROK_UPSTREAM_PROTOCOL:-responses}"
       GROK_JWT_SECRET: "${GROK_JWT_SECRET:?GROK_JWT_SECRET is required}"
       GROK_HTTP_ADDR: ":8080"
-      GROK_DB_PATH: "/app/data/grok-mcp.db"
+      GROK_DB_PATH: "/app/data/grok-search-mcp.db"
       GROK_USAGE_RAW_RETENTION_DAYS: "${GROK_USAGE_RAW_RETENTION_DAYS:-7}"
       GROK_USAGE_HOURLY_RETENTION_DAYS: "${GROK_USAGE_HOURLY_RETENTION_DAYS:-90}"
       GROK_USAGE_DAILY_RETENTION_DAYS: "${GROK_USAGE_DAILY_RETENTION_DAYS:-730}"
       GROK_USAGE_MAINTENANCE_INTERVAL: "${GROK_USAGE_MAINTENANCE_INTERVAL:-1h}"
-      GROK_MCP_IP_RPM: "${GROK_MCP_IP_RPM:-300}"
-      GROK_MCP_GLOBAL_SEARCH_CONCURRENCY: "${GROK_MCP_GLOBAL_SEARCH_CONCURRENCY:-16}"
-      GROK_MCP_USER_SEARCH_CONCURRENCY: "${GROK_MCP_USER_SEARCH_CONCURRENCY:-4}"
+      GROK_SEARCH_MCP_IP_RPM: "${GROK_SEARCH_MCP_IP_RPM:-300}"
+      GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY: "${GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY:-16}"
+      GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY: "${GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY:-4}"
       GROK_MODEL: "${GROK_MODEL:-grok-4.3}"
       GROK_HTTP_TIMEOUT: "${GROK_HTTP_TIMEOUT:-120}"
-      GROK_MCP_DEBUG: "${GROK_MCP_DEBUG:-}"
+      GROK_SEARCH_MCP_DEBUG: "${GROK_SEARCH_MCP_DEBUG:-}"
     volumes:
-      - grok-mcp-data:/app/data
+      - grok-search-mcp-data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
 volumes:
-  grok-mcp-data:
+  grok-search-mcp-data:

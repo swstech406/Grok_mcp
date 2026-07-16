@@ -13,7 +13,7 @@ export function renderAuthView(state) {
       <section class="auth-panel">
         <div class="auth-brand">
           <span class="brand-symbol" aria-hidden="true"></span>
-          <span>Grok MCP Control</span>
+          <span>Grok Search MCP Control</span>
         </div>
 
         <div class="auth-panel-inner">

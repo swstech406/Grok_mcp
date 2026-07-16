@@ -23,7 +23,7 @@ type debugBodySpool struct {
 const maxDebugCapturedBodyBytes int64 = 1 << 20 // 1 MiB per direction
 
 func createDebugBodySpool(bodyKind string) (*debugBodySpool, error) {
-	bodyFile, err := os.CreateTemp("", "grok-mcp-debug-"+bodyKind+"-*.body")
+	bodyFile, err := os.CreateTemp("", "grok-search-mcp-debug-"+bodyKind+"-*.body")
 	if err != nil {
 		return nil, err
 	}

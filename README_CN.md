@@ -1,23 +1,23 @@
-# grok-mcp
+# grok-search-mcp
 
 [English](./README.md)
 
-`grok-mcp` 是一个仅提供 HTTP 传输的 [Model Context Protocol（MCP）](https://modelcontextprotocol.io/)服务端，将 Grok 的实时网页搜索、X/Twitter 搜索和模型发现能力暴露给 MCP 客户端。
+`grok-search-mcp` 是一个仅提供 HTTP 传输的 [Model Context Protocol（MCP）](https://modelcontextprotocol.io/)服务端，将 Grok 的实时网页搜索、X/Twitter 搜索和模型发现能力暴露给 MCP 客户端。
 
-本项目**不直接调用 xAI 官方 API**，而是连接已经部署的 [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI)。CPA 负责上游 xAI 认证，`grok-mcp` 负责 MCP 传输、客户端 API Key、限流配额、用量统计和管理面板。
+本项目**不直接调用 xAI 官方 API**，而是连接已经部署的 [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI)。CPA 负责上游 xAI 认证，`grok-search-mcp` 负责 MCP 传输、客户端 API Key、限流配额、用量统计和管理面板。
 
 > [!IMPORTANT]
 > 本项目仅支持 **Streamable HTTP**，不提供 stdio 传输，也不内置 TLS 终止。
 
-- `grok-mcp` 必须作为独立 HTTP 服务启动，MCP 客户端通过 `http://<host>:<port>/mcp` 连接。
+- `grok-search-mcp` 必须作为独立 HTTP 服务启动，MCP 客户端通过 `http://<host>:<port>/mcp` 连接。
 - 不能将本项目配置为由 MCP 客户端通过命令启动、再使用标准输入和标准输出通信的 stdio 服务。
 - 服务自身只监听普通 HTTP，不读取 HTTPS 证书或私钥，也不负责 TLS 握手。
-- 公网部署时，应在 `grok-mcp` 前放置 Nginx、Caddy、Traefik、Kubernetes Ingress 或云负载均衡器等可信反向代理，由代理对外提供 HTTPS，再通过内部 HTTP 转发到 `grok-mcp`。
+- 公网部署时，应在 `grok-search-mcp` 前放置 Nginx、Caddy、Traefik、Kubernetes Ingress 或云负载均衡器等可信反向代理，由代理对外提供 HTTPS，再通过内部 HTTP 转发到 `grok-search-mcp`。
 
 典型的生产请求链路如下：
 
 ```text
-MCP 客户端 -- HTTPS --> 反向代理 / 负载均衡器 -- HTTP --> grok-mcp /mcp
+MCP 客户端 -- HTTPS --> 反向代理 / 负载均衡器 -- HTTP --> grok-search-mcp /mcp
                          （TLS 在此终止）
 ```
 
@@ -46,7 +46,7 @@ MCP 客户端 -- HTTPS --> 反向代理 / 负载均衡器 -- HTTP --> grok-mcp /
         |  POST /mcp
         |  Authorization: Bearer <MCP 客户端 API Key>
         v
-grok-mcp
+grok-search-mcp
   |     |
   |     +---- /panel/ 与 /panel/v1/* ---- 管理员和用户
   |
@@ -66,7 +66,7 @@ xAI / Grok
 
 | 凭证 | 使用位置 | 用途 |
 |---|---|---|
-| CPA API Key | `grok-mcp` -> CPA | 认证所选上游搜索端点和 `/v1/models` 请求。 |
+| CPA API Key | `grok-search-mcp` -> CPA | 认证所选上游搜索端点和 `/v1/models` 请求。 |
 | MCP 客户端 API Key | MCP 客户端 -> `/mcp` | 在面板创建并可按需复制；数据库保存鉴权哈希和由 `GROK_JWT_SECRET` 派生密钥加密的可恢复密文。 |
 | 面板 JWT | 浏览器/API 客户端 -> `/panel/v1` | 登录面板后返回，不能用于认证 `/mcp`。 |
 
@@ -85,7 +85,7 @@ xAI / Grok
 ### 1. 构建
 
 ```bash
-go build -o grok-mcp ./cmd/grok-mcp
+go build -o grok-search-mcp ./cmd/grok-search-mcp
 ```
 
 可以在构建时注入版本号：
@@ -93,9 +93,9 @@ go build -o grok-mcp ./cmd/grok-mcp
 ```bash
 go build \
   -ldflags "-X github.com/grok-mcp/internal/version.Version=1.2.3" \
-  -o grok-mcp ./cmd/grok-mcp
+  -o grok-search-mcp ./cmd/grok-search-mcp
 
-./grok-mcp -version
+./grok-search-mcp -version
 ```
 
 ### 2. 配置并启动
@@ -120,7 +120,7 @@ set -a
 source .env
 set +a
 
-./grok-mcp
+./grok-search-mcp
 ```
 
 默认端点：
@@ -175,10 +175,10 @@ curl -sS -X POST "http://127.0.0.1:8080/panel/v1/keys" \
 Claude Code 是当前仓库内提供了明确配置示例的客户端：
 
 ```bash
-export GROK_MCP_API_KEY="grok_xxx"
+export GROK_SEARCH_MCP_API_KEY="grok_xxx"
 
-claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
-  --header "Authorization: Bearer ${GROK_MCP_API_KEY}"
+claude mcp add --transport http grok-search-mcp http://127.0.0.1:8080/mcp \
+  --header "Authorization: Bearer ${GROK_SEARCH_MCP_API_KEY}"
 ```
 
 项目级 `.mcp.json` 可以使用环境变量展开：
@@ -186,11 +186,11 @@ claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
 ```json
 {
   "mcpServers": {
-    "grok-mcp": {
+    "grok-search-mcp": {
       "type": "http",
       "url": "http://127.0.0.1:8080/mcp",
       "headers": {
-        "Authorization": "Bearer ${GROK_MCP_API_KEY}"
+        "Authorization": "Bearer ${GROK_SEARCH_MCP_API_KEY}"
       }
     }
   }
@@ -273,18 +273,22 @@ claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
 | `GROK_MODEL` | `grok-4.3` | 默认 Grok 模型。 |
 | `GROK_HTTP_TIMEOUT` | `120` | 上游连接、TLS 握手和响应头各阶段的超时秒数，不限制已建立 SSE 响应体的持续时间；总搜索生命周期由调用方取消控制。 |
 | `GROK_HTTP_ADDR` | `:8080` | HTTP 监听地址，修改后需要重启。 |
-| `GROK_DB_PATH` | `./grok-mcp.db` | SQLite 路径，修改后需要重启。 |
+| `GROK_DB_PATH` | `./grok-search-mcp.db` | SQLite 路径，修改后需要重启。 |
 | `GROK_USAGE_RAW_RETENTION_DAYS` | `7` | 原始用量和 debug 明细保留期限，之后压缩为小时级数据。 |
 | `GROK_USAGE_HOURLY_RETENTION_DAYS` | `90` | 小时级用量保留期限，之后压缩为日级数据。 |
 | `GROK_USAGE_DAILY_RETENTION_DAYS` | `730` | 日级聚合超过此期限后删除。 |
 | `GROK_USAGE_MAINTENANCE_INTERVAL` | `1h` | 聚合、清理和 WAL checkpoint 的执行间隔。 |
-| `GROK_MCP_IP_RPM` | `300` | 仅当 `X-Real-IP` 或 `X-Forwarded-For` 包含有效 IP 时，在 MCP API Key 鉴权前应用的来源 IP RPM。 |
-| `GROK_MCP_GLOBAL_SEARCH_CONCURRENCY` | `16` | 进程级流式搜索同时在途上限的环境默认值；初始化后以面板持久化设置为准。 |
-| `GROK_MCP_USER_SEARCH_CONCURRENCY` | `4` | 单用户上限的环境默认值，不得超过全局上限；初始化后以面板持久化设置为准。 |
-| `GROK_MCP_DEBUG` | `false` | `1`、`true` 或 `yes` 启用；可能在用量记录中捕获调试上下文。 |
+| `GROK_SEARCH_MCP_IP_RPM` | `300` | 仅当 `X-Real-IP` 或 `X-Forwarded-For` 包含有效 IP 时，在 MCP API Key 鉴权前应用的来源 IP RPM。 |
+| `GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY` | `16` | 进程级流式搜索同时在途上限的环境默认值；初始化后以面板持久化设置为准。 |
+| `GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY` | `4` | 单用户上限的环境默认值，不得超过全局上限；初始化后以面板持久化设置为准。 |
+| `GROK_SEARCH_MCP_DEBUG` | `false` | `1`、`true` 或 `yes` 启用；可能在用量记录中捕获调试上下文。 |
 | `GROK_PROXY_URL` | 空 | 显式上游 HTTP(S) 代理。 |
 | `GROK_PROXY_ENABLED` | 自动判断 | 显式代理开关；未设置时，非空 `GROK_PROXY_URL` 会启用代理。 |
 | `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | Go 默认行为 | 未启用显式代理时由标准 HTTP Transport 使用。 |
+
+旧的 `GROK_MCP_IP_RPM`、`GROK_MCP_GLOBAL_SEARCH_CONCURRENCY`、
+`GROK_MCP_USER_SEARCH_CONCURRENCY` 和 `GROK_MCP_DEBUG` 仍作为兼容别名接受。
+当新旧名称同时配置时，对应的 `GROK_SEARCH_MCP_*` 变量优先生效。
 
 任一搜索并发容量耗尽时，服务会立即返回 HTTP `503` 和 `Retry-After: 1`，不会继续排队并占用长连接 goroutine/socket。搜索响应通过 `X-Grok-Search-Queue-Time-Ms` 暴露 semaphore 获取耗时。
 
@@ -304,7 +308,7 @@ claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
 | 存在有效的转发客户端 IP Header | 启用 IP 防护；有效的 `X-Real-IP` 优先，否则使用 `X-Forwarded-For` 中第一个有效 IP，不再需要可信代理白名单。 |
 
 > [!IMPORTANT]
-> 应用会直接信任 `X-Real-IP` 和 `X-Forwarded-For`。必须保证应用只能由可信反向代理访问，并由代理为每个请求注入有效客户端 IP，同时先清理客户端提供的同名 Header。如果客户端能够直连 `grok-mcp`，就可以省略或破坏 Header 跳过 IP 防护，或伪造 Header 任意选择限流桶。请继续在代理层对 `/mcp`、`/panel/v1/auth/login` 和 `/panel/v1/auth/register` 配置限流。
+> 应用会直接信任 `X-Real-IP` 和 `X-Forwarded-For`。必须保证应用只能由可信反向代理访问，并由代理为每个请求注入有效客户端 IP，同时先清理客户端提供的同名 Header。如果客户端能够直连 `grok-search-mcp`，就可以省略或破坏 Header 跳过 IP 防护，或伪造 Header 任意选择限流桶。请继续在代理层对 `/mcp`、`/panel/v1/auth/login` 和 `/panel/v1/auth/register` 配置限流。
 
 反向代理必须覆盖 `X-Real-IP`，并根据连接来源重新生成 `X-Forwarded-For`。由于应用会选择 `X-Forwarded-For` 中第一个有效 IP，不应保留不可信客户端提供的原始转发链。
 
@@ -312,7 +316,7 @@ Nginx 转发示例：
 
 ```nginx
 location / {
-    proxy_pass http://grok-mcp:8080;
+    proxy_pass http://grok-search-mcp:8080;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $remote_addr;
@@ -420,6 +424,12 @@ Authorization: Bearer <面板 JWT>
 
 ## Docker Compose
 
+已发布的版本镜像可从 Docker Hub 拉取：
+
+```bash
+docker pull maplemaplecat/grok-search-mcp:v0.2.0
+```
+
 ```bash
 cp .env.example .env
 ${EDITOR:-vi} .env
@@ -438,7 +448,7 @@ CPA_BASE_URL=http://host.docker.internal:8317
 - 以非 root `app` 用户运行
 - 监听 8080 端口
 - 将 SQLite 数据存放在 `/app/data`
-- Compose 使用 `grok-mcp-data` 命名卷
+- Compose 使用 `grok-search-mcp-data` 命名卷
 - 通过 `/panel/` 执行健康检查
 
 Compose 默认不会转发所有可选的上游代理变量；容器需要 `GROK_PROXY_URL`、`GROK_PROXY_ENABLED` 或标准代理变量时，请扩展 `environment` 配置。
@@ -467,7 +477,7 @@ go test ./...
 验证构建：
 
 ```bash
-go build ./cmd/grok-mcp
+go build ./cmd/grok-search-mcp
 ```
 
 真实 CPA/xAI 集成测试需要显式启用：
@@ -485,7 +495,7 @@ go test ./test/grok -run TestIntegrationSearchLiveCPA -v
 ### 代码结构
 
 ```text
-cmd/grok-mcp/       进程入口和版本参数
+cmd/grok-search-mcp/ 进程入口和版本参数
 internal/app/       应用组合、初始化、HTTP 服务与优雅退出
 internal/auth/      MCP API Key 鉴权和面板 JWT
 internal/config/    环境变量与持久化设置映射

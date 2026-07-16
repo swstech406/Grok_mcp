@@ -1,4 +1,4 @@
-// grok-mcp 是 Grok 搜索能力的 MCP（Model Context Protocol）服务端。
+// grok-search-mcp 是 Grok 搜索能力的 MCP（Model Context Protocol）服务端。
 //
 // 通过 Streamable HTTP MCP 端点对外提供服务，并附带 API Key 鉴权、限流与用量统计。
 //

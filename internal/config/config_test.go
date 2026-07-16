@@ -38,6 +38,11 @@ func panelEnv(t *testing.T) {
 	unsetEnv(t, "GROK_USAGE_HOURLY_RETENTION_DAYS")
 	unsetEnv(t, "GROK_USAGE_DAILY_RETENTION_DAYS")
 	unsetEnv(t, "GROK_USAGE_MAINTENANCE_INTERVAL")
+	unsetEnv(t, "GROK_SEARCH_MCP_DEBUG")
+	unsetEnv(t, "GROK_SEARCH_MCP_IP_RPM")
+	unsetEnv(t, "GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY")
+	unsetEnv(t, "GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY")
+	unsetEnv(t, "GROK_MCP_DEBUG")
 	unsetEnv(t, "GROK_MCP_IP_RPM")
 	unsetEnv(t, "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY")
 	unsetEnv(t, "GROK_MCP_USER_SEARCH_CONCURRENCY")
@@ -63,7 +68,7 @@ func TestLoadDefaults(t *testing.T) {
 	setEnv(t, "GROK_UPSTREAM_PROTOCOL", "")
 	setEnv(t, "GROK_MODEL", "")
 	setEnv(t, "GROK_HTTP_TIMEOUT", "")
-	setEnv(t, "GROK_MCP_DEBUG", "")
+	setEnv(t, "GROK_SEARCH_MCP_DEBUG", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -188,7 +193,7 @@ func TestLoadDebugParsing(t *testing.T) {
 	panelEnv(t)
 
 	for _, value := range []string{"1", "true", "yes"} {
-		setEnv(t, "GROK_MCP_DEBUG", value)
+		setEnv(t, "GROK_SEARCH_MCP_DEBUG", value)
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load failed for %q: %v", value, err)
@@ -198,7 +203,7 @@ func TestLoadDebugParsing(t *testing.T) {
 		}
 	}
 
-	setEnv(t, "GROK_MCP_DEBUG", "0")
+	setEnv(t, "GROK_SEARCH_MCP_DEBUG", "0")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
@@ -236,7 +241,7 @@ func TestLoadHTTPDefaults(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 	if cfg.HTTPAddr != ":8080" ||
-		cfg.DBPath != "./grok-mcp.db" ||
+		cfg.DBPath != "./grok-search-mcp.db" ||
 		cfg.MCPIPRPM != 300 ||
 		cfg.MCPGlobalSearchConcurrency != 16 ||
 		cfg.MCPUserSearchConcurrency != 4 {
@@ -326,9 +331,9 @@ func TestLoadRejectsInvalidUsageRetention(t *testing.T) {
 
 func TestLoadCustomSecuritySettings(t *testing.T) {
 	panelEnv(t)
-	setEnv(t, "GROK_MCP_IP_RPM", "123")
-	setEnv(t, "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY", "12")
-	setEnv(t, "GROK_MCP_USER_SEARCH_CONCURRENCY", "3")
+	setEnv(t, "GROK_SEARCH_MCP_IP_RPM", "123")
+	setEnv(t, "GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY", "12")
+	setEnv(t, "GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY", "3")
 
 	cfg, err := Load()
 	if err != nil {
@@ -341,6 +346,48 @@ func TestLoadCustomSecuritySettings(t *testing.T) {
 	}
 }
 
+func TestLoadSupportsLegacyMCPEnvironmentVariableAliases(t *testing.T) {
+	panelEnv(t)
+	setEnv(t, "GROK_MCP_DEBUG", "true")
+	setEnv(t, "GROK_MCP_IP_RPM", "123")
+	setEnv(t, "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY", "12")
+	setEnv(t, "GROK_MCP_USER_SEARCH_CONCURRENCY", "3")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.Debug ||
+		cfg.MCPIPRPM != 123 ||
+		cfg.MCPGlobalSearchConcurrency != 12 ||
+		cfg.MCPUserSearchConcurrency != 3 {
+		t.Fatalf("legacy aliases were not applied: %+v", cfg)
+	}
+}
+
+func TestLoadPrefersRenamedMCPEnvironmentVariables(t *testing.T) {
+	panelEnv(t)
+	setEnv(t, "GROK_MCP_DEBUG", "true")
+	setEnv(t, "GROK_MCP_IP_RPM", "999")
+	setEnv(t, "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY", "99")
+	setEnv(t, "GROK_MCP_USER_SEARCH_CONCURRENCY", "9")
+	setEnv(t, "GROK_SEARCH_MCP_DEBUG", "false")
+	setEnv(t, "GROK_SEARCH_MCP_IP_RPM", "123")
+	setEnv(t, "GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY", "12")
+	setEnv(t, "GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY", "3")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Debug ||
+		cfg.MCPIPRPM != 123 ||
+		cfg.MCPGlobalSearchConcurrency != 12 ||
+		cfg.MCPUserSearchConcurrency != 3 {
+		t.Fatalf("renamed variables did not take precedence: %+v", cfg)
+	}
+}
+
 func TestLoadRejectsInvalidSecuritySettings(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -349,26 +396,26 @@ func TestLoadRejectsInvalidSecuritySettings(t *testing.T) {
 	}{
 		{
 			name:          "non-positive IP RPM",
-			environment:   map[string]string{"GROK_MCP_IP_RPM": "0"},
-			expectedError: "GROK_MCP_IP_RPM must be a positive integer",
+			environment:   map[string]string{"GROK_SEARCH_MCP_IP_RPM": "0"},
+			expectedError: "GROK_SEARCH_MCP_IP_RPM must be a positive integer",
 		},
 		{
 			name:          "non-positive global search concurrency",
-			environment:   map[string]string{"GROK_MCP_GLOBAL_SEARCH_CONCURRENCY": "0"},
-			expectedError: "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer",
+			environment:   map[string]string{"GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY": "0"},
+			expectedError: "GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY must be a positive integer",
 		},
 		{
 			name:          "invalid user search concurrency",
-			environment:   map[string]string{"GROK_MCP_USER_SEARCH_CONCURRENCY": "many"},
-			expectedError: "GROK_MCP_USER_SEARCH_CONCURRENCY must be a positive integer",
+			environment:   map[string]string{"GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY": "many"},
+			expectedError: "GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY must be a positive integer",
 		},
 		{
 			name: "user search concurrency exceeds global capacity",
 			environment: map[string]string{
-				"GROK_MCP_GLOBAL_SEARCH_CONCURRENCY": "2",
-				"GROK_MCP_USER_SEARCH_CONCURRENCY":   "3",
+				"GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY": "2",
+				"GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY":   "3",
 			},
-			expectedError: "GROK_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_MCP_GLOBAL_SEARCH_CONCURRENCY",
+			expectedError: "GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY",
 		},
 	}
 
@@ -387,8 +434,8 @@ func TestLoadRejectsInvalidSecuritySettings(t *testing.T) {
 }
 
 func TestParseBoolEnvUnset(t *testing.T) {
-	_ = os.Unsetenv("GROK_MCP_DEBUG")
-	if parseBoolEnv("GROK_MCP_DEBUG") {
+	_ = os.Unsetenv("GROK_SEARCH_MCP_DEBUG")
+	if parseBoolEnv("GROK_SEARCH_MCP_DEBUG") {
 		t.Fatalf("expected false for unset env")
 	}
 }
@@ -412,8 +459,8 @@ func TestNormalizeServerSettingsValidatesSearchConcurrency(t *testing.T) {
 		expectedError string
 	}{
 		{name: "valid", globalLimit: 8, perUserLimit: 2},
-		{name: "zero global", globalLimit: 0, perUserLimit: 1, expectedError: "GROK_MCP_GLOBAL_SEARCH_CONCURRENCY"},
-		{name: "zero per-user", globalLimit: 8, perUserLimit: 0, expectedError: "GROK_MCP_USER_SEARCH_CONCURRENCY"},
+		{name: "zero global", globalLimit: 0, perUserLimit: 1, expectedError: "GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY"},
+		{name: "zero per-user", globalLimit: 8, perUserLimit: 0, expectedError: "GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY"},
 		{name: "per-user exceeds global", globalLimit: 2, perUserLimit: 3, expectedError: "must not exceed"},
 	}
 

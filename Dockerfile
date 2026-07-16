@@ -24,12 +24,12 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
         -trimpath \
         -ldflags "-s -w" \
-        -o /out/grok-mcp ./cmd/grok-mcp
+        -o /out/grok-search-mcp ./cmd/grok-search-mcp
 
 # ---- runtime stage ----
 FROM ${RUNTIME_IMG}
 
-LABEL org.opencontainers.image.title="grok-mcp"
+LABEL org.opencontainers.image.title="grok-search-mcp"
 
 RUN apk add --no-cache ca-certificates tzdata wget \
         && addgroup -S app \
@@ -39,12 +39,12 @@ WORKDIR /app
 
 RUN mkdir -p /app/data && chown -R app:app /app
 
-COPY --from=builder /out/grok-mcp /app/grok-mcp
+COPY --from=builder /out/grok-search-mcp /app/grok-search-mcp
 
 USER app
 
 ENV GROK_HTTP_ADDR=:8080 \
-    GROK_DB_PATH=/app/data/grok-mcp.db
+    GROK_DB_PATH=/app/data/grok-search-mcp.db
 
 EXPOSE 8080
 VOLUME ["/app/data"]
@@ -52,4 +52,4 @@ VOLUME ["/app/data"]
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
         CMD wget -q -S -O /dev/null http://127.0.0.1:8080/panel/ 2>&1 | grep -qE 'HTTP/[0-9.]+ 200' || exit 1
 
-ENTRYPOINT ["/app/grok-mcp"]
+ENTRYPOINT ["/app/grok-search-mcp"]

@@ -1,5 +1,9 @@
 const configuredAPIBase = new URLSearchParams(window.location.search).get("apiBase") || "";
 const normalizedAPIBase = configuredAPIBase.trim().replace(/\/$/, "");
+const panelTokenStorageKey = "grok-search-mcp-panel-token";
+const panelTokenExpiryStorageKey = "grok-search-mcp-panel-token-expiry";
+const legacyPanelTokenStorageKey = "grok-mcp-panel-token";
+const legacyPanelTokenExpiryStorageKey = "grok-mcp-panel-token-expiry";
 
 export class APIError extends Error {
   constructor(message, status, retryAfterSeconds = null) {
@@ -12,8 +16,18 @@ export class APIError extends Error {
 
 export class PanelAPI {
   constructor() {
-    this.token = sessionStorage.getItem("grok-mcp-panel-token") || "";
-    this.expiresAt = sessionStorage.getItem("grok-mcp-panel-token-expiry") || "";
+    this.token = sessionStorage.getItem(panelTokenStorageKey)
+      || sessionStorage.getItem(legacyPanelTokenStorageKey)
+      || "";
+    this.expiresAt = sessionStorage.getItem(panelTokenExpiryStorageKey)
+      || sessionStorage.getItem(legacyPanelTokenExpiryStorageKey)
+      || "";
+
+    if (this.token) {
+      this.saveSession(this.token, this.expiresAt);
+      sessionStorage.removeItem(legacyPanelTokenStorageKey);
+      sessionStorage.removeItem(legacyPanelTokenExpiryStorageKey);
+    }
   }
 
   hasSession() {
@@ -34,19 +48,21 @@ export class PanelAPI {
   saveSession(token, expiresAt) {
     this.token = token;
     this.expiresAt = expiresAt || "";
-    sessionStorage.setItem("grok-mcp-panel-token", token);
+    sessionStorage.setItem(panelTokenStorageKey, token);
     if (expiresAt) {
-      sessionStorage.setItem("grok-mcp-panel-token-expiry", expiresAt);
+      sessionStorage.setItem(panelTokenExpiryStorageKey, expiresAt);
     } else {
-      sessionStorage.removeItem("grok-mcp-panel-token-expiry");
+      sessionStorage.removeItem(panelTokenExpiryStorageKey);
     }
   }
 
   clearSession() {
     this.token = "";
     this.expiresAt = "";
-    sessionStorage.removeItem("grok-mcp-panel-token");
-    sessionStorage.removeItem("grok-mcp-panel-token-expiry");
+    sessionStorage.removeItem(panelTokenStorageKey);
+    sessionStorage.removeItem(panelTokenExpiryStorageKey);
+    sessionStorage.removeItem(legacyPanelTokenStorageKey);
+    sessionStorage.removeItem(legacyPanelTokenExpiryStorageKey);
   }
 
   async request(path, options = {}) {
@@ -72,7 +88,7 @@ export class PanelAPI {
       if (requestError?.name === "AbortError") {
         throw requestError;
       }
-      throw new APIError("无法连接 Grok MCP 后端，请确认服务地址与运行状态。", 0);
+      throw new APIError("无法连接 Grok Search MCP 后端，请确认服务地址与运行状态。", 0);
     }
 
     const responseData = await parseResponseData(response);

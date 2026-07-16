@@ -1,23 +1,23 @@
-# grok-mcp
+# grok-search-mcp
 
 [简体中文](./README_CN.md)
 
-`grok-mcp` is an HTTP-only [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that exposes Grok-powered real-time web search, X/Twitter search, and model discovery to MCP clients.
+`grok-search-mcp` is an HTTP-only [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that exposes Grok-powered real-time web search, X/Twitter search, and model discovery to MCP clients.
 
-It does **not** call the official xAI API directly. Instead, it connects to an existing [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) deployment. CPA owns the upstream xAI authentication, while `grok-mcp` provides MCP transport, client API keys, quotas, usage tracking, and an administration panel.
+It does **not** call the official xAI API directly. Instead, it connects to an existing [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) deployment. CPA owns the upstream xAI authentication, while `grok-search-mcp` provides MCP transport, client API keys, quotas, usage tracking, and an administration panel.
 
 > [!IMPORTANT]
 > This project supports **Streamable HTTP only**. It does not provide a stdio transport or built-in TLS termination.
 
-- `grok-mcp` must run as a standalone HTTP service, and MCP clients connect to `http://<host>:<port>/mcp`.
+- `grok-search-mcp` must run as a standalone HTTP service, and MCP clients connect to `http://<host>:<port>/mcp`.
 - It cannot be configured as a stdio server that an MCP client launches and communicates with over standard input and output.
 - The service listens for plain HTTP and does not load HTTPS certificates or private keys or perform TLS handshakes.
-- For an internet-facing deployment, place a trusted reverse proxy such as Nginx, Caddy, Traefik, Kubernetes Ingress, or a cloud load balancer in front of `grok-mcp`. The proxy should expose HTTPS and forward requests to `grok-mcp` over internal HTTP.
+- For an internet-facing deployment, place a trusted reverse proxy such as Nginx, Caddy, Traefik, Kubernetes Ingress, or a cloud load balancer in front of `grok-search-mcp`. The proxy should expose HTTPS and forward requests to `grok-search-mcp` over internal HTTP.
 
 A typical production request path is:
 
 ```text
-MCP client -- HTTPS --> reverse proxy / load balancer -- HTTP --> grok-mcp /mcp
+MCP client -- HTTPS --> reverse proxy / load balancer -- HTTP --> grok-search-mcp /mcp
                        (TLS terminates here)
 ```
 
@@ -46,7 +46,7 @@ Streamable HTTP MCP client
         |  POST /mcp
         |  Authorization: Bearer <MCP client API key>
         v
-grok-mcp
+grok-search-mcp
   |     |
   |     +---- /panel/ and /panel/v1/* ---- administrators and users
   |
@@ -66,7 +66,7 @@ xAI / Grok
 
 | Credential | Used between | Purpose |
 |---|---|---|
-| CPA API key | `grok-mcp` -> CPA | Authenticates the selected upstream search endpoint and `/v1/models` requests. |
+| CPA API key | `grok-search-mcp` -> CPA | Authenticates the selected upstream search endpoint and `/v1/models` requests. |
 | MCP client API key | MCP client -> `/mcp` | Created and copied on demand in the panel. The database stores an authentication hash plus recoverable ciphertext encrypted with a key derived from `GROK_JWT_SECRET`. |
 | Panel JWT | Browser/API client -> `/panel/v1` | Returned by panel login. It cannot authenticate `/mcp`. |
 
@@ -85,7 +85,7 @@ The application uses pure-Go SQLite (`modernc.org/sqlite`) and does not require 
 ### 1. Build
 
 ```bash
-go build -o grok-mcp ./cmd/grok-mcp
+go build -o grok-search-mcp ./cmd/grok-search-mcp
 ```
 
 Optionally inject a version at build time:
@@ -93,9 +93,9 @@ Optionally inject a version at build time:
 ```bash
 go build \
   -ldflags "-X github.com/grok-mcp/internal/version.Version=1.2.3" \
-  -o grok-mcp ./cmd/grok-mcp
+  -o grok-search-mcp ./cmd/grok-search-mcp
 
-./grok-mcp -version
+./grok-search-mcp -version
 ```
 
 ### 2. Configure
@@ -120,7 +120,7 @@ set -a
 source .env
 set +a
 
-./grok-mcp
+./grok-search-mcp
 ```
 
 Default endpoints:
@@ -178,10 +178,10 @@ The `api_key` in the response is returned only once. Store it securely.
 Claude Code is the client with a repository-documented setup example:
 
 ```bash
-export GROK_MCP_API_KEY="grok_xxx"
+export GROK_SEARCH_MCP_API_KEY="grok_xxx"
 
-claude mcp add --transport http grok-mcp http://127.0.0.1:8080/mcp \
-  --header "Authorization: Bearer ${GROK_MCP_API_KEY}"
+claude mcp add --transport http grok-search-mcp http://127.0.0.1:8080/mcp \
+  --header "Authorization: Bearer ${GROK_SEARCH_MCP_API_KEY}"
 ```
 
 A project-level `.mcp.json` can use environment expansion:
@@ -189,11 +189,11 @@ A project-level `.mcp.json` can use environment expansion:
 ```json
 {
   "mcpServers": {
-    "grok-mcp": {
+    "grok-search-mcp": {
       "type": "http",
       "url": "http://127.0.0.1:8080/mcp",
       "headers": {
-        "Authorization": "Bearer ${GROK_MCP_API_KEY}"
+        "Authorization": "Bearer ${GROK_SEARCH_MCP_API_KEY}"
       }
     }
   }
@@ -276,18 +276,23 @@ Accepts no arguments. It reads CPA `GET /v1/models`, trims and deduplicates IDs,
 | `GROK_MODEL` | `grok-4.3` | Default Grok model. |
 | `GROK_HTTP_TIMEOUT` | `120` | Per-phase timeout in seconds for upstream connection establishment, TLS handshake, and response headers. It does not limit an active SSE response body; caller cancellation defines the total search lifetime. |
 | `GROK_HTTP_ADDR` | `:8080` | HTTP listen address. Requires restart to change. |
-| `GROK_DB_PATH` | `./grok-mcp.db` | SQLite database path. Requires restart to change. |
+| `GROK_DB_PATH` | `./grok-search-mcp.db` | SQLite database path. Requires restart to change. |
 | `GROK_USAGE_RAW_RETENTION_DAYS` | `7` | Raw usage and debug-detail retention before hourly compaction. |
 | `GROK_USAGE_HOURLY_RETENTION_DAYS` | `90` | Hourly usage retention before daily compaction. |
 | `GROK_USAGE_DAILY_RETENTION_DAYS` | `730` | Daily aggregate retention before deletion. |
 | `GROK_USAGE_MAINTENANCE_INTERVAL` | `1h` | Interval for rollup, cleanup, and WAL checkpoint maintenance. |
-| `GROK_MCP_IP_RPM` | `300` | Source-IP RPM applied before MCP API-key authentication only when `X-Real-IP` or `X-Forwarded-For` contains a valid IP. |
-| `GROK_MCP_GLOBAL_SEARCH_CONCURRENCY` | `16` | Environment default for the process-wide in-flight streaming search limit. The persisted panel setting takes precedence after initialization. |
-| `GROK_MCP_USER_SEARCH_CONCURRENCY` | `4` | Environment default for the per-user limit; must not exceed the global limit. The persisted panel setting takes precedence after initialization. |
-| `GROK_MCP_DEBUG` | `false` | Accepts `1`, `true`, or `yes`. May capture debug request/response context in usage records. |
+| `GROK_SEARCH_MCP_IP_RPM` | `300` | Source-IP RPM applied before MCP API-key authentication only when `X-Real-IP` or `X-Forwarded-For` contains a valid IP. |
+| `GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY` | `16` | Environment default for the process-wide in-flight streaming search limit. The persisted panel setting takes precedence after initialization. |
+| `GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY` | `4` | Environment default for the per-user limit; must not exceed the global limit. The persisted panel setting takes precedence after initialization. |
+| `GROK_SEARCH_MCP_DEBUG` | `false` | Accepts `1`, `true`, or `yes`. May capture debug request/response context in usage records. |
 | `GROK_PROXY_URL` | Empty | Explicit upstream HTTP(S) proxy URL. |
 | `GROK_PROXY_ENABLED` | Inferred | Explicit proxy switch. When unset, a non-empty `GROK_PROXY_URL` enables it. |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Go defaults | Used by the standard transport when an explicit proxy is not enabled. |
+
+The former `GROK_MCP_IP_RPM`, `GROK_MCP_GLOBAL_SEARCH_CONCURRENCY`,
+`GROK_MCP_USER_SEARCH_CONCURRENCY`, and `GROK_MCP_DEBUG` names remain accepted
+as compatibility aliases. When both names are configured, the corresponding
+`GROK_SEARCH_MCP_*` variable takes precedence.
 
 When either search concurrency limit is exhausted, the server rejects the request immediately with HTTP `503` and `Retry-After: 1` instead of queueing another long-lived HTTP/SSE request. Search responses expose semaphore acquisition time in `X-Grok-Search-Queue-Time-Ms`.
 
@@ -307,7 +312,7 @@ The request behavior is:
 | A valid forwarded client-IP header is present | IP protection runs using `X-Real-IP` when valid; otherwise it uses the first valid IP in `X-Forwarded-For`. No trusted-proxy allowlist is required. |
 
 > [!IMPORTANT]
-> The application directly trusts `X-Real-IP` and `X-Forwarded-For`. It must be reachable only through a trusted reverse proxy that always injects a valid client IP and removes client-supplied values first. If clients can reach `grok-mcp` directly, they can omit or invalidate the headers to skip IP protection, or forge them to select arbitrary rate-limit buckets. Keep proxy-layer rate limits enabled for `/mcp`, `/panel/v1/auth/login`, and `/panel/v1/auth/register`.
+> The application directly trusts `X-Real-IP` and `X-Forwarded-For`. It must be reachable only through a trusted reverse proxy that always injects a valid client IP and removes client-supplied values first. If clients can reach `grok-search-mcp` directly, they can omit or invalidate the headers to skip IP protection, or forge them to select arbitrary rate-limit buckets. Keep proxy-layer rate limits enabled for `/mcp`, `/panel/v1/auth/login`, and `/panel/v1/auth/register`.
 
 The proxy must overwrite `X-Real-IP` and rebuild `X-Forwarded-For` from the connection source. Because the application selects the first valid `X-Forwarded-For` entry, do not preserve an untrusted client-provided chain.
 
@@ -315,7 +320,7 @@ Example Nginx forwarding configuration:
 
 ```nginx
 location / {
-    proxy_pass http://grok-mcp:8080;
+    proxy_pass http://grok-search-mcp:8080;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $remote_addr;
@@ -423,6 +428,12 @@ Authorization: Bearer <panel JWT>
 
 ## Docker Compose
 
+Published release images are available from Docker Hub:
+
+```bash
+docker pull maplemaplecat/grok-search-mcp:v0.2.0
+```
+
 ```bash
 cp .env.example .env
 ${EDITOR:-vi} .env
@@ -441,7 +452,7 @@ The supplied container:
 - Runs as a non-root `app` user
 - Listens on port 8080
 - Stores SQLite data in `/app/data`
-- Uses the `grok-mcp-data` named volume in Compose
+- Uses the `grok-search-mcp-data` named volume in Compose
 - Health-checks `/panel/`
 
 The Compose file does not forward every optional outbound proxy variable. Extend `environment` if the container needs `GROK_PROXY_URL`, `GROK_PROXY_ENABLED`, or the standard proxy variables.
@@ -469,7 +480,7 @@ go test ./...
 Verify the executable builds:
 
 ```bash
-go build ./cmd/grok-mcp
+go build ./cmd/grok-search-mcp
 ```
 
 Live CPA/xAI integration tests are opt-in:
@@ -487,7 +498,7 @@ The panel frontend is embedded static HTML, CSS, and JavaScript; no Node.js buil
 ### Project layout
 
 ```text
-cmd/grok-mcp/       Process entry point and version flag
+cmd/grok-search-mcp/ Process entry point and version flag
 internal/app/       Application composition, bootstrap, HTTP server, shutdown
 internal/auth/      MCP API-key authentication and panel JWTs
 internal/config/    Environment loading and persisted settings mapping

@@ -36,7 +36,7 @@ function renderSidebar(state, isAdmin) {
     <aside class="sidebar">
       <div class="brand-lockup">
         <span class="brand-symbol" aria-hidden="true"></span>
-        <span>Grok MCP<small>Control plane</small></span>
+        <span>Grok Search MCP<small>Control plane</small></span>
       </div>
 
       <div class="sidebar-scroll">
