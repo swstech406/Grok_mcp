@@ -1,4 +1,4 @@
-module github.com/grok-mcp
+module github.com/MapleMapleCat/Grok_Search_Mcp
 
 go 1.25.12
 

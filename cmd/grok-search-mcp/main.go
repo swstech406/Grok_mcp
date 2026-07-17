@@ -14,9 +14,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/grok-mcp/internal/app"
-	"github.com/grok-mcp/internal/config"
-	"github.com/grok-mcp/internal/version"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/app"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/version"
 )
 
 func main() {

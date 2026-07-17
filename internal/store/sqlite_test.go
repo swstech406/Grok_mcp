@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/keyhash"
-	"github.com/grok-mcp/internal/settings"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keyhash"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/settings"
 )
 
 func openTestDB(t *testing.T) *SQLiteStore {

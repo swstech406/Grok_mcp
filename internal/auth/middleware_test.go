@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/keyhash"
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keyhash"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 type memStore struct {

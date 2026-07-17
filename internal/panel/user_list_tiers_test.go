@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 type userListTierStore struct {

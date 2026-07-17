@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 func (handler *Handler) adminListTiers(writer http.ResponseWriter, request *http.Request) {

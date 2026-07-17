@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/grok-mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
 )
 
 // validateModel 委托给 config.ValidateModel，确保请求时与面板保存时使用同一校验规则。

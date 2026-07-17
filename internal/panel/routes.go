@@ -3,7 +3,7 @@ package panel
 import (
 	"net/http"
 
-	"github.com/grok-mcp/internal/auth"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
 )
 
 // NewMux 在一处组合公开、JWT 鉴权和管理员路由，避免调用方维护公开路径白名单。

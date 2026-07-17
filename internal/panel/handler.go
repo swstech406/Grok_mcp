@@ -3,9 +3,9 @@ package panel
 import (
 	"context"
 
-	"github.com/grok-mcp/internal/config"
-	"github.com/grok-mcp/internal/grok"
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/grok"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 // Handler 实现面板 API；路由由 NewMux 注册。

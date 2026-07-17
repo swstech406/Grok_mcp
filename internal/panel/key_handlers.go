@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/grok-mcp/internal/auth"
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 func (handler *Handler) listKeys(writer http.ResponseWriter, request *http.Request) {

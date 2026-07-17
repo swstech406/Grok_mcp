@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/grok-mcp/internal/keycrypt"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keycrypt"
 
 	_ "modernc.org/sqlite"
 )

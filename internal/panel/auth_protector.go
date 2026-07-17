@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/grok-mcp/internal/ratelimit"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/ratelimit"
 	"golang.org/x/time/rate"
 )
 

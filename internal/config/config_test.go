@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 func setEnv(t *testing.T, key, value string) {

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/grok-mcp/internal/config"
-	"github.com/grok-mcp/internal/grok"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/grok"
 )
 
 // Live CPA integration: requires GROK_INTEGRATION_TEST=1 plus the same secrets as config.Load:

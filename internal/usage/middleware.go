@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grok-mcp/internal/auth"
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 // SuccessQuotaReleaser rolls back a previously reserved success call.

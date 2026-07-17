@@ -9,7 +9,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/grok-mcp/internal/logx"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/logx"
 )
 
 const maxChatContinuationAttempts = 2

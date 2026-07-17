@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
 )
 
 func TestBuildChatCompletionsRequestBodyMapsSearchSources(t *testing.T) {

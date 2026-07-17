@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/grok-mcp/internal/settings"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/settings"
 )
 
 // ErrUserNotFound 表示按 ID 未找到用户。

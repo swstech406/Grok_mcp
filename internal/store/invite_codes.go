@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grok-mcp/internal/keyhash"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keyhash"
 )
 
 const inviteCodeColumns = `id, code, code_hash, code_prefix, registration_limit, registration_count, enabled, created_by_user_id, created_at, updated_at`

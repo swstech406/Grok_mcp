@@ -92,7 +92,7 @@ Optionally inject a version at build time:
 
 ```bash
 go build \
-  -ldflags "-X github.com/grok-mcp/internal/version.Version=1.2.3" \
+  -ldflags "-X github.com/MapleMapleCat/Grok_Search_Mcp/internal/version.Version=1.2.3" \
   -o grok-search-mcp ./cmd/grok-search-mcp
 
 ./grok-search-mcp -version

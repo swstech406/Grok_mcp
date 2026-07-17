@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 const testSecret = "jwt-secret-must-be-at-least-32-bytes!"

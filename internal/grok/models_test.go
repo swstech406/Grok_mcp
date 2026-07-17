@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/grok-mcp/internal/grok"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/grok"
 )
 
 func TestFilterGrokModelsKeepsOnlyGrokModels(t *testing.T) {

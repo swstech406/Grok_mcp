@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 // ctxKey 为 context 中存放 APIKey 的私有键类型，避免与其他包冲突。

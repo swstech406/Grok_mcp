@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/grok-mcp/internal/config"
-	"github.com/grok-mcp/internal/logx"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/logx"
 )
 
 const (

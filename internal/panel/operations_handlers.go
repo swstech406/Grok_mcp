@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 type operationalMetricsResponse struct {

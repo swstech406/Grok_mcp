@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 // openAuthStore 打开一个临时 SQLite 库；迁移已预置 tier0（rpm=10, success=800）。

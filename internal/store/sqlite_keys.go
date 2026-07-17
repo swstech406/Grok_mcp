@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grok-mcp/internal/keycrypt"
-	"github.com/grok-mcp/internal/keyhash"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keycrypt"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keyhash"
 )
 
 // ConfigureAPIKeyEncryption derives the at-rest encryption key used for API

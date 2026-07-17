@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/auth"
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 // fakeStore 的 recordedUsage 字段会被 AsyncUsageWriter 后台 goroutine 写入、

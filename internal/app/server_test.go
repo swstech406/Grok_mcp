@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/config"
-	"github.com/grok-mcp/internal/ratelimit"
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/ratelimit"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
 

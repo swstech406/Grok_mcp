@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/grok-mcp/internal/keyhash"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keyhash"
 )
 
 func TestHashAPIKey_golden(t *testing.T) {

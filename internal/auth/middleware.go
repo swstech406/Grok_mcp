@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/grok-mcp/internal/keyhash"
-	"github.com/grok-mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keyhash"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
 // KeyLookup loads an API key by its hash.

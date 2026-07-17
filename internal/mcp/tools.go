@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/grok-mcp/internal/grok"
-	"github.com/grok-mcp/internal/logx"
-	"github.com/grok-mcp/internal/usage"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/grok"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/logx"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/usage"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/auth"
-	"github.com/grok-mcp/internal/store"
-	"github.com/grok-mcp/internal/usage"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/usage"
 	"golang.org/x/time/rate"
 )
 

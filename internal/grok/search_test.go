@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grok-mcp/internal/config"
-	"github.com/grok-mcp/internal/grok"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/grok"
 )
 
 // sse builds valid SSE text from complete event payloads (each followed by a blank line).
