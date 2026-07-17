@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,6 +80,15 @@ type inviteRegistrationPrecheckStore struct {
 	usernameLookupCount int
 }
 
+type registrationModeSwitchStore struct {
+	store.TestStore
+	initialMode        store.RegistrationMode
+	currentMode        store.RegistrationMode
+	inviteCodeExists   bool
+	userCreated        bool
+	inviteCodeConsumed bool
+}
+
 func (testStore *inviteRegistrationPrecheckStore) InviteCodeExists(context.Context, string) (bool, error) {
 	return testStore.inviteCodeExists, nil
 }
@@ -85,6 +96,45 @@ func (testStore *inviteRegistrationPrecheckStore) InviteCodeExists(context.Conte
 func (testStore *inviteRegistrationPrecheckStore) GetUserByUsername(context.Context, string) (*store.User, error) {
 	testStore.usernameLookupCount++
 	return testStore.existingUser, nil
+}
+
+func (testStore *registrationModeSwitchStore) GetServerSettings(context.Context) (*store.ServerSettings, error) {
+	serverSettings := &store.ServerSettings{}
+	serverSettings.RegistrationMode = testStore.initialMode
+	return serverSettings, nil
+}
+
+func (testStore *registrationModeSwitchStore) InviteCodeExists(context.Context, string) (bool, error) {
+	return testStore.inviteCodeExists, nil
+}
+
+func (testStore *registrationModeSwitchStore) RegisterUserWithCurrentMode(
+	_ context.Context,
+	username string,
+	_ string,
+	rawInviteCode string,
+	_ store.RegistrationMode,
+) (*store.User, error) {
+	switch testStore.currentMode {
+	case store.RegistrationModeDisabled:
+		return nil, store.ErrRegistrationDisabled
+	case store.RegistrationModeInvite:
+		if !testStore.inviteCodeExists || strings.TrimSpace(rawInviteCode) == "" {
+			return nil, store.ErrInviteCodeInvalid
+		}
+		testStore.inviteCodeConsumed = true
+	case store.RegistrationModeFree:
+	default:
+		return nil, errors.New("unexpected registration mode")
+	}
+
+	testStore.userCreated = true
+	return &store.User{
+		ID:       "registered-user-id",
+		Username: username,
+		Role:     store.RoleUser,
+		Enabled:  true,
+	}, nil
 }
 
 func (l staticModelLister) ListModels(context.Context) ([]grok.Model, error) {
@@ -414,6 +464,78 @@ func TestRegisterCreatesRegularUser(t *testing.T) {
 	}
 	if u.Role != store.RoleUser {
 		t.Fatalf("expected regular user, got %s", u.Role)
+	}
+}
+
+func TestRegisterEnforcesModeObservedAtCreationBoundary(t *testing.T) {
+	testCases := []struct {
+		name                     string
+		initialMode              store.RegistrationMode
+		modeAfterPasswordHash    store.RegistrationMode
+		inviteCodeExists         bool
+		inviteCode               string
+		expectedStatus           int
+		expectUserCreated        bool
+		expectInviteCodeConsumed bool
+	}{
+		{
+			name:                  "free to disabled",
+			initialMode:           store.RegistrationModeFree,
+			modeAfterPasswordHash: store.RegistrationModeDisabled,
+			expectedStatus:        http.StatusForbidden,
+		},
+		{
+			name:                  "free to invite",
+			initialMode:           store.RegistrationModeFree,
+			modeAfterPasswordHash: store.RegistrationModeInvite,
+			expectedStatus:        http.StatusBadRequest,
+		},
+		{
+			name:                     "invite to free",
+			initialMode:              store.RegistrationModeInvite,
+			modeAfterPasswordHash:    store.RegistrationModeFree,
+			inviteCodeExists:         true,
+			inviteCode:               "valid-invite-code",
+			expectedStatus:           http.StatusCreated,
+			expectUserCreated:        true,
+			expectInviteCodeConsumed: false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			testStore := &registrationModeSwitchStore{
+				initialMode:      testCase.initialMode,
+				currentMode:      testCase.initialMode,
+				inviteCodeExists: testCase.inviteCodeExists,
+			}
+			handler := &Handler{
+				Store: testStore,
+				passwordHashGenerator: func([]byte, int) ([]byte, error) {
+					testStore.currentMode = testCase.modeAfterPasswordHash
+					return []byte("password-hash"), nil
+				},
+			}
+
+			requestBody := fmt.Sprintf(
+				`{"username":"mode-switch-user","password":"password123","invite_code":%q}`,
+				testCase.inviteCode,
+			)
+			request := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/register", strings.NewReader(requestBody))
+			responseRecorder := httptest.NewRecorder()
+
+			handler.register(responseRecorder, request)
+
+			if responseRecorder.Code != testCase.expectedStatus {
+				t.Fatalf("status = %d, want %d; body = %s", responseRecorder.Code, testCase.expectedStatus, responseRecorder.Body.String())
+			}
+			if testStore.userCreated != testCase.expectUserCreated {
+				t.Fatalf("userCreated = %t, want %t", testStore.userCreated, testCase.expectUserCreated)
+			}
+			if testStore.inviteCodeConsumed != testCase.expectInviteCodeConsumed {
+				t.Fatalf("inviteCodeConsumed = %t, want %t", testStore.inviteCodeConsumed, testCase.expectInviteCodeConsumed)
+			}
+		})
 	}
 }
 

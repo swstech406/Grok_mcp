@@ -21,6 +21,9 @@ func (TestStore) RegisterUser(context.Context, string, string) (*User, error) {
 func (TestStore) RegisterUserWithInviteCode(context.Context, string, string, string) (*User, error) {
 	return nil, nil
 }
+func (TestStore) RegisterUserWithCurrentMode(context.Context, string, string, string, RegistrationMode) (*User, error) {
+	return nil, nil
+}
 func (TestStore) InviteCodeExists(context.Context, string) (bool, error)   { return false, nil }
 func (TestStore) GetUserByUsername(context.Context, string) (*User, error) { return nil, nil }
 func (TestStore) GetUserByID(context.Context, string) (*User, error)       { return nil, ErrUserNotFound }

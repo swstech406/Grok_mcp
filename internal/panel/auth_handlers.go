@@ -89,13 +89,21 @@ func (handler *Handler) register(writer http.ResponseWriter, request *http.Reque
 		writeError(writer, http.StatusInternalServerError, "password hash failed")
 		return
 	}
-	var user *store.User
-	if registrationMode == store.RegistrationModeInvite {
-		user, err = handler.Store.RegisterUserWithInviteCode(request.Context(), username, string(passwordHash), registerRequest.InviteCode)
-	} else {
-		user, err = handler.Store.RegisterUser(request.Context(), username, string(passwordHash))
-	}
+	// The mode read above is only an inexpensive precheck. The store selects
+	// and enforces the authoritative mode in the same transaction as creation,
+	// so a mode change during password hashing cannot bypass the new policy.
+	user, err := handler.Store.RegisterUserWithCurrentMode(
+		request.Context(),
+		username,
+		string(passwordHash),
+		registerRequest.InviteCode,
+		registrationMode,
+	)
 	if err != nil {
+		if errors.Is(err, store.ErrRegistrationDisabled) {
+			writeError(writer, http.StatusForbidden, "registration is disabled")
+			return
+		}
 		if errors.Is(err, store.ErrUsernameTaken) {
 			writeError(writer, http.StatusConflict, "username already taken")
 			return
