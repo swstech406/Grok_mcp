@@ -84,6 +84,32 @@ func TestParseChatCompletionsResponseAggregatesTextCitationsAndUsage(t *testing.
 	}
 }
 
+func TestParseChatCompletionsResponseRejectsPrematureStream(t *testing.T) {
+	stream := "data: {\"choices\":[{\"delta\":{\"content\":\"partial answer\"}}]}\n\n"
+
+	_, err := parseChatCompletionsResponse(strings.NewReader(stream), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "ended prematurely") {
+		t.Fatalf("expected premature stream error, got %v", err)
+	}
+}
+
+func TestParseChatCompletionsResponseAcceptsFinishReasonAsTerminalEvent(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"complete answer"}}]}`,
+		"",
+		`data: {"choices":[{"finish_reason":"stop"}]}`,
+		"",
+	}, "\n")
+
+	result, err := parseChatCompletionsResponse(strings.NewReader(stream), nil, nil)
+	if err != nil {
+		t.Fatalf("parse stream terminated by finish_reason: %v", err)
+	}
+	if result.Answer != "complete answer" {
+		t.Fatalf("unexpected answer: %q", result.Answer)
+	}
+}
+
 func TestParseChatCompletionsResponseSupportsCPAExtensions(t *testing.T) {
 	stream := strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"id":"search_1","type":"web_search_call","action":{"query":"Go release notes"}}}`,
@@ -508,6 +534,19 @@ func TestParseAnthropicMessagesResponseAggregatesTextCitationsAndUsage(t *testin
 	}
 }
 
+func TestParseAnthropicMessagesResponseRejectsPrematureStream(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial answer"}}`,
+		"",
+	}, "\n")
+
+	_, err := parseAnthropicMessagesResponse(strings.NewReader(stream))
+	if err == nil || !strings.Contains(err.Error(), "ended prematurely") {
+		t.Fatalf("expected premature stream error, got %v", err)
+	}
+}
+
 func TestClientUsesSelectedProtocolEndpointAndHeaders(t *testing.T) {
 	testCases := []struct {
 		name           string
@@ -527,7 +566,8 @@ func TestClientUsesSelectedProtocolEndpointAndHeaders(t *testing.T) {
 			protocol:       config.UpstreamProtocolAnthropicMessages,
 			expectedPath:   "/v1/messages",
 			expectedAPIKey: "test-key",
-			responseBody:   "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n",
+			responseBody: "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+				"data: {\"type\":\"message_stop\"}\n\n",
 		},
 	}
 

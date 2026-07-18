@@ -177,14 +177,22 @@ func parseAnthropicMessagesResponse(body io.Reader) (*SearchResult, error) {
 		return collector.err
 	}
 
-	if bytes.Contains(rawBody, []byte("data:")) {
+	isSSE := bytes.Contains(rawBody, []byte("data:"))
+	if isSSE {
+		sawMessageStop := false
 		err = forEachSSEEvent(bytes.NewReader(rawBody), func(payload []byte) error {
 			var response anthropicMessagesResponse
 			if decodeErr := json.Unmarshal(payload, &response); decodeErr != nil {
 				return fmt.Errorf("decode anthropic stream event: %w", decodeErr)
 			}
+			if response.Type == "message_stop" {
+				sawMessageStop = true
+			}
 			return consumeResponse(response)
 		})
+		if err == nil && !sawMessageStop {
+			return nil, fmt.Errorf("upstream anthropic messages stream ended prematurely without message_stop event")
+		}
 	} else {
 		var response anthropicMessagesResponse
 		err = json.Unmarshal(rawBody, &response)

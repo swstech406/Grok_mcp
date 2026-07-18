@@ -57,11 +57,12 @@ type chatCompletionsResponse struct {
 }
 
 type chatChoice struct {
-	Delta       chatResponseMessage `json:"delta"`
-	Message     chatResponseMessage `json:"message"`
-	Citations   []json.RawMessage   `json:"citations"`
-	Sources     []json.RawMessage   `json:"sources"`
-	Annotations []json.RawMessage   `json:"annotations"`
+	Delta        chatResponseMessage `json:"delta"`
+	Message      chatResponseMessage `json:"message"`
+	FinishReason string              `json:"finish_reason"`
+	Citations    []json.RawMessage   `json:"citations"`
+	Sources      []json.RawMessage   `json:"sources"`
+	Annotations  []json.RawMessage   `json:"annotations"`
 }
 
 type chatResponseMessage struct {
@@ -276,16 +277,28 @@ func parseChatCompletionsResponse(body io.Reader, onRound func(SearchRound), log
 
 	if isSSE {
 		searchRounds := newSearchRoundTracker()
-		err = forEachSSEEvent(capturedBody, func(payload []byte) error {
+		sawTerminalEvent := false
+		err = forEachSSEEventWithDone(capturedBody, func(payload []byte) error {
 			var response chatCompletionsResponse
 			if decodeErr := json.Unmarshal(payload, &response); decodeErr != nil {
 				return fmt.Errorf("decode chat completions stream event: %w", decodeErr)
+			}
+			for _, choice := range response.Choices {
+				if strings.TrimSpace(choice.FinishReason) != "" {
+					sawTerminalEvent = true
+				}
 			}
 			if searchErr := searchRounds.emitSearchRound(response.Type, response.Item, onRound, log); searchErr != nil {
 				return searchErr
 			}
 			return consumeResponse(response)
+		}, func() error {
+			sawTerminalEvent = true
+			return nil
 		})
+		if err == nil && !sawTerminalEvent {
+			return nil, fmt.Errorf("upstream chat completions stream ended prematurely without [DONE] marker or finish_reason")
+		}
 	} else {
 		var response chatCompletionsResponse
 		err = decodeSingleChatCompletionsResponse(capturedBody, &response)

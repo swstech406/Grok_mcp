@@ -23,6 +23,12 @@ const (
 // 忽略 "[DONE]" 哨兵；对每条有效 JSON payload 调用 onEvent。
 // payload 只在 onEvent 回调期间有效；需要跨事件保留时，调用方必须复制。
 func forEachSSEEvent(r io.Reader, onEvent func(payload []byte) error) error {
+	return forEachSSEEventWithDone(r, onEvent, nil)
+}
+
+// forEachSSEEventWithDone additionally reports each protocol-level [DONE]
+// marker so callers that require a terminal event can reject truncated streams.
+func forEachSSEEventWithDone(r io.Reader, onEvent func(payload []byte) error, onDone func() error) error {
 	limitedReader := &io.LimitedReader{R: r, N: maxUpstreamResponseBytes + 1}
 	scanner := bufio.NewScanner(limitedReader)
 	// 为 data: 前缀、可选空格以及行尾预留空间，让 payload 上限由显式检查报告。
@@ -45,6 +51,9 @@ func forEachSSEEvent(r io.Reader, onEvent func(payload []byte) error) error {
 		if bytes.Equal(payload, []byte("[DONE]")) {
 			eventBuffer.Reset()
 			dataLineCount = 0
+			if onDone != nil {
+				return onDone()
+			}
 			return nil
 		}
 
