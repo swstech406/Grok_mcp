@@ -542,6 +542,45 @@ func TestHTTPMCPQuotaExhaustionSkipsUpstreamAndUsage(t *testing.T) {
 	}
 }
 
+func TestHTTPMCPRejectsAmbiguousToolRoutingFields(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	cpa := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		upstreamCalls.Add(1)
+		writeCPAMockSSEResponse(responseWriter, "unexpected ambiguous request")
+	}))
+	defer cpa.Close()
+
+	environment := bootIntegrationEnv(t, cpa)
+	ambiguousPayloads := []string{
+		`{"jsonrpc":"2.0","id":201,"method":"tools/call","METHOD":"initialize","params":{"name":"grok_web_search","arguments":{"query":"must not reach upstream"}}}`,
+		`{"jsonrpc":"2.0","id":202,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"must not reach upstream"}},"PARAMS":{"name":""}}`,
+		`{"jsonrpc":"2.0","id":203,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"must not reach upstream"},"NAME":""}}`,
+		`{"jsonrpc":"2.0","id":204,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"must not reach upstream"}},"params":{"unexpected":true}}`,
+	}
+
+	for _, ambiguousPayload := range ambiguousPayloads {
+		statusCode, responseBody := callMCPTool(t, environment, ambiguousPayload)
+		if statusCode != http.StatusBadRequest {
+			t.Fatalf("ambiguous tools/call status = %d, want %d; body=%s", statusCode, http.StatusBadRequest, truncate(responseBody, 512))
+		}
+		if !strings.Contains(responseBody, "Ambiguous JSON-RPC tool routing fields") {
+			t.Fatalf("unexpected ambiguous tools/call response: %s", truncate(responseBody, 512))
+		}
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("ambiguous tools/call requests reached upstream %d times", upstreamCalls.Load())
+	}
+
+	environment.writer.Close()
+	usageStats, err := environment.st.GetUsageStats(context.Background(), environment.created.Key.ID, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usageStats.TotalCalls != 0 || usageStats.SuccessCalls != 0 {
+		t.Fatalf("rejected ambiguous requests must not consume quota or create usage records, got %+v", usageStats)
+	}
+}
+
 func TestHTTPMCPXSearchFlowForwardsXTool(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

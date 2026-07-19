@@ -111,6 +111,68 @@ func TestExtractToolNameMiddlewareRejectsJSONRPCBatch(t *testing.T) {
 	}
 }
 
+func TestExtractToolNameMiddlewareRejectsAmbiguousToolRoutingFields(t *testing.T) {
+	testCases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "method alias after canonical field",
+			payload: `{"jsonrpc":"2.0","id":1,"method":"tools/call","METHOD":"initialize","params":{"name":"grok_web_search"}}`,
+		},
+		{
+			name:    "params alias after canonical field",
+			payload: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_web_search"},"PARAMS":{"name":""}}`,
+		},
+		{
+			name:    "name alias after canonical field",
+			payload: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_web_search","NAME":""}}`,
+		},
+		{
+			name:    "name alias before canonical field",
+			payload: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"NAME":"","name":"grok_web_search"}}`,
+		},
+		{
+			name:    "duplicate method field",
+			payload: `{"jsonrpc":"2.0","id":1,"method":"tools/call","method":"initialize","params":{"name":"grok_web_search"}}`,
+		},
+		{
+			name:    "duplicate params field with partial object",
+			payload: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_web_search"},"params":{"arguments":{"query":"ambiguous"}}}`,
+		},
+		{
+			name:    "duplicate name field",
+			payload: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"grok_web_search","name":""}}`,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			downstreamCalled := false
+			handler := ExtractToolNameMiddleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				downstreamCalled = true
+			}))
+
+			responseRecorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(testCase.payload))
+			handler.ServeHTTP(responseRecorder, request)
+
+			if downstreamCalled {
+				t.Fatal("ambiguous tool routing fields must not reach the downstream MCP SDK")
+			}
+			if responseRecorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusBadRequest)
+			}
+			if contentType := responseRecorder.Header().Get("Content-Type"); contentType != "application/json" {
+				t.Fatalf("Content-Type = %q, want application/json", contentType)
+			}
+			if responseBody := responseRecorder.Body.String(); !strings.Contains(responseBody, "Ambiguous JSON-RPC tool routing fields") {
+				t.Fatalf("unexpected rejection body: %q", responseBody)
+			}
+		})
+	}
+}
+
 func TestExtractToolNameIgnoresNonToolCall(t *testing.T) {
 	for _, payload := range []string{
 		`{"jsonrpc":"2.0","method":"initialize","params":{}}`,

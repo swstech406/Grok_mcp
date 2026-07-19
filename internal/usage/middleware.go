@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -58,8 +59,9 @@ func releaseSearchPermitBeforeQuotaRollback(ctx context.Context) {
 }
 
 type jsonRPCRequestInspection struct {
-	ToolName       string
-	IsBatchRequest bool
+	ToolName                      string
+	IsBatchRequest                bool
+	HasAmbiguousToolRoutingFields bool
 }
 
 // WithToolName 将已解析的工具名附加到 context，供下游中间件复用，避免重复解析请求体。
@@ -75,13 +77,17 @@ func ToolNameFromContext(ctx context.Context) (string, bool) {
 
 // ExtractToolNameMiddleware 在鉴权之后、额度与用量中间件之前解析一次 tools/call 工具名并写入 context。
 // 这样后续中间件直接读取 context，无需重复读取并恢复 Body。对非 tools/call 请求写入空名后透传。
-// JSON-RPC batch 请求会被提前拒绝，避免批量 tools/call 绕过配额预留与用量记录。
+// JSON-RPC batch、重复路由字段和大小写碰撞别名会被提前拒绝，避免 SDK 与限额层产生不同的工具识别结果。
 func ExtractToolNameMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			inspection := inspectJSONRPCRequest(r)
 			if inspection.IsBatchRequest {
 				writeJSONRPCBatchUnsupported(w)
+				return
+			}
+			if inspection.HasAmbiguousToolRoutingFields {
+				writeJSONRPCAmbiguousToolRoutingFields(w)
 				return
 			}
 			r = r.WithContext(WithToolName(r.Context(), inspection.ToolName))
@@ -94,6 +100,12 @@ func writeJSONRPCBatchUnsupported(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
 	_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"JSON-RPC batch requests are not supported"},"id":null}`))
+}
+
+func writeJSONRPCAmbiguousToolRoutingFields(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"Ambiguous JSON-RPC tool routing fields are not supported"},"id":null}`))
 }
 
 // responseRecorder captures HTTP status, incrementally inspects a bounded
@@ -150,7 +162,16 @@ func MCPMiddleware(st UsageStore, writer *store.AsyncUsageWriter, debugStates ..
 			// 兼容直接调用 MCPMiddleware（未挂载提取中间件）的旧用法，回退到一次解析。
 			toolName, ok := ToolNameFromContext(r.Context())
 			if !ok {
-				toolName = extractToolName(r)
+				inspection := inspectJSONRPCRequest(r)
+				if inspection.IsBatchRequest {
+					writeJSONRPCBatchUnsupported(w)
+					return
+				}
+				if inspection.HasAmbiguousToolRoutingFields {
+					writeJSONRPCAmbiguousToolRoutingFields(w)
+					return
+				}
+				toolName = inspection.ToolName
 			}
 			if toolName == "" {
 				next.ServeHTTP(w, r)
@@ -451,17 +472,106 @@ func inspectJSONRPCRequest(r *http.Request) jsonRPCRequestInspection {
 		return jsonRPCRequestInspection{} // 超出上限的非典型请求体，跳过解析。
 	}
 
-	var msg struct {
-		Method string `json:"method"`
-		Params struct {
-			Name string `json:"name"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(body, &msg); err != nil {
+	// Parse routing fields without decoding into a tagged struct. encoding/json
+	// matches struct fields case-insensitively, while the downstream MCP SDK uses
+	// exact protocol field names. Duplicate object-valued fields can also merge
+	// differently across decoders, so reject both duplicates and case aliases.
+	envelope, hasAmbiguousEnvelopeFields, err := inspectCaseSensitiveJSONObject(body, "method", "params")
+	if err != nil {
 		return jsonRPCRequestInspection{}
 	}
-	if msg.Method == "tools/call" {
-		return jsonRPCRequestInspection{ToolName: msg.Params.Name}
+	if hasAmbiguousEnvelopeFields {
+		return jsonRPCRequestInspection{HasAmbiguousToolRoutingFields: true}
 	}
-	return jsonRPCRequestInspection{}
+
+	methodJSON, hasMethod := envelope["method"]
+	if !hasMethod {
+		return jsonRPCRequestInspection{}
+	}
+	var method string
+	if err := json.Unmarshal(methodJSON, &method); err != nil || method != "tools/call" {
+		return jsonRPCRequestInspection{}
+	}
+
+	paramsJSON, hasParams := envelope["params"]
+	if !hasParams {
+		return jsonRPCRequestInspection{}
+	}
+	params, hasAmbiguousParamsFields, err := inspectCaseSensitiveJSONObject(paramsJSON, "name")
+	if err != nil {
+		return jsonRPCRequestInspection{}
+	}
+	if hasAmbiguousParamsFields {
+		return jsonRPCRequestInspection{HasAmbiguousToolRoutingFields: true}
+	}
+
+	nameJSON, hasName := params["name"]
+	if !hasName {
+		return jsonRPCRequestInspection{}
+	}
+	var toolName string
+	if err := json.Unmarshal(nameJSON, &toolName); err != nil {
+		return jsonRPCRequestInspection{}
+	}
+	return jsonRPCRequestInspection{ToolName: toolName}
+}
+
+func inspectCaseSensitiveJSONObject(body []byte, routingFieldNames ...string) (map[string]json.RawMessage, bool, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	openingToken, err := decoder.Token()
+	if err != nil {
+		return nil, false, err
+	}
+	openingDelimiter, isDelimiter := openingToken.(json.Delim)
+	if !isDelimiter || openingDelimiter != '{' {
+		return nil, false, errors.New("JSON value is not an object")
+	}
+
+	exactValues := make(map[string]json.RawMessage, len(routingFieldNames))
+	seenRoutingFields := make(map[string]bool, len(routingFieldNames))
+	hasAmbiguousRoutingFields := false
+	for decoder.More() {
+		fieldToken, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return nil, false, tokenErr
+		}
+		fieldName, isString := fieldToken.(string)
+		if !isString {
+			return nil, false, errors.New("JSON object key is not a string")
+		}
+
+		var rawValue json.RawMessage
+		if decodeErr := decoder.Decode(&rawValue); decodeErr != nil {
+			return nil, false, decodeErr
+		}
+		for _, canonicalName := range routingFieldNames {
+			if !strings.EqualFold(fieldName, canonicalName) {
+				continue
+			}
+			if fieldName != canonicalName || seenRoutingFields[canonicalName] {
+				hasAmbiguousRoutingFields = true
+			}
+			seenRoutingFields[canonicalName] = true
+			if fieldName == canonicalName {
+				exactValues[canonicalName] = rawValue
+			}
+			break
+		}
+	}
+
+	closingToken, err := decoder.Token()
+	if err != nil {
+		return nil, false, err
+	}
+	closingDelimiter, isDelimiter := closingToken.(json.Delim)
+	if !isDelimiter || closingDelimiter != '}' {
+		return nil, false, errors.New("JSON object is not properly closed")
+	}
+	if trailingErr := decoder.Decode(&struct{}{}); trailingErr != io.EOF {
+		if trailingErr == nil {
+			return nil, false, errors.New("multiple JSON values are not supported")
+		}
+		return nil, false, trailingErr
+	}
+	return exactValues, hasAmbiguousRoutingFields, nil
 }
