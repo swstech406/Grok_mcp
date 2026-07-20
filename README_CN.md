@@ -100,6 +100,8 @@ go build \
 
 ### 2. 配置并启动
 
+以下命令默认在源码仓库中执行。当前 Linux 发布压缩包只包含二进制文件和 README，不包含 `.env.example` 或 Compose 文件；压缩包用户需要根据下方配置表手动创建 `.env`，或从仓库获取这些配套文件。
+
 ```bash
 cp .env.example .env
 mkdir -p data
@@ -288,7 +290,7 @@ claude mcp add --transport http grok-search-mcp http://127.0.0.1:8080/mcp \
 }
 ```
 
-上游未提供时，`citations`、`sources` 和 `usage` 可能省略。服务会主动拒绝 JSON-RPC batch 请求，避免批量调用绕过逐次配额预留和用量统计。
+上游未提供时，`citations`、`sources` 和 `usage` 可能省略。服务会在配额预留和用量统计前主动拒绝 JSON-RPC batch 请求，以及重复或大小写冲突的 `method`、`params`、`params.name` 路由字段。
 
 ## 配置
 
@@ -313,7 +315,7 @@ claude mcp add --transport http grok-search-mcp http://127.0.0.1:8080/mcp \
 | `GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY` | `4` | 单用户上限的环境默认值，不得超过全局上限；初始化后以面板持久化设置为准。 |
 | `GROK_SEARCH_MCP_DEBUG` | `false` | `1`、`true` 或 `yes` 启用；可能在用量记录中捕获调试上下文。 |
 | `GROK_PROXY_URL` | 空 | 显式上游 HTTP(S) 代理。 |
-| `GROK_PROXY_ENABLED` | 自动判断 | 显式代理开关；未设置时，非空 `GROK_PROXY_URL` 会启用代理。 |
+| `GROK_PROXY_ENABLED` | `false` | 显式代理开关；必须与 `GROK_PROXY_URL` 一起设置为 `true`，仅设置 URL 不会启用项目显式代理。 |
 | `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` | Go 默认行为 | 未启用显式代理时由标准 HTTP Transport 使用。 |
 
 旧的 `GROK_MCP_IP_RPM`、`GROK_MCP_GLOBAL_SEARCH_CONCURRENCY`、
@@ -355,7 +357,7 @@ location / {
 
 ### 持久化与热更新
 
-服务启动时先加载环境变量；如果 SQLite 已保存服务设置，持久化的上游设置优先。管理员可以在 **Server Settings** 中热更新：
+服务启动时，环境变量提供初始运行时默认值；如果 SQLite 已保存服务设置，则完整的持久化运行时设置优先，包括上游、代理、注册、debug、运维指标和搜索并发配置。监听地址、数据库路径、JWT 密钥、IP RPM、保留期限和维护周期仍只由环境变量控制。管理员可以在 **Server Settings** 中热更新：
 
 - CPA 地址和 API Key
 - 上游搜索协议
@@ -441,6 +443,7 @@ POST /panel/v1/auth/login
 
 ```text
 GET    /panel/v1/me
+GET    /panel/v1/overview/health
 GET    /panel/v1/keys
 POST   /panel/v1/keys
 POST   /panel/v1/keys/{id}/reveal
@@ -448,7 +451,11 @@ PATCH  /panel/v1/keys/{id}
 DELETE /panel/v1/keys/{id}
 GET    /panel/v1/keys/{id}/usage
 GET    /panel/v1/usage
+GET    /panel/v1/usage/records
+GET    /panel/v1/usage/records/{id}
 ```
+
+`GET /panel/v1/overview/health` 用于向已登录的面板展示上游和模型可用性；它不同于容器对 `/panel/` 执行的未鉴权存活检查。
 
 `/panel/v1/admin/` 下的管理员路由用于管理用户、tier、服务设置、邀请码、模型和用量。除公开路由外，面板请求需要：
 
@@ -456,18 +463,27 @@ GET    /panel/v1/usage
 Authorization: Bearer <面板 JWT>
 ```
 
-## Docker Compose
+## Docker 部署
 
-已发布的版本镜像可从 Docker Hub 拉取：
-
-```bash
-docker pull maplemaplecat/grok-search-mcp:v0.2.1
-```
+使用项目提供的 Compose 文件构建并运行当前源码：
 
 ```bash
 cp .env.example .env
 ${EDITOR:-vi} .env
 docker compose up -d --build
+```
+
+直接运行已发布镜像、避免重新构建本地源码：
+
+```bash
+docker pull maplemaplecat/grok-search-mcp:v0.2.1
+docker run -d \
+  --name grok-search-mcp \
+  --restart unless-stopped \
+  --env-file .env \
+  -p 8080:8080 \
+  -v grok-search-mcp-data:/app/data \
+  maplemaplecat/grok-search-mcp:v0.2.1
 ```
 
 如果 CPA 直接运行在 Docker 宿主机上，请设置：
@@ -524,7 +540,7 @@ export CPA_BASE_URL="http://127.0.0.1:8317"
 go test ./test/grok -run TestIntegrationSearchLiveCPA -v
 ```
 
-面板前端是内嵌的原生 HTML、CSS 和 JavaScript，不需要 Node.js 构建。仓库目前没有 Makefile、任务运行器或公开的 CI/发布流水线。贡献代码时可使用 `gofmt`、`go vet` 等标准 Go 工具。
+面板前端是内嵌的原生 HTML、CSS 和 JavaScript，不需要 Node.js 构建。仓库目前没有 Makefile 或任务运行器。GitHub Actions 的发布/手动工作流会运行 `go test ./...`、构建 Linux 压缩包并发布 Docker 镜像；目前尚无 push 或 pull request 校验工作流。贡献代码时可使用 `gofmt`、`go vet` 等标准 Go 工具。
 
 ### 代码结构
 

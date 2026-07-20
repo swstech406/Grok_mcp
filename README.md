@@ -100,6 +100,8 @@ go build \
 
 ### 2. Configure
 
+The commands below assume a source checkout. The current Linux release archives contain the binary and READMEs but not `.env.example` or Compose assets; archive users must create `.env` from the configuration table below or obtain those companion files from the repository.
+
 ```bash
 cp .env.example .env
 mkdir -p data
@@ -301,7 +303,7 @@ Accepts no arguments. It reads CPA `GET /v1/models`, trims and deduplicates IDs,
 }
 ```
 
-`citations`, `sources`, and `usage` may be omitted when the upstream response does not provide them. JSON-RPC batch requests are intentionally rejected because batching could bypass per-call quota reservation and usage accounting.
+`citations`, `sources`, and `usage` may be omitted when the upstream response does not provide them. JSON-RPC batch requests and duplicate or case-colliding `method`, `params`, or `params.name` routing fields are intentionally rejected before quota reservation and usage accounting.
 
 ## Configuration
 
@@ -326,7 +328,7 @@ Accepts no arguments. It reads CPA `GET /v1/models`, trims and deduplicates IDs,
 | `GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY` | `4` | Environment default for the per-user limit; must not exceed the global limit. The persisted panel setting takes precedence after initialization. |
 | `GROK_SEARCH_MCP_DEBUG` | `false` | Accepts `1`, `true`, or `yes`. May capture debug request/response context in usage records. |
 | `GROK_PROXY_URL` | Empty | Explicit upstream HTTP(S) proxy URL. |
-| `GROK_PROXY_ENABLED` | Inferred | Explicit proxy switch. When unset, a non-empty `GROK_PROXY_URL` enables it. |
+| `GROK_PROXY_ENABLED` | `false` | Explicit proxy switch. Set this to `true` together with `GROK_PROXY_URL`; the URL alone does not enable the project-specific proxy. |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | Go defaults | Used by the standard transport when an explicit proxy is not enabled. |
 
 The former `GROK_MCP_IP_RPM`, `GROK_MCP_GLOBAL_SEARCH_CONCURRENCY`,
@@ -369,7 +371,7 @@ location / {
 
 ### Persistence and live updates
 
-On startup, environment variables are loaded first. If SQLite already contains server settings, the persisted upstream settings take precedence. Administrators can update the following values from **Server Settings** without restarting:
+On startup, environment variables provide the initial runtime defaults. If SQLite already contains server settings, the complete persisted runtime settings object takes precedence, including upstream, proxy, registration, debug, operations-metrics, and search-concurrency values. Listener address, database path, JWT secret, IP RPM, and retention/maintenance settings remain environment-only. Administrators can update the following values from **Server Settings** without restarting:
 
 - CPA base URL and API key
 - Upstream search protocol
@@ -455,6 +457,7 @@ Authenticated user routes cover profile information, API-key management, and usa
 
 ```text
 GET    /panel/v1/me
+GET    /panel/v1/overview/health
 GET    /panel/v1/keys
 POST   /panel/v1/keys
 POST   /panel/v1/keys/{id}/reveal
@@ -462,7 +465,11 @@ PATCH  /panel/v1/keys/{id}
 DELETE /panel/v1/keys/{id}
 GET    /panel/v1/keys/{id}/usage
 GET    /panel/v1/usage
+GET    /panel/v1/usage/records
+GET    /panel/v1/usage/records/{id}
 ```
+
+`GET /panel/v1/overview/health` reports authenticated upstream/model availability for the dashboard. It is distinct from the container's unauthenticated `/panel/` liveness check.
 
 Administrator routes under `/panel/v1/admin/` manage users, tiers, server settings, invite codes, models, and usage. All non-public panel requests require:
 
@@ -470,18 +477,27 @@ Administrator routes under `/panel/v1/admin/` manage users, tiers, server settin
 Authorization: Bearer <panel JWT>
 ```
 
-## Docker Compose
+## Docker deployment
 
-Published release images are available from Docker Hub:
-
-```bash
-docker pull maplemaplecat/grok-search-mcp:v0.2.1
-```
+To build and run the current source checkout with the supplied Compose file:
 
 ```bash
 cp .env.example .env
 ${EDITOR:-vi} .env
 docker compose up -d --build
+```
+
+To run the published release image without rebuilding local source:
+
+```bash
+docker pull maplemaplecat/grok-search-mcp:v0.2.1
+docker run -d \
+  --name grok-search-mcp \
+  --restart unless-stopped \
+  --env-file .env \
+  -p 8080:8080 \
+  -v grok-search-mcp-data:/app/data \
+  maplemaplecat/grok-search-mcp:v0.2.1
 ```
 
 If CPA runs directly on the Docker host, use:
@@ -511,7 +527,7 @@ The Compose file does not forward every optional outbound proxy variable. Extend
 - Prevent all direct client access to the application port because forwarded client-IP headers are trusted without an application-level proxy allowlist.
 - Add reverse-proxy rate limits for `/mcp`, panel login, and panel registration.
 - Keep debug mode disabled unless troubleshooting. Debug context may retain request or response content even though authentication headers are redacted.
-- MCP client API keys are shown once and stored only as hashes; losing the plaintext key requires creating a replacement.
+- MCP client API keys authenticate through an irreversible hash and are also stored as AES-256-GCM ciphertext for authorized panel reveal/copy. Protect database backups and `GROK_JWT_SECRET` as access to recoverable client credentials.
 
 ## Development and testing
 
@@ -537,7 +553,7 @@ export CPA_BASE_URL="http://127.0.0.1:8317"
 go test ./test/grok -run TestIntegrationSearchLiveCPA -v
 ```
 
-The panel frontend is embedded static HTML, CSS, and JavaScript; no Node.js build is required. The repository currently has no Makefile, task runner, or published CI/release pipeline. Use standard Go tooling such as `gofmt` and `go vet` when contributing.
+The panel frontend is embedded static HTML, CSS, and JavaScript; no Node.js build is required. The repository currently has no Makefile or task runner. A release/manual GitHub Actions workflow runs `go test ./...`, builds Linux archives, and publishes Docker images; there is not yet a push or pull-request validation workflow. Use standard Go tooling such as `gofmt` and `go vet` when contributing.
 
 ### Project layout
 
