@@ -5,6 +5,7 @@ import {
   fetchInviteCodes,
   fetchKeys,
   fetchOperationalMetrics,
+  fetchOverviewHealth,
   fetchRegistrationSettings,
   fetchSettings,
   fetchTiers,
@@ -180,17 +181,25 @@ async function loadPageData(page, signal) {
       const settingsRequest = state.user?.role === "admin"
         ? fetchSettings({ signal })
         : Promise.resolve(null);
-      const [user, keyResponse, usage, settings] = await Promise.all([
+      const overviewHealthRequest = fetchOverviewHealth({ signal }).catch((error) => {
+        if (error?.name === "AbortError" || (error instanceof APIError && error.status === 401)) {
+          throw error;
+        }
+        return { status: "unknown", checked_at: "" };
+      });
+      const [user, keyResponse, usage, settings, overviewHealth] = await Promise.all([
         fetchCurrentUser({ signal }),
         fetchKeys({ signal, limit: COLLECTION_PAGE_SIZE }),
         fetchUsage(getUsagePeriodSince("24h"), { signal }),
-        settingsRequest
+        settingsRequest,
+        overviewHealthRequest
       ]);
       return {
         user,
         keyResponse,
         overviewUsage: normalizeUsage(usage),
-        settings
+        settings,
+        overviewHealth
       };
     }
     case "keys": {

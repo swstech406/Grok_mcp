@@ -1,6 +1,7 @@
 import {
   calculatePercent,
   escapeHTML,
+  formatDateTime,
   formatLimit,
   formatNumber,
   formatPercent,
@@ -28,6 +29,7 @@ export function renderOverviewPage(state) {
   const successCalls = Number(user.success_calls || 0);
   const quotaPercent = successLimit > 0 ? calculatePercent(successCalls, successLimit) : 100;
   const greeting = getGreeting();
+  const healthPresentation = getOverviewHealthPresentation(state.data.overviewHealth);
 
   return `
     ${renderPageHeading("总览", "查看最近 24 小时的服务调用、成功率与账户额度。")}
@@ -35,7 +37,12 @@ export function renderOverviewPage(state) {
       <div class="hero-content">
         <div>
           <p class="hero-kicker">Realtime MCP workspace</p>
-          <h2>${escapeHTML(greeting)}，${escapeHTML(user.username || "用户")}。<br><span>一切运行正常。</span></h2>
+          <h2>${escapeHTML(greeting)}，${escapeHTML(user.username || "用户")}。<br><span class="hero-status-copy ${escapeHTML(healthPresentation.className)}">${escapeHTML(healthPresentation.headline)}</span></h2>
+          <div class="hero-health" role="status" aria-label="服务健康状态：${escapeHTML(healthPresentation.label)}">
+            <span class="hero-health-chip ${escapeHTML(healthPresentation.className)}">${escapeHTML(healthPresentation.label)}</span>
+            <span>${escapeHTML(healthPresentation.detail)}</span>
+            ${healthPresentation.checkedAt ? `<span>最近检查 ${escapeHTML(formatDateTime(healthPresentation.checkedAt))}</span>` : ""}
+          </div>
         </div>
         <div class="hero-meta">
           <span class="hero-chip">方案 <strong>${escapeHTML(user.tier_name || "未分配")}</strong></span>
@@ -92,6 +99,40 @@ function renderOverviewLoading() {
 
 function createEmptyUsage() {
   return { total_calls: 0, success_calls: 0, current_rpm: 0, by_tool: {}, traffic_buckets: [], records: [] };
+}
+
+function getOverviewHealthPresentation(health) {
+  const presentations = {
+    healthy: {
+      className: "is-healthy",
+      label: "正常",
+      headline: "健康检查正常。",
+      detail: "上游模型接口可达，当前模型已列出"
+    },
+    degraded: {
+      className: "is-degraded",
+      label: "受限",
+      headline: "服务能力受限。",
+      detail: "上游模型接口可达，但当前配置模型未列出"
+    },
+    unhealthy: {
+      className: "is-unhealthy",
+      label: "异常",
+      headline: "上游健康检查异常。",
+      detail: "无法通过模型接口验证上游可用性"
+    },
+    unknown: {
+      className: "is-unknown",
+      label: "未知",
+      headline: "服务状态未知。",
+      detail: "尚未取得有效的健康检查结果"
+    }
+  };
+  const status = String(health?.status || "unknown").toLowerCase();
+  return {
+    ...(presentations[status] || presentations.unknown),
+    checkedAt: health?.checked_at || ""
+  };
 }
 
 function getGreeting() {

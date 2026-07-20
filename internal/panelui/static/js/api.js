@@ -239,6 +239,10 @@ export function fetchCurrentUser(options = {}) {
   return panelAPI.request("/panel/v1/me", options);
 }
 
+export function fetchOverviewHealth(options = {}) {
+  return panelAPI.request("/panel/v1/overview/health", options);
+}
+
 export function fetchKeys(options = {}) {
   const { cursor = "", limit = 50, ...requestOptions } = options;
   return panelAPI.request(buildCollectionPath("/panel/v1/keys", { cursor, limit }), requestOptions);

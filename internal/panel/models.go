@@ -170,6 +170,20 @@ type ModelsResponse struct {
 	Models []ModelResponse `json:"models"`
 }
 
+type OverviewHealthStatus string
+
+const (
+	OverviewHealthHealthy   OverviewHealthStatus = "healthy"
+	OverviewHealthDegraded  OverviewHealthStatus = "degraded"
+	OverviewHealthUnhealthy OverviewHealthStatus = "unhealthy"
+	OverviewHealthUnknown   OverviewHealthStatus = "unknown"
+)
+
+type OverviewHealthResponse struct {
+	Status    OverviewHealthStatus `json:"status"`
+	CheckedAt time.Time            `json:"checked_at"`
+}
+
 type UpdateServerSettingsRequest struct {
 	CPABaseURL                 *string                  `json:"cpa_base_url,omitempty"`
 	CPAAPIKey                  *string                  `json:"cpa_api_key,omitempty"`

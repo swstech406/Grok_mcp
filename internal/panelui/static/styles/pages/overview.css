@@ -64,8 +64,66 @@
   line-height: 1.02;
 }
 
-.hero-card h2 span {
+.hero-status-copy {
   color: var(--accent);
+}
+
+.hero-status-copy.is-degraded {
+  color: #f4c35c;
+}
+
+.hero-status-copy.is-unhealthy {
+  color: #ff8585;
+}
+
+.hero-status-copy.is-unknown {
+  color: #b8c1bc;
+}
+
+.hero-health {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin-top: 18px;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 11px;
+}
+
+.hero-health-chip {
+  display: inline-flex;
+  min-height: 27px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(189, 244, 92, 0.13);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.hero-health-chip::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.hero-health-chip.is-degraded {
+  background: rgba(244, 195, 92, 0.13);
+  color: #f4c35c;
+}
+
+.hero-health-chip.is-unhealthy {
+  background: rgba(255, 133, 133, 0.13);
+  color: #ff8585;
+}
+
+.hero-health-chip.is-unknown {
+  background: rgba(184, 193, 188, 0.12);
+  color: #b8c1bc;
 }
 
 .hero-meta {
