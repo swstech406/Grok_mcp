@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
@@ -80,6 +81,11 @@ func TestAdminUpdateServerSettingsKeepsInitialSettingsImmutable(t *testing.T) {
 		InitialServerSettings: initialSettings,
 		SettingsApplier:       settingsApplier,
 	}
+	handler.overviewHealthState.cachedResponse = OverviewHealthResponse{
+		Status:    OverviewHealthHealthy,
+		CheckedAt: time.Now().UTC(),
+	}
+	handler.overviewHealthState.cacheExpiresAt = time.Now().Add(time.Minute)
 	request := httptest.NewRequest(
 		http.MethodPatch,
 		"/panel/v1/admin/settings",
@@ -116,6 +122,9 @@ func TestAdminUpdateServerSettingsKeepsInitialSettingsImmutable(t *testing.T) {
 	}
 	if !settingsApplier.appliedSettings.OperationsMetricsEnabled {
 		t.Fatalf("applied operations metrics setting = false, want true")
+	}
+	if !handler.overviewHealthState.cachedResponse.CheckedAt.IsZero() {
+		t.Fatal("server settings update did not invalidate overview health cache")
 	}
 
 	storedSettings, err := sqliteStore.GetServerSettings(context.Background())

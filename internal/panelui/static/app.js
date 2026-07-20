@@ -36,10 +36,13 @@ const toastRegionElement = document.querySelector("#toast-region");
 
 let activePageRequestIdentifier = 0;
 let activePageRequestController = null;
+let activeOverviewHealthRequestController = null;
 
 function abortCurrentPageLoad() {
   activePageRequestController?.abort();
   activePageRequestController = null;
+  activeOverviewHealthRequestController?.abort();
+  activeOverviewHealthRequestController = null;
   activePageRequestIdentifier += 1;
 }
 
@@ -151,6 +154,9 @@ async function loadCurrentPage(options = {}) {
       return false;
     }
     commitPageData(page, pageResult);
+    if (page === "overview") {
+      void loadOverviewHealthIndependently(requestIdentifier);
+    }
     return true;
   } catch (error) {
     if (requestIdentifier !== activePageRequestIdentifier) {
@@ -176,31 +182,55 @@ async function loadCurrentPage(options = {}) {
   }
 }
 
+async function loadOverviewHealthIndependently(requestIdentifier) {
+  const requestController = new AbortController();
+  activeOverviewHealthRequestController = requestController;
+
+  try {
+    const overviewHealth = await fetchOverviewHealth({ signal: requestController.signal });
+    if (requestIdentifier !== activePageRequestIdentifier || state.currentPage !== "overview") {
+      return;
+    }
+    state.data.overviewHealth = overviewHealth;
+  } catch (error) {
+    if (requestIdentifier !== activePageRequestIdentifier || error?.name === "AbortError") {
+      return;
+    }
+    if (handleSessionError(error)) {
+      return;
+    }
+    state.data.overviewHealth = { status: "unknown", checked_at: "" };
+  } finally {
+    if (activeOverviewHealthRequestController === requestController) {
+      activeOverviewHealthRequestController = null;
+    }
+    if (
+      requestIdentifier === activePageRequestIdentifier
+      && state.authenticated
+      && state.currentPage === "overview"
+    ) {
+      renderApplication();
+    }
+  }
+}
+
 async function loadPageData(page, signal) {
   switch (page) {
     case "overview": {
       const settingsRequest = state.user?.role === "admin"
         ? fetchSettings({ signal })
         : Promise.resolve(null);
-      const overviewHealthRequest = fetchOverviewHealth({ signal }).catch((error) => {
-        if (error?.name === "AbortError" || (error instanceof APIError && error.status === 401)) {
-          throw error;
-        }
-        return { status: "unknown", checked_at: "" };
-      });
-      const [user, keyResponse, usage, settings, overviewHealth] = await Promise.all([
+      const [user, keyResponse, usage, settings] = await Promise.all([
         fetchCurrentUser({ signal }),
         fetchKeys({ signal, limit: COLLECTION_PAGE_SIZE }),
         fetchUsage(getUsagePeriodSince("24h"), { signal }),
-        settingsRequest,
-        overviewHealthRequest
+        settingsRequest
       ]);
       return {
         user,
         keyResponse,
         overviewUsage: normalizeUsage(usage),
-        settings,
-        overviewHealth
+        settings
       };
     }
     case "keys": {

@@ -145,7 +145,7 @@ export function clearAuthenticatedState() {
 export function pageHasExistingData(page) {
   switch (page) {
     case "overview":
-      return Boolean(state.data.overviewHealth && state.data.overviewUsage && state.data.keys);
+      return Boolean(state.data.overviewUsage && state.data.keys);
     case "usage":
       return Boolean(state.data.usage);
     case "keys":
@@ -174,7 +174,6 @@ export function commitPageData(page, pageResult) {
       resetPagination("keys");
       state.data.keys = pageResult.keyResponse?.keys || [];
       commitPagination("keys", pageResult.keyResponse);
-      state.data.overviewHealth = pageResult.overviewHealth;
       state.data.overviewUsage = pageResult.overviewUsage;
       if (pageResult.settings) {
         state.data.settings = pageResult.settings;

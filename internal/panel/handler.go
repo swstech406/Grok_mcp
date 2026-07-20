@@ -2,6 +2,8 @@ package panel
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/grok"
@@ -20,6 +22,20 @@ type Handler struct {
 	SQLiteMetrics         SQLiteMetricsProvider      // 可选；管理员运行指标中的 SQLite 快照
 	UsageWriterMetrics    UsageWriterMetricsProvider // 可选；管理员运行指标中的异步队列快照
 	passwordHashGenerator func(password []byte, cost int) ([]byte, error)
+	overviewHealthState   overviewHealthState
+}
+
+type overviewHealthState struct {
+	mutex          sync.Mutex
+	generation     uint64
+	cachedResponse OverviewHealthResponse
+	cacheExpiresAt time.Time
+	inFlightProbe  *overviewHealthProbe
+}
+
+type overviewHealthProbe struct {
+	generation uint64
+	done       chan struct{}
 }
 
 // ServerSettingsApplier 接收热更新后的服务器运行时设置。

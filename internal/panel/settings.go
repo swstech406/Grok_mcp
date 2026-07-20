@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
@@ -47,6 +48,7 @@ func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "failed to save server settings")
 		return
 	}
+	h.invalidateOverviewHealthCache()
 
 	if h.SettingsApplier != nil {
 		if err := h.SettingsApplier.ApplyServerSettings(normalizedSettings); err != nil {
@@ -80,7 +82,11 @@ func (h *Handler) adminListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) loadEffectiveServerSettings(r *http.Request) (config.ServerSettings, *time.Time, error) {
-	storedSettings, err := h.Store.GetServerSettings(r.Context())
+	return h.loadEffectiveServerSettingsContext(r.Context())
+}
+
+func (h *Handler) loadEffectiveServerSettingsContext(ctx context.Context) (config.ServerSettings, *time.Time, error) {
+	storedSettings, err := h.Store.GetServerSettings(ctx)
 	if err != nil {
 		return config.ServerSettings{}, nil, err
 	}
