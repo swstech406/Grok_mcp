@@ -172,6 +172,10 @@ func TestHandlerServesSearchConcurrencySettingsFields(t *testing.T) {
 		"mcp_global_search_concurrency",
 		"mcp_user_search_concurrency",
 		"operations_metrics_enabled",
+		"persisted_version",
+		"live_version",
+		"saved_not_applied",
+		"设置已保存，尚未应用",
 	} {
 		if !strings.Contains(body, expectedField) {
 			t.Fatalf("settings module does not contain %q", expectedField)

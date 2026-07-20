@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,11 +20,27 @@ import (
 
 type recordingRuntimeSettingsApplier struct {
 	appliedSettings config.ServerSettings
+	applyError      error
 }
 
 func (applier *recordingRuntimeSettingsApplier) ApplyServerSettings(settings config.ServerSettings) error {
 	applier.appliedSettings = settings
-	return nil
+	return applier.applyError
+}
+
+func TestRuntimeServerSettingsApplierKeepsConfirmedVersionAfterFailure(t *testing.T) {
+	upstreamApplier := &recordingRuntimeSettingsApplier{applyError: errors.New("upstream apply failed")}
+	applier := &runtimeServerSettingsApplier{upstreamApplier: upstreamApplier}
+	applier.liveVersion.Store(5)
+
+	err := applier.ApplyServerSettings(config.ServerSettings{}, 6)
+
+	if err == nil {
+		t.Fatal("ApplyServerSettings succeeded, want upstream failure")
+	}
+	if liveVersion := applier.LiveServerSettingsVersion(); liveVersion != 5 {
+		t.Fatalf("live settings version = %d, want prior confirmed version 5", liveVersion)
+	}
 }
 
 func TestRuntimeServerSettingsApplierUpdatesSearchConcurrency(t *testing.T) {
@@ -39,8 +56,11 @@ func TestRuntimeServerSettingsApplierUpdatesSearchConcurrency(t *testing.T) {
 		MCPGlobalSearchConcurrency: 2,
 		MCPUserSearchConcurrency:   2,
 	}
-	if err := applier.ApplyServerSettings(settings); err != nil {
+	if err := applier.ApplyServerSettings(settings, 7); err != nil {
 		t.Fatalf("ApplyServerSettings failed: %v", err)
+	}
+	if liveVersion := applier.LiveServerSettingsVersion(); liveVersion != 7 {
+		t.Fatalf("live settings version = %d, want 7", liveVersion)
 	}
 	if upstreamApplier.appliedSettings != settings {
 		t.Fatalf("upstream applied settings = %+v, want %+v", upstreamApplier.appliedSettings, settings)
@@ -169,9 +189,13 @@ func TestInitializeServerSettingsUsesEnvironmentDefaultsWithoutMutatingConfig(t 
 	}
 	originalConfig := *cfg
 
-	effectiveSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
+	storedSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+	effectiveSettings := storedSettings.Runtime
+	if storedSettings.Revision != 1 {
+		t.Fatalf("initialized settings revision = %d, want 1", storedSettings.Revision)
 	}
 	if effectiveSettings.CPABaseURL != "http://127.0.0.1:8317" {
 		t.Fatalf("effective base URL = %q", effectiveSettings.CPABaseURL)
@@ -186,12 +210,12 @@ func TestInitializeServerSettingsUsesEnvironmentDefaultsWithoutMutatingConfig(t 
 		t.Fatalf("InitializeServerSettings mutated startup config: before=%+v after=%+v", originalConfig, *cfg)
 	}
 
-	storedSettings, err := sqliteStore.GetServerSettings(context.Background())
+	persistedSettings, err := sqliteStore.GetServerSettings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if storedSettings == nil || storedSettings.CPAAPIKey != "environment-key" {
-		t.Fatalf("expected normalized settings to be persisted, got %+v", storedSettings)
+	if persistedSettings == nil || persistedSettings.CPAAPIKey != "environment-key" {
+		t.Fatalf("expected normalized settings to be persisted, got %+v", persistedSettings)
 	}
 
 	rawDatabase, err := sql.Open("sqlite", databasePath)
@@ -245,9 +269,13 @@ func TestInitializeServerSettingsPrefersDatabaseAndSuppliesMissingEnvironmentKey
 		MCPGlobalSearchConcurrency: 16,
 		MCPUserSearchConcurrency:   4,
 	}
-	effectiveSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
+	storedSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+	effectiveSettings := storedSettings.Runtime
+	if storedSettings.Revision != 2 {
+		t.Fatalf("restarted settings revision = %d, want 2", storedSettings.Revision)
 	}
 	if effectiveSettings != databaseSettings {
 		t.Fatalf("effective settings = %+v, want database settings %+v", effectiveSettings, databaseSettings)
@@ -306,10 +334,11 @@ func TestInitializeServerSettingsBackfillsLegacySearchConcurrencySentinels(t *te
 		MCPUserSearchConcurrency:   3,
 		RegistrationMode:           store.RegistrationModeFree,
 	}
-	effectiveSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
+	storedSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	effectiveSettings := storedSettings.Runtime
 	if effectiveSettings.MCPGlobalSearchConcurrency != 9 || effectiveSettings.MCPUserSearchConcurrency != 3 {
 		t.Fatalf("effective search concurrency = %+v", effectiveSettings)
 	}

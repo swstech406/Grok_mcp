@@ -157,6 +157,26 @@ func TestOverviewHealthReturnsUnknownWithoutReliableProbeInputs(t *testing.T) {
 	}
 }
 
+func TestOverviewHealthSkipsProbeWhenPersistedAndLiveSettingsDiffer(t *testing.T) {
+	modelLister := &countingOverviewHealthModelLister{
+		models: []grok.Model{{ID: "grok-4.3"}},
+	}
+	handler := &Handler{
+		Store:           newOverviewHealthTestStore(t),
+		ModelLister:     modelLister,
+		SettingsApplier: &recordingSettingsApplier{liveRevision: 0},
+	}
+
+	status := handler.evaluateOverviewHealth(context.Background())
+
+	if status != OverviewHealthUnknown {
+		t.Fatalf("health status = %q, want %q", status, OverviewHealthUnknown)
+	}
+	if probeCount := modelLister.callCount.Load(); probeCount != 0 {
+		t.Fatalf("upstream probe count = %d, want 0 during settings divergence", probeCount)
+	}
+}
+
 func TestOverviewHealthCachesRecentProbeResult(t *testing.T) {
 	modelLister := &countingOverviewHealthModelLister{
 		models: []grok.Model{{ID: "grok-4.3"}},

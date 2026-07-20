@@ -29,6 +29,7 @@ func scanServerSettings(row interface {
 	var updatedAt string
 	err := row.Scan(
 		&settings.ID,
+		&settings.Revision,
 		&settings.CPABaseURL,
 		&storedAPIKey.ciphertext,
 		&storedAPIKey.nonce,
@@ -69,7 +70,7 @@ func scanServerSettings(row interface {
 	return &settings, storedAPIKey, nil
 }
 
-const serverSettingsColumns = `id, cpa_base_url, cpa_api_key_ciphertext, cpa_api_key_nonce, cpa_api_key_encryption_version, upstream_protocol, model, timeout_seconds, mcp_global_search_concurrency, mcp_user_search_concurrency, proxy_url, proxy_enabled, registration_mode, debug, operations_metrics_enabled, created_at, updated_at`
+const serverSettingsColumns = `id, revision, cpa_base_url, cpa_api_key_ciphertext, cpa_api_key_nonce, cpa_api_key_encryption_version, upstream_protocol, model, timeout_seconds, mcp_global_search_concurrency, mcp_user_search_concurrency, proxy_url, proxy_enabled, registration_mode, debug, operations_metrics_enabled, created_at, updated_at`
 
 func serverSettingsAPIKeyRecordIdentity(settingsID string) string {
 	return "server-settings:" + settingsID + ":cpa-api-key"
@@ -77,6 +78,12 @@ func serverSettingsAPIKeyRecordIdentity(settingsID string) string {
 
 func (s *SQLiteStore) GetServerSettings(ctx context.Context) (*ServerSettings, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+serverSettingsColumns+` FROM server_settings WHERE id = ?`, serverSettingsID)
+	return s.scanAndDecryptServerSettings(row)
+}
+
+func (s *SQLiteStore) scanAndDecryptServerSettings(row interface {
+	Scan(dest ...any) error
+}) (*ServerSettings, error) {
 	settings, storedAPIKey, err := scanServerSettings(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -165,13 +172,14 @@ func (s *SQLiteStore) UpsertServerSettings(ctx context.Context, settings ServerS
 		operationsMetricsEnabled = 1
 	}
 	now := formatTime(time.Now().UTC())
-	_, err = s.db.ExecContext(ctx, `
+	row := s.db.QueryRowContext(ctx, `
 		INSERT INTO server_settings (
-			id, cpa_base_url, cpa_api_key_ciphertext, cpa_api_key_nonce, cpa_api_key_encryption_version,
+			id, revision, cpa_base_url, cpa_api_key_ciphertext, cpa_api_key_nonce, cpa_api_key_encryption_version,
 			upstream_protocol, model, timeout_seconds, mcp_global_search_concurrency, mcp_user_search_concurrency,
 			proxy_url, proxy_enabled, registration_mode, debug, operations_metrics_enabled, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			revision = server_settings.revision + 1,
 			cpa_base_url = excluded.cpa_base_url,
 			cpa_api_key_ciphertext = excluded.cpa_api_key_ciphertext,
 			cpa_api_key_nonce = excluded.cpa_api_key_nonce,
@@ -186,7 +194,8 @@ func (s *SQLiteStore) UpsertServerSettings(ctx context.Context, settings ServerS
 			registration_mode = excluded.registration_mode,
 			debug = excluded.debug,
 			operations_metrics_enabled = excluded.operations_metrics_enabled,
-			updated_at = excluded.updated_at`,
+			updated_at = excluded.updated_at
+		RETURNING `+serverSettingsColumns,
 		serverSettingsID,
 		cpaBaseURL,
 		ciphertext,
@@ -205,8 +214,9 @@ func (s *SQLiteStore) UpsertServerSettings(ctx context.Context, settings ServerS
 		now,
 		now,
 	)
+	storedSettings, err := s.scanAndDecryptServerSettings(row)
 	if err != nil {
 		return nil, fmt.Errorf("upsert server settings: %w", err)
 	}
-	return s.GetServerSettings(ctx)
+	return storedSettings, nil
 }

@@ -9,6 +9,17 @@ export function renderSettingsPage(state) {
   }
 
   const settings = state.data.settings || {};
+  const pendingApplyWarning = state.settingsApplyWarning || null;
+  const settingsNotApplied = Boolean(pendingApplyWarning)
+    || settings.apply_state === "saved_not_applied"
+    || settings.persisted_version !== settings.live_version;
+  const persistedValuesReloaded = !pendingApplyWarning || pendingApplyWarning.persistedValuesReloaded;
+  const persistedVersion = formatSettingsVersion(
+    pendingApplyWarning?.persistedVersion ?? settings.persisted_version
+  );
+  const liveVersion = formatSettingsVersion(
+    pendingApplyWarning?.liveVersion ?? settings.live_version
+  );
   const upstreamProtocol = settings.upstream_protocol || "responses";
   const modelOptions = state.data.models || [];
   const knownModels = new Set(modelOptions.map((model) => model.id));
@@ -18,6 +29,12 @@ export function renderSettingsPage(state) {
 
   return `
     ${renderPageHeading("服务设置", "热更新上游连接、搜索并发、默认模型、代理、注册策略与运维观测。")}
+    ${settingsNotApplied ? `<div class="settings-apply-warning" role="status">
+      <span class="settings-apply-warning-icon">${renderIcon("warning")}</span>
+      <div><strong>设置已保存，尚未应用</strong><p>${persistedValuesReloaded
+        ? `当前表单显示持久化版本 ${escapeHTML(persistedVersion)}，最后完整确认的运行版本为 ${escapeHTML(liveVersion)}。请重试保存并应用，或重启服务以加载持久化设置。`
+        : `保存版本 ${escapeHTML(persistedVersion)} 已确认，但最新持久化值重新读取失败；当前表单可能仍显示提交前内容。最后完整确认的运行版本为 ${escapeHTML(liveVersion)}。`}</p></div>
+    </div>` : ""}
     <div class="settings-layout">
       <form class="data-card" data-form="settings">
         <section class="settings-section">
@@ -71,11 +88,18 @@ export function renderSettingsPage(state) {
       </form>
 
       <aside class="info-card">
-        <div class="info-card-top"><span class="info-card-icon">${renderIcon("shield")}</span><h3>运行时热更新</h3><p>这些设置保存后会立即应用到上游客户端和搜索并发控制，无需重启 grok-search-mcp 服务。</p></div>
+        <div class="info-card-top"><span class="info-card-icon">${renderIcon("shield")}</span><h3>运行时热更新</h3><p>${settingsNotApplied
+          ? (persistedValuesReloaded
+            ? "已保存配置与当前运行配置不一致。表单值来自持久化存储，运行状态以已确认版本为准。"
+            : "设置已保存但尚未应用，且最新持久化值暂时无法重新读取。请勿将当前表单视为已保存值。")
+          : "这些设置保存后会立即应用到上游客户端和搜索并发控制，无需重启 grok-search-mcp 服务。"}</p></div>
         <div class="info-list">
           <div class="info-row"><span>服务版本</span><strong>${escapeHTML(settings.version || "未知")}</strong></div>
+          <div class="info-row"><span>已保存设置版本</span><strong>${escapeHTML(persistedVersion)}</strong></div>
+          <div class="info-row"><span>运行设置版本</span><strong>${escapeHTML(liveVersion)}</strong></div>
+          <div class="info-row"><span>应用状态</span><strong>${settingsNotApplied ? "已保存，尚未应用" : "已保存并应用"}</strong></div>
           <div class="info-row"><span>上游协议</span><strong>${escapeHTML(getUpstreamProtocolLabel(upstreamProtocol))}</strong></div>
-          <div class="info-row"><span>当前模型</span><strong>${escapeHTML(settings.model || "未配置")}</strong></div>
+          <div class="info-row"><span>${settingsNotApplied ? (persistedValuesReloaded ? "已保存模型" : "表单模型（可能过期）") : "当前模型"}</span><strong>${escapeHTML(settings.model || "未配置")}</strong></div>
           <div class="info-row"><span>搜索并发</span><strong>${escapeHTML(`${settings.mcp_global_search_concurrency || 16} / 用户 ${settings.mcp_user_search_concurrency || 4}`)}</strong></div>
           <div class="info-row"><span>API Key</span><strong>${settings.cpa_api_key_set ? "已安全配置" : "未配置"}</strong></div>
           <div class="info-row"><span>代理</span><strong>${settings.proxy_enabled ? "已启用" : "直连"}</strong></div>
@@ -85,6 +109,13 @@ export function renderSettingsPage(state) {
       </aside>
     </div>
   `;
+}
+
+function formatSettingsVersion(versionValue) {
+  const numericVersion = Number(versionValue);
+  return Number.isSafeInteger(numericVersion) && numericVersion > 0
+    ? String(numericVersion)
+    : "未知";
 }
 
 function getRegistrationModeLabel(mode) {

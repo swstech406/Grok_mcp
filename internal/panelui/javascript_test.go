@@ -28,13 +28,21 @@ func TestPanelUIJavaScript(t *testing.T) {
 		t.Fatal("could not locate Panel UI JavaScript test directory")
 	}
 
-	command := exec.Command(
-		nodeExecutable,
-		"js_test/paginated_tiers.test.mjs",
-	)
-	command.Dir = filepath.Dir(currentTestFile)
-	output, err := command.CombinedOutput()
+	testDirectory := filepath.Join(filepath.Dir(currentTestFile), "js_test")
+	testFiles, err := filepath.Glob(filepath.Join(testDirectory, "*.test.mjs"))
 	if err != nil {
-		t.Fatalf("Panel UI JavaScript tests failed: %v\n%s", err, output)
+		t.Fatalf("find Panel UI JavaScript tests: %v", err)
+	}
+	if len(testFiles) == 0 {
+		t.Fatal("no Panel UI JavaScript tests found")
+	}
+
+	for _, testFile := range testFiles {
+		command := exec.Command(nodeExecutable, testFile)
+		command.Dir = filepath.Dir(currentTestFile)
+		output, commandErr := command.CombinedOutput()
+		if commandErr != nil {
+			t.Fatalf("Panel UI JavaScript test %s failed: %v\n%s", filepath.Base(testFile), commandErr, output)
+		}
 	}
 }

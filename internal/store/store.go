@@ -312,6 +312,7 @@ type UsageRecordScope struct {
 type ServerSettings struct {
 	settings.Runtime
 	ID        string
+	Revision  int64
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

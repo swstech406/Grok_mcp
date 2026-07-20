@@ -12,30 +12,54 @@ import (
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
+const settingsSavedNotAppliedCode = "settings_saved_not_applied"
+
+type effectiveServerSettings struct {
+	Runtime   config.ServerSettings
+	Revision  int64
+	UpdatedAt *time.Time
+}
+
+type savedNotAppliedErrorResponse struct {
+	Code             string `json:"code"`
+	Error            string `json:"error"`
+	PersistedVersion int64  `json:"persisted_version"`
+	LiveVersion      int64  `json:"live_version"`
+}
+
 func (h *Handler) adminGetServerSettings(w http.ResponseWriter, r *http.Request) {
-	settings, updatedAt, err := h.loadEffectiveServerSettings(r)
+	effectiveSettings, err := h.loadEffectiveServerSettings(r)
 	if err != nil {
 		log.Printf("admin get server settings failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to load server settings")
 		return
 	}
-	writeJSON(w, http.StatusOK, toServerSettingsResponse(settings, updatedAt))
+	liveVersion := h.currentLiveServerSettingsVersion(effectiveSettings.Revision)
+	writeJSON(w, http.StatusOK, toServerSettingsResponse(
+		effectiveSettings.Runtime,
+		effectiveSettings.UpdatedAt,
+		effectiveSettings.Revision,
+		liveVersion,
+	))
 }
 
 func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Request) {
-	currentSettings, _, err := h.loadEffectiveServerSettings(r)
+	var req UpdateServerSettingsRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	h.settingsUpdateMutex.Lock()
+	defer h.settingsUpdateMutex.Unlock()
+
+	currentSettings, err := h.loadEffectiveServerSettings(r)
 	if err != nil {
 		log.Printf("admin load current server settings failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to load server settings")
 		return
 	}
 
-	var req UpdateServerSettingsRequest
-	if !decodeJSONBody(w, r, &req) {
-		return
-	}
-
-	updatedSettings := mergeServerSettingsRequest(currentSettings, req)
+	updatedSettings := mergeServerSettingsRequest(currentSettings.Runtime, req)
 	normalizedSettings, err := config.NormalizeServerSettings(updatedSettings)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -51,15 +75,29 @@ func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Reque
 	h.invalidateOverviewHealthCache()
 
 	if h.SettingsApplier != nil {
-		if err := h.SettingsApplier.ApplyServerSettings(normalizedSettings); err != nil {
+		if err := h.SettingsApplier.ApplyServerSettings(normalizedSettings, storedSettings.Revision); err != nil {
 			log.Printf("admin apply server settings failed: %v", err)
-			writeError(w, http.StatusInternalServerError, "settings saved but failed to apply")
+			writeJSON(w, http.StatusInternalServerError, savedNotAppliedErrorResponse{
+				Code:             settingsSavedNotAppliedCode,
+				Error:            "settings were saved but are not active",
+				PersistedVersion: storedSettings.Revision,
+				LiveVersion:      h.SettingsApplier.LiveServerSettingsVersion(),
+			})
 			return
 		}
+		// A health request may cache the intentional version mismatch while the
+		// apply call is in progress. Clear that transient result after convergence.
+		h.invalidateOverviewHealthCache()
 	}
 
 	updatedAt := storedSettings.UpdatedAt
-	writeJSON(w, http.StatusOK, toServerSettingsResponse(normalizedSettings, &updatedAt))
+	liveVersion := h.currentLiveServerSettingsVersion(storedSettings.Revision)
+	writeJSON(w, http.StatusOK, toServerSettingsResponse(
+		storedSettings.Runtime,
+		&updatedAt,
+		storedSettings.Revision,
+		liveVersion,
+	))
 }
 
 func (h *Handler) adminListModels(w http.ResponseWriter, r *http.Request) {
@@ -81,27 +119,38 @@ func (h *Handler) adminListModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toModelsResponse(filteredModels))
 }
 
-func (h *Handler) loadEffectiveServerSettings(r *http.Request) (config.ServerSettings, *time.Time, error) {
+func (h *Handler) loadEffectiveServerSettings(r *http.Request) (effectiveServerSettings, error) {
 	return h.loadEffectiveServerSettingsContext(r.Context())
 }
 
-func (h *Handler) loadEffectiveServerSettingsContext(ctx context.Context) (config.ServerSettings, *time.Time, error) {
+func (h *Handler) loadEffectiveServerSettingsContext(ctx context.Context) (effectiveServerSettings, error) {
 	storedSettings, err := h.Store.GetServerSettings(ctx)
 	if err != nil {
-		return config.ServerSettings{}, nil, err
+		return effectiveServerSettings{}, err
 	}
 	if storedSettings != nil {
 		updatedAt := storedSettings.UpdatedAt
-		return storedSettings.Runtime, &updatedAt, nil
+		return effectiveServerSettings{
+			Runtime:   storedSettings.Runtime,
+			Revision:  storedSettings.Revision,
+			UpdatedAt: &updatedAt,
+		}, nil
 	}
 	if h.InitialServerSettings == (config.ServerSettings{}) {
-		return config.ServerSettings{}, nil, nil
+		return effectiveServerSettings{}, nil
 	}
 	settings, err := config.NormalizeServerSettings(h.InitialServerSettings)
 	if err != nil {
-		return config.ServerSettings{}, nil, err
+		return effectiveServerSettings{}, err
 	}
-	return settings, nil, nil
+	return effectiveServerSettings{Runtime: settings}, nil
+}
+
+func (h *Handler) currentLiveServerSettingsVersion(persistedVersion int64) int64 {
+	if h.SettingsApplier == nil {
+		return persistedVersion
+	}
+	return h.SettingsApplier.LiveServerSettingsVersion()
 }
 
 func mergeServerSettingsRequest(currentSettings config.ServerSettings, req UpdateServerSettingsRequest) config.ServerSettings {

@@ -82,6 +82,7 @@ async function initializeApplication() {
     if (state.user?.role === "admin") {
       try {
         state.data.settings = await fetchSettings();
+        state.settingsApplyWarning = null;
       } catch (error) {
         if (error instanceof APIError && error.status === 401) {
           throw error;

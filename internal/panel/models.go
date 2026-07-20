@@ -141,22 +141,32 @@ type UpdateTierRequest struct {
 }
 
 type ServerSettingsResponse struct {
-	Version                    string                  `json:"version"`
-	CPABaseURL                 string                  `json:"cpa_base_url"`
-	CPAAPIKeySet               bool                    `json:"cpa_api_key_set"`
-	CPAAPIKeyPreview           string                  `json:"cpa_api_key_preview,omitempty"`
-	UpstreamProtocol           config.UpstreamProtocol `json:"upstream_protocol"`
-	Model                      string                  `json:"model"`
-	TimeoutSeconds             int                     `json:"timeout_seconds"`
-	MCPGlobalSearchConcurrency int                     `json:"mcp_global_search_concurrency"`
-	MCPUserSearchConcurrency   int                     `json:"mcp_user_search_concurrency"`
-	ProxyURL                   string                  `json:"proxy_url"`
-	ProxyEnabled               bool                    `json:"proxy_enabled"`
-	RegistrationMode           store.RegistrationMode  `json:"registration_mode"`
-	Debug                      bool                    `json:"debug"`
-	OperationsMetricsEnabled   bool                    `json:"operations_metrics_enabled"`
-	UpdatedAt                  *time.Time              `json:"updated_at,omitempty"`
+	Version                    string                   `json:"version"`
+	PersistedVersion           int64                    `json:"persisted_version"`
+	LiveVersion                int64                    `json:"live_version"`
+	ApplyState                 ServerSettingsApplyState `json:"apply_state"`
+	CPABaseURL                 string                   `json:"cpa_base_url"`
+	CPAAPIKeySet               bool                     `json:"cpa_api_key_set"`
+	CPAAPIKeyPreview           string                   `json:"cpa_api_key_preview,omitempty"`
+	UpstreamProtocol           config.UpstreamProtocol  `json:"upstream_protocol"`
+	Model                      string                   `json:"model"`
+	TimeoutSeconds             int                      `json:"timeout_seconds"`
+	MCPGlobalSearchConcurrency int                      `json:"mcp_global_search_concurrency"`
+	MCPUserSearchConcurrency   int                      `json:"mcp_user_search_concurrency"`
+	ProxyURL                   string                   `json:"proxy_url"`
+	ProxyEnabled               bool                     `json:"proxy_enabled"`
+	RegistrationMode           store.RegistrationMode   `json:"registration_mode"`
+	Debug                      bool                     `json:"debug"`
+	OperationsMetricsEnabled   bool                     `json:"operations_metrics_enabled"`
+	UpdatedAt                  *time.Time               `json:"updated_at,omitempty"`
 }
+
+type ServerSettingsApplyState string
+
+const (
+	ServerSettingsApplied         ServerSettingsApplyState = "applied"
+	ServerSettingsSavedNotApplied ServerSettingsApplyState = "saved_not_applied"
+)
 
 type RegistrationSettingsResponse struct {
 	RegistrationMode store.RegistrationMode `json:"registration_mode"`
@@ -325,13 +335,25 @@ func toTierResponse(t *store.Tier, userCount int64) TierResponse {
 	}
 }
 
-func toServerSettingsResponse(settings config.ServerSettings, updatedAt *time.Time) ServerSettingsResponse {
+func toServerSettingsResponse(
+	settings config.ServerSettings,
+	updatedAt *time.Time,
+	persistedVersion int64,
+	liveVersion int64,
+) ServerSettingsResponse {
 	apiKeyPreview := ""
 	if settings.CPAAPIKey != "" {
 		apiKeyPreview = maskSecret(settings.CPAAPIKey)
 	}
+	applyState := ServerSettingsApplied
+	if persistedVersion != liveVersion {
+		applyState = ServerSettingsSavedNotApplied
+	}
 	return ServerSettingsResponse{
 		Version:                    version.Version,
+		PersistedVersion:           persistedVersion,
+		LiveVersion:                liveVersion,
+		ApplyState:                 applyState,
 		CPABaseURL:                 settings.CPABaseURL,
 		CPAAPIKeySet:               settings.CPAAPIKey != "",
 		CPAAPIKeyPreview:           apiKeyPreview,

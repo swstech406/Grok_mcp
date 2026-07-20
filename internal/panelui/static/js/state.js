@@ -27,6 +27,7 @@ export const state = {
   pageLoading: false,
   refreshing: false,
   formBusy: false,
+  settingsApplyWarning: null,
   sidebarOpen: false,
   modal: null,
   filters: {
@@ -58,6 +59,7 @@ export function clearCachedData() {
   for (const dataKey of Object.keys(state.data)) {
     state.data[dataKey] = null;
   }
+  state.settingsApplyWarning = null;
   for (const paginationKey of Object.keys(state.pagination)) {
     resetPagination(paginationKey, { preservePageSize: false });
   }
@@ -177,6 +179,7 @@ export function commitPageData(page, pageResult) {
       state.data.overviewUsage = pageResult.overviewUsage;
       if (pageResult.settings) {
         state.data.settings = pageResult.settings;
+        state.settingsApplyWarning = null;
       }
       break;
     case "keys":
@@ -202,6 +205,7 @@ export function commitPageData(page, pageResult) {
       break;
     case "settings":
       state.data.settings = pageResult.settings;
+      state.settingsApplyWarning = null;
       break;
     case "operationsMetrics":
       state.data.operationsMetrics = pageResult.operationsMetrics;

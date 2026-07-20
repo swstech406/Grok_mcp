@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
@@ -67,14 +68,19 @@ type HTTPDependencies struct {
 	DebugState               *logx.DebugState
 }
 
+type upstreamServerSettingsApplier interface {
+	ApplyServerSettings(config.ServerSettings) error
+}
+
 type runtimeServerSettingsApplier struct {
-	upstreamApplier          panel.ServerSettingsApplier
+	upstreamApplier          upstreamServerSettingsApplier
 	searchConcurrencyLimiter *ratelimit.SearchConcurrencyLimiter
 	sqliteStore              *store.SQLiteStore
 	usageWriter              *store.AsyncUsageWriter
+	liveVersion              atomic.Int64
 }
 
-func (applier *runtimeServerSettingsApplier) ApplyServerSettings(settings config.ServerSettings) error {
+func (applier *runtimeServerSettingsApplier) ApplyServerSettings(settings config.ServerSettings, persistedVersion int64) error {
 	if applier.sqliteStore != nil {
 		applier.sqliteStore.SetMetricsEnabled(settings.OperationsMetricsEnabled)
 	}
@@ -94,7 +100,12 @@ func (applier *runtimeServerSettingsApplier) ApplyServerSettings(settings config
 			return err
 		}
 	}
+	applier.liveVersion.Store(persistedVersion)
 	return nil
+}
+
+func (applier *runtimeServerSettingsApplier) LiveServerSettingsVersion() int64 {
+	return applier.liveVersion.Load()
 }
 
 // Run starts the HTTP server (MCP + panel) and blocks until ctx is cancelled or ListenAndServe fails.
@@ -108,10 +119,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("configure API key encryption: %w", err)
 	}
 
-	serverSettings, err := InitializeServerSettings(ctx, st, cfg)
+	storedServerSettings, err := InitializeServerSettings(ctx, st, cfg)
 	if err != nil {
 		return fmt.Errorf("initialize server settings: %w", err)
 	}
+	serverSettings := storedServerSettings.Runtime
 	st.SetMetricsEnabled(serverSettings.OperationsMetricsEnabled)
 
 	debugState := logx.NewDebugState(serverSettings.Debug)
@@ -162,20 +174,22 @@ func Run(ctx context.Context, cfg *config.Config) error {
 
 	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
 	defer authResolver.Close()
+	settingsApplier := &runtimeServerSettingsApplier{
+		upstreamApplier:          grokClient,
+		searchConcurrencyLimiter: searchConcurrencyLimiter,
+		sqliteStore:              st,
+		usageWriter:              usageWriter,
+	}
+	settingsApplier.liveVersion.Store(storedServerSettings.Revision)
 	panelHandler := &panel.Handler{
 		Store:                 st,
 		JWTSecret:             cfg.JWTSecret,
 		InitialServerSettings: serverSettings,
-		SettingsApplier: &runtimeServerSettingsApplier{
-			upstreamApplier:          grokClient,
-			searchConcurrencyLimiter: searchConcurrencyLimiter,
-			sqliteStore:              st,
-			usageWriter:              usageWriter,
-		},
-		ModelLister:        grokClient,
-		AuthCache:          authResolver,
-		SQLiteMetrics:      st,
-		UsageWriterMetrics: usageWriter,
+		SettingsApplier:       settingsApplier,
+		ModelLister:           grokClient,
+		AuthCache:             authResolver,
+		SQLiteMetrics:         st,
+		UsageWriterMetrics:    usageWriter,
 	}
 	httpHandler := BuildHTTPHandler(HTTPDependencies{
 		Store:                    st,
@@ -260,10 +274,10 @@ func BuildHTTPHandler(dependencies HTTPDependencies) http.Handler {
 
 // InitializeServerSettings loads DB settings (or environment defaults),
 // validates the effective settings, persists them, and returns the sole runtime view.
-func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.Config) (config.ServerSettings, error) {
+func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.Config) (*store.ServerSettings, error) {
 	storedSettings, err := st.GetServerSettings(ctx)
 	if err != nil {
-		return config.ServerSettings{}, fmt.Errorf("load settings: %w", err)
+		return nil, fmt.Errorf("load settings: %w", err)
 	}
 
 	settings := cfg.ServerSettings()
@@ -282,12 +296,13 @@ func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.C
 
 	normalizedSettings, err := config.NormalizeServerSettings(settings)
 	if err != nil {
-		return config.ServerSettings{}, err
+		return nil, err
 	}
-	if _, err := st.UpsertServerSettings(ctx, store.ServerSettings{Runtime: normalizedSettings}); err != nil {
-		return config.ServerSettings{}, fmt.Errorf("persist settings: %w", err)
+	persistedSettings, err := st.UpsertServerSettings(ctx, store.ServerSettings{Runtime: normalizedSettings})
+	if err != nil {
+		return nil, fmt.Errorf("persist settings: %w", err)
 	}
-	return normalizedSettings, nil
+	return persistedSettings, nil
 }
 
 // EnsureBootstrapAdmin creates a default admin when no enabled admin exists.

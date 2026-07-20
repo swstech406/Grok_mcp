@@ -382,6 +382,8 @@ On startup, environment variables provide the initial runtime defaults. If SQLit
 - Process-wide and per-user streaming search concurrency limits
 - Operational metrics collection
 
+Settings updates are persisted before the running process applies them. The panel exposes separate persisted and confirmed-live settings versions. If persistence succeeds but live application fails, the saved values remain durable, the panel shows **saved but not applied** instead of a generic save failure, and the settings form reloads the persisted values. While the versions differ, upstream health is reported as unknown to avoid probing with mixed configuration state. A service restart loads the persisted revision and restores the versions to a synchronized state after startup succeeds.
+
 The listen address, database path, JWT secret, and source-IP RPM remain startup-only settings.
 
 > [!WARNING]

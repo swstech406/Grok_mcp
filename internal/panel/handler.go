@@ -22,6 +22,7 @@ type Handler struct {
 	SQLiteMetrics         SQLiteMetricsProvider      // 可选；管理员运行指标中的 SQLite 快照
 	UsageWriterMetrics    UsageWriterMetricsProvider // 可选；管理员运行指标中的异步队列快照
 	passwordHashGenerator func(password []byte, cost int) ([]byte, error)
+	settingsUpdateMutex   sync.Mutex
 	overviewHealthState   overviewHealthState
 }
 
@@ -38,9 +39,11 @@ type overviewHealthProbe struct {
 	done       chan struct{}
 }
 
-// ServerSettingsApplier 接收热更新后的服务器运行时设置。
+// ServerSettingsApplier applies one persisted settings revision and reports
+// the latest revision whose complete runtime apply operation succeeded.
 type ServerSettingsApplier interface {
-	ApplyServerSettings(config.ServerSettings) error
+	ApplyServerSettings(config.ServerSettings, int64) error
+	LiveServerSettingsVersion() int64
 }
 
 // ModelLister fetches the currently available upstream Grok models.

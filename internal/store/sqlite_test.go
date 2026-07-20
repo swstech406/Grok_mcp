@@ -537,8 +537,22 @@ func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if storedSettings.Revision != 1 {
+		t.Fatalf("initial settings revision = %d, want 1", storedSettings.Revision)
+	}
 	if storedSettings.CPAAPIKey != cpaAPIKey {
 		t.Fatalf("returned CPA API key = %q, want original value", storedSettings.CPAAPIKey)
+	}
+	serverSettings.Model = "grok-4.4"
+	updatedSettings, err := sqliteStore.UpsertServerSettings(ctx, serverSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedSettings.Revision != 2 {
+		t.Fatalf("updated settings revision = %d, want 2", updatedSettings.Revision)
+	}
+	if updatedSettings.Model != "grok-4.4" {
+		t.Fatalf("updated settings model = %q, want grok-4.4", updatedSettings.Model)
 	}
 
 	var ciphertext string
@@ -572,6 +586,12 @@ func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T)
 	if reopenedSettings == nil || reopenedSettings.CPAAPIKey != cpaAPIKey {
 		t.Fatalf("reopened settings = %+v, want decrypted CPA API key", reopenedSettings)
 	}
+	if reopenedSettings.Revision != 2 {
+		t.Fatalf("reopened settings revision = %d, want 2", reopenedSettings.Revision)
+	}
+	if reopenedSettings.Model != "grok-4.4" {
+		t.Fatalf("reopened settings model = %q, want grok-4.4", reopenedSettings.Model)
+	}
 	if reopenedSettings.MCPGlobalSearchConcurrency != 12 || reopenedSettings.MCPUserSearchConcurrency != 3 {
 		t.Fatalf("reopened search concurrency settings = %+v", reopenedSettings)
 	}
@@ -581,6 +601,80 @@ func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T)
 	}
 	if revealedAPIKey != rawAPIKey {
 		t.Fatal("generalized encryption configuration broke existing API key ciphertext")
+	}
+}
+
+func TestServerSettingsRevisionMigrationBackfillsExistingRow(t *testing.T) {
+	const encryptionSecret = "test-server-settings-migration-secret-at-least-32-bytes"
+	databasePath := filepath.Join(t.TempDir(), "settings-before-revision.db")
+	ctx := context.Background()
+
+	currentStore, err := OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := currentStore.ConfigureAPIKeyEncryption(encryptionSecret); err != nil {
+		t.Fatal(err)
+	}
+	originalSettings := ServerSettings{Runtime: settings.Runtime{
+		CPABaseURL:                 "http://127.0.0.1:8317",
+		CPAAPIKey:                  "migration-api-key",
+		UpstreamProtocol:           "responses",
+		Model:                      "grok-4.3",
+		TimeoutSeconds:             30,
+		MCPGlobalSearchConcurrency: 12,
+		MCPUserSearchConcurrency:   3,
+		RegistrationMode:           RegistrationModeFree,
+	}}
+	if _, err := currentStore.UpsertServerSettings(ctx, originalSettings); err != nil {
+		t.Fatal(err)
+	}
+	if err := currentStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rawDatabase, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rawDatabase.Exec(`ALTER TABLE server_settings DROP COLUMN revision`); err != nil {
+		_ = rawDatabase.Close()
+		t.Fatalf("create pre-revision settings fixture: %v", err)
+	}
+	if _, err := rawDatabase.Exec(`DELETE FROM schema_migrations WHERE version = '008_server_settings_revision'`); err != nil {
+		_ = rawDatabase.Close()
+		t.Fatal(err)
+	}
+	if err := rawDatabase.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migratedStore, err := OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migratedStore.Close()
+	if err := migratedStore.ConfigureAPIKeyEncryption(encryptionSecret); err != nil {
+		t.Fatal(err)
+	}
+	migratedSettings, err := migratedStore.GetServerSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migratedSettings.Revision != 1 {
+		t.Fatalf("migrated settings revision = %d, want 1", migratedSettings.Revision)
+	}
+	if migratedSettings.CPAAPIKey != originalSettings.CPAAPIKey || migratedSettings.Model != originalSettings.Model {
+		t.Fatalf("migrated settings did not preserve values: %+v", migratedSettings)
+	}
+
+	migratedSettings.Model = "grok-4.4"
+	updatedSettings, err := migratedStore.UpsertServerSettings(ctx, *migratedSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedSettings.Revision != 2 || updatedSettings.Model != "grok-4.4" {
+		t.Fatalf("updated migrated settings = %+v", updatedSettings)
 	}
 }
 

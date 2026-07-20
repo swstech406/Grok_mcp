@@ -88,11 +88,14 @@ func (handler *Handler) evaluateOverviewHealth(probeContext context.Context) Ove
 		return OverviewHealthUnknown
 	}
 
-	serverSettings, _, err := handler.loadEffectiveServerSettingsContext(probeContext)
+	effectiveSettings, err := handler.loadEffectiveServerSettingsContext(probeContext)
 	if err != nil {
 		return OverviewHealthUnknown
 	}
-	serverSettings, err = config.NormalizeServerSettings(serverSettings)
+	if effectiveSettings.Revision != handler.currentLiveServerSettingsVersion(effectiveSettings.Revision) {
+		return OverviewHealthUnknown
+	}
+	serverSettings, err := config.NormalizeServerSettings(effectiveSettings.Runtime)
 	if err != nil {
 		return OverviewHealthUnknown
 	}

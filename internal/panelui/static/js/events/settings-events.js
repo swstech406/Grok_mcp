@@ -1,17 +1,27 @@
-import { fetchModels, updateSettings } from "../api.js";
+import { fetchModels, fetchSettings, updateSettings } from "../api.js";
 import { renderIcon } from "../components/icons.js";
 import { showToast } from "../components/toast.js";
 import { renderSafeHTML } from "../safe-html.js";
+import {
+  applySettingsResponseToState,
+  markSettingsSavedNotApplied,
+  reloadSavedNotAppliedSettings,
+  savedNotAppliedCondition
+} from "../settings-apply-state.js";
 import { createFormDataObject } from "../utils.js";
 import { getErrorMessage } from "./event-helpers.js";
 
 export function createSettingsEvents({
   state,
   renderApplication,
-  handleSessionError
+  handleSessionError,
+  fetchSettingsRequest = fetchSettings,
+  updateSettingsRequest = updateSettings,
+  readFormData = createFormDataObject,
+  notify = showToast
 }) {
   async function submitSettings(formElement) {
-    const formData = createFormDataObject(formElement);
+    const formData = readFormData(formElement);
     const globalSearchConcurrency = Number(formData.mcp_global_search_concurrency);
     const userSearchConcurrency = Number(formData.mcp_user_search_concurrency);
     if (userSearchConcurrency > globalSearchConcurrency) {
@@ -43,20 +53,40 @@ export function createSettingsEvents({
     state.formBusy = true;
     renderApplication();
     try {
-      state.data.settings = await updateSettings(settingsPayload);
-      state.registrationMode = state.data.settings.registration_mode || state.registrationMode;
-      if (!state.data.settings.operations_metrics_enabled) {
-        state.data.operationsMetrics = null;
-      }
+      const updatedSettings = await updateSettingsRequest(settingsPayload);
+      applySettingsResponseToState(state, updatedSettings);
       state.formBusy = false;
       renderApplication();
-      showToast("设置已应用", "上游客户端和搜索并发控制已使用新的运行时配置。", "success");
+      notify("设置已应用", "上游客户端和搜索并发控制已使用新的运行时配置。", "success");
     } catch (error) {
       state.formBusy = false;
-      if (!handleSessionError(error)) {
-        renderApplication();
-        showToast("保存失败", getErrorMessage(error), "error");
+      if (handleSessionError(error)) {
+        return;
       }
+      if (error?.code === savedNotAppliedCondition) {
+        markSettingsSavedNotApplied(state, error?.details);
+        try {
+          const notification = await reloadSavedNotAppliedSettings({
+            state,
+            fetchSettingsRequest,
+            errorDetails: error?.details
+          });
+          renderApplication();
+          notify(notification.title, notification.message, "error");
+        } catch (reloadError) {
+          if (!handleSessionError(reloadError)) {
+            renderApplication();
+            notify(
+              "设置已保存，尚未应用",
+              `设置已经持久化，但无法重新读取最新值：${getErrorMessage(reloadError)}`,
+              "error"
+            );
+          }
+        }
+        return;
+      }
+      renderApplication();
+      notify("保存失败", getErrorMessage(error), "error");
     }
   }
 
