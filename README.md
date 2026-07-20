@@ -492,14 +492,14 @@ docker compose up -d --build
 To run the published release image without rebuilding local source:
 
 ```bash
-docker pull maplemaplecat/grok-search-mcp:v0.2.1
+docker pull maplemaplecat/grok-search-mcp:v0.2.2
 docker run -d \
   --name grok-search-mcp \
   --restart unless-stopped \
   --env-file .env \
   -p 8080:8080 \
   -v grok-search-mcp-data:/app/data \
-  maplemaplecat/grok-search-mcp:v0.2.1
+  maplemaplecat/grok-search-mcp:v0.2.2
 ```
 
 If CPA runs directly on the Docker host, use:

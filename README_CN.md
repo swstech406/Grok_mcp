@@ -478,14 +478,14 @@ docker compose up -d --build
 直接运行已发布镜像、避免重新构建本地源码：
 
 ```bash
-docker pull maplemaplecat/grok-search-mcp:v0.2.1
+docker pull maplemaplecat/grok-search-mcp:v0.2.2
 docker run -d \
   --name grok-search-mcp \
   --restart unless-stopped \
   --env-file .env \
   -p 8080:8080 \
   -v grok-search-mcp-data:/app/data \
-  maplemaplecat/grok-search-mcp:v0.2.1
+  maplemaplecat/grok-search-mcp:v0.2.2
 ```
 
 如果 CPA 直接运行在 Docker 宿主机上，请设置：
