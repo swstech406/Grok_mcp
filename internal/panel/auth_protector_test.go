@@ -4,12 +4,22 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/ratelimit"
 )
 
-func TestAuthProtectorBypassesHeaderlessRequests(t *testing.T) {
+func trustedPanelClientIPResolver() *ratelimit.ClientIPResolver {
+	return ratelimit.NewClientIPResolverWithConfig(ratelimit.ClientIPResolverConfig{
+		Mode:                 ratelimit.ClientIPModeTrustedProxy,
+		TrustedProxyPrefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")},
+	})
+}
+
+func TestAuthProtectorDirectModeLimitsHeaderlessRequestsAndIgnoresHeaders(t *testing.T) {
 	authProtector := NewAuthProtector(AuthProtectorConfig{
 		RegisterIPRequestsPerMinute: 1,
 		RegisterIPBurst:             1,
@@ -24,20 +34,26 @@ func TestAuthProtectorBypassesHeaderlessRequests(t *testing.T) {
 	for requestIndex := 0; requestIndex < 2; requestIndex++ {
 		request := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/register", nil)
 		request.RemoteAddr = "198.51.100.10:8443"
+		request.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", requestIndex+1))
 		responseRecorder := httptest.NewRecorder()
 		protectedHandler.ServeHTTP(responseRecorder, request)
-		if responseRecorder.Code != http.StatusOK {
-			t.Fatalf("headerless request %d status = %d, want %d", requestIndex+1, responseRecorder.Code, http.StatusOK)
+		expectedStatus := http.StatusOK
+		if requestIndex == 1 {
+			expectedStatus = http.StatusTooManyRequests
+		}
+		if responseRecorder.Code != expectedStatus {
+			t.Fatalf("direct request %d status = %d, want %d", requestIndex+1, responseRecorder.Code, expectedStatus)
 		}
 	}
 
-	if allowedRequestCount != 2 {
-		t.Fatalf("allowed request count = %d, want %d", allowedRequestCount, 2)
+	if allowedRequestCount != 1 {
+		t.Fatalf("allowed request count = %d, want %d", allowedRequestCount, 1)
 	}
 }
 
 func TestAuthProtectorRejectsInvalidForwardedClientIPHeaders(t *testing.T) {
 	authProtector := NewAuthProtector(AuthProtectorConfig{
+		ClientIPResolver:            trustedPanelClientIPResolver(),
 		RegisterIPRequestsPerMinute: 1,
 		RegisterIPBurst:             1,
 	})
@@ -65,7 +81,7 @@ func TestAuthProtectorRejectsInvalidForwardedClientIPHeaders(t *testing.T) {
 }
 
 func TestAuthProtectorRejectsConflictingForwardedClientIPHeaders(t *testing.T) {
-	authProtector := NewAuthProtector(AuthProtectorConfig{})
+	authProtector := NewAuthProtector(AuthProtectorConfig{ClientIPResolver: trustedPanelClientIPResolver()})
 	protectedHandler := authProtector.RateLimitAuthEndpoint(authEndpointLogin, http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
 		responseWriter.WriteHeader(http.StatusOK)
 	}))
@@ -114,7 +130,9 @@ func TestAuthProtectorUsesFixedDefaultsAndClampsDirectCapacities(t *testing.T) {
 }
 
 func TestHandlerAuthProtectorSeparatesForwardedClientBuckets(t *testing.T) {
-	handler := &Handler{}
+	handler := &Handler{AuthProtector: NewAuthProtector(AuthProtectorConfig{
+		ClientIPResolver: trustedPanelClientIPResolver(),
+	})}
 	authProtector := handler.authProtector()
 
 	allowedRequestCount := 0
@@ -125,7 +143,7 @@ func TestHandlerAuthProtectorSeparatesForwardedClientBuckets(t *testing.T) {
 
 	performRequest := func(forwardedClientIP string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/register", nil)
-		request.RemoteAddr = "203.0.113.10:8443"
+		request.RemoteAddr = "192.0.2.10:8443"
 		request.Header.Set("X-Forwarded-For", forwardedClientIP)
 		responseRecorder := httptest.NewRecorder()
 		protectedHandler.ServeHTTP(responseRecorder, request)
@@ -153,18 +171,19 @@ func TestHandlerAuthProtectorSeparatesForwardedClientBuckets(t *testing.T) {
 	}
 }
 
-func TestAuthProtectorSeparatesLoginLockoutsByForwardedClientIP(t *testing.T) {
+func TestAuthProtectorBoundsDistributedUsernameGuessingAcrossClientIPs(t *testing.T) {
 	authProtector := NewAuthProtector(AuthProtectorConfig{
+		ClientIPResolver:      trustedPanelClientIPResolver(),
 		LoginFailureThreshold: 1,
 		LoginBaseLockout:      time.Minute,
 		LoginMaxLockout:       time.Minute,
 	})
 
 	clientARequest := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/login", nil)
-	clientARequest.RemoteAddr = "203.0.113.10:8443"
+	clientARequest.RemoteAddr = "192.0.2.10:8443"
 	clientARequest.Header.Set("X-Forwarded-For", "198.51.100.10")
 	clientBRequest := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/login", nil)
-	clientBRequest.RemoteAddr = "203.0.113.10:8443"
+	clientBRequest.RemoteAddr = "192.0.2.10:8443"
 	clientBRequest.Header.Set("X-Forwarded-For", "198.51.100.11")
 
 	clientAIP := authProtector.clientIP(clientARequest)
@@ -183,10 +202,119 @@ func TestAuthProtectorSeparatesLoginLockoutsByForwardedClientIP(t *testing.T) {
 		t.Fatalf("client A should be locked after reaching the failure threshold")
 	}
 	clientBAttempt, _ := authProtector.beginLoginAttempt("alice", clientBIP)
-	if clientBAttempt == nil {
-		t.Fatalf("client B must not inherit client A's login lockout")
+	if clientBAttempt != nil {
+		clientBAttempt.abandon()
+		t.Fatalf("source rotation must not bypass Alice's username-only lockout")
 	}
-	clientBAttempt.abandon()
+	differentUsernameAttempt, _ := authProtector.beginLoginAttempt("bob", clientBIP)
+	if differentUsernameAttempt == nil {
+		t.Fatal("a different username should retain an independent failure budget")
+	}
+	differentUsernameAttempt.abandon()
+}
+
+func TestAuthProtectorUsernameFailureRegistryUsesBoundedFallback(t *testing.T) {
+	authProtector := NewAuthProtector(AuthProtectorConfig{
+		LoginFailureThreshold:          1,
+		LoginBaseLockout:               time.Minute,
+		LoginMaxLockout:                time.Minute,
+		UsernameFailureMaximumEntries:  1,
+		UsernameFailureFallbackBuckets: 1,
+	})
+
+	dedicatedAttempt, _ := authProtector.beginLoginAttempt("dedicated-user", "198.51.100.1")
+	if dedicatedAttempt == nil {
+		t.Fatal("dedicated username failure identity was rejected")
+	}
+	dedicatedAttempt.recordFailure()
+
+	firstFallbackAttempt, _ := authProtector.beginLoginAttempt("fallback-user-one", "198.51.100.2")
+	if firstFallbackAttempt == nil {
+		t.Fatal("first overflow username should be admitted by the fallback budget")
+	}
+	firstFallbackAttempt.recordFailure()
+	secondFallbackAttempt, _ := authProtector.beginLoginAttempt("fallback-user-two", "198.51.100.3")
+	if secondFallbackAttempt != nil {
+		secondFallbackAttempt.abandon()
+		t.Fatal("shared fallback budget should reject after its lockout threshold")
+	}
+
+	metrics := authProtector.Metrics().UsernameFailures
+	if metrics.CurrentEntries != 1 || metrics.MaximumEntries != 1 || metrics.FallbackBucketCount != 1 {
+		t.Fatalf("username registry metrics = %+v", metrics)
+	}
+	if metrics.FallbackAttempts != 2 || metrics.FallbackRejections != 1 {
+		t.Fatalf("username fallback metrics = %+v", metrics)
+	}
+}
+
+func TestAuthProtectorUsernameInFlightAttemptsEnforceDistributedThreshold(t *testing.T) {
+	authProtector := NewAuthProtector(AuthProtectorConfig{LoginFailureThreshold: 2})
+	firstAttempt, _ := authProtector.beginLoginAttempt("alice", "198.51.100.10")
+	secondAttempt, _ := authProtector.beginLoginAttempt("alice", "198.51.100.11")
+	if firstAttempt == nil || secondAttempt == nil {
+		t.Fatal("the first two in-flight attempts should be admitted at threshold two")
+	}
+	thirdAttempt, _ := authProtector.beginLoginAttempt("alice", "198.51.100.12")
+	if thirdAttempt != nil {
+		thirdAttempt.abandon()
+		t.Fatal("third source-rotated attempt exceeded the username in-flight threshold")
+	}
+	firstAttempt.abandon()
+	secondAttempt.abandon()
+	if metrics := authProtector.Metrics(); metrics.LoginFailures.CurrentEntries != 0 || metrics.UsernameFailures.CurrentEntries != 0 {
+		t.Fatalf("abandoned attempt registries were not released: %+v", metrics)
+	}
+}
+
+func TestAuthProtectorSuccessfulLoginClearsSourceAndUsernameFailureState(t *testing.T) {
+	authProtector := NewAuthProtector(AuthProtectorConfig{LoginFailureThreshold: 3})
+	failedAttempt, _ := authProtector.beginLoginAttempt("Alice", "198.51.100.15")
+	if failedAttempt == nil {
+		t.Fatal("failed login attempt was not admitted")
+	}
+	failedAttempt.recordFailure()
+	successfulAttempt, _ := authProtector.beginLoginAttempt(" alice ", "198.51.100.15")
+	if successfulAttempt == nil {
+		t.Fatal("successful retry was not admitted")
+	}
+	successfulAttempt.recordSuccess()
+
+	metrics := authProtector.Metrics()
+	if metrics.LoginFailures.CurrentEntries != 0 || metrics.UsernameFailures.CurrentEntries != 0 {
+		t.Fatalf("successful login did not clear both failure identities: %+v", metrics)
+	}
+}
+
+func TestAuthProtectorReclaimsExpiredUsernameFailureAtCapacity(t *testing.T) {
+	currentTime := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	authProtector := NewAuthProtector(AuthProtectorConfig{
+		LoginFailureThreshold:          1,
+		LoginFailureWindow:             time.Minute,
+		LoginBaseLockout:               time.Minute,
+		LoginMaxLockout:                time.Minute,
+		UsernameFailureMaximumEntries:  1,
+		UsernameFailureFallbackBuckets: 1,
+	})
+	authProtector.now = func() time.Time { return currentTime }
+	authProtector.lastCleanup = currentTime
+
+	firstAttempt, _ := authProtector.beginLoginAttempt("expired-user", "198.51.100.20")
+	if firstAttempt == nil {
+		t.Fatal("first username attempt was rejected")
+	}
+	firstAttempt.recordFailure()
+	currentTime = currentTime.Add(2 * time.Minute)
+
+	secondAttempt, _ := authProtector.beginLoginAttempt("replacement-user", "198.51.100.21")
+	if secondAttempt == nil {
+		t.Fatal("expired username state was not reclaimed at capacity")
+	}
+	secondAttempt.abandon()
+	metrics := authProtector.Metrics().UsernameFailures
+	if metrics.FallbackAttempts != 0 || metrics.ExpiredEntriesRemoved != 1 {
+		t.Fatalf("username expiry metrics = %+v", metrics)
+	}
 }
 
 func TestAuthProtectorBoundsEndpointEntriesAndPreservesLiveBuckets(t *testing.T) {

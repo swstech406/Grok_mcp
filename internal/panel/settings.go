@@ -30,7 +30,7 @@ type savedNotAppliedErrorResponse struct {
 func (h *Handler) adminGetServerSettings(w http.ResponseWriter, r *http.Request) {
 	effectiveSettings, err := h.loadEffectiveServerSettings(r)
 	if err != nil {
-		log.Printf("admin get server settings failed: %v", err)
+		log.Printf("admin get server settings failed error_type=%T", err)
 		writeError(w, http.StatusInternalServerError, "failed to load server settings")
 		return
 	}
@@ -54,7 +54,7 @@ func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Reque
 
 	currentSettings, err := h.loadEffectiveServerSettings(r)
 	if err != nil {
-		log.Printf("admin load current server settings failed: %v", err)
+		log.Printf("admin load current server settings failed error_type=%T", err)
 		writeError(w, http.StatusInternalServerError, "failed to load server settings")
 		return
 	}
@@ -68,7 +68,7 @@ func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Reque
 
 	storedSettings, err := h.Store.UpsertServerSettings(r.Context(), store.ServerSettings{Runtime: normalizedSettings})
 	if err != nil {
-		log.Printf("admin persist server settings failed: %v", err)
+		log.Printf("admin persist server settings failed error_type=%T", err)
 		writeError(w, http.StatusInternalServerError, "failed to save server settings")
 		return
 	}
@@ -76,7 +76,7 @@ func (h *Handler) adminUpdateServerSettings(w http.ResponseWriter, r *http.Reque
 
 	if h.SettingsApplier != nil {
 		if err := h.SettingsApplier.ApplyServerSettings(normalizedSettings, storedSettings.Revision); err != nil {
-			log.Printf("admin apply server settings failed: %v", err)
+			log.Printf("admin apply server settings failed error_type=%T", err)
 			writeJSON(w, http.StatusInternalServerError, savedNotAppliedErrorResponse{
 				Code:             settingsSavedNotAppliedCode,
 				Error:            "settings were saved but are not active",
@@ -108,7 +108,7 @@ func (h *Handler) adminListModels(w http.ResponseWriter, r *http.Request) {
 
 	models, err := h.ModelLister.ListModels(r.Context())
 	if err != nil {
-		log.Printf("admin list models failed: %v", err)
+		log.Printf("admin list models failed error_type=%T", err)
 		writeError(w, http.StatusBadGateway, "failed to list upstream models")
 		return
 	}

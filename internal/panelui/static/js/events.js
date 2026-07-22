@@ -1,4 +1,5 @@
 import { state } from "./state.js";
+import { createAccountEvents } from "./events/account-events.js";
 import { createAuthEvents } from "./events/auth-events.js";
 import { createConfirmationModalEvents } from "./events/confirmation-modal.js";
 import { createDebugJSONModalEvents } from "./events/debug-json-modal.js";
@@ -42,6 +43,11 @@ export function createApplicationEvents({
     renderApplication,
     loadCurrentPage,
     abortCurrentPageLoad
+  });
+  const accountEvents = createAccountEvents({
+    state,
+    renderApplication,
+    handleSessionError
   });
   const keyEvents = createKeyEvents({
     state,
@@ -180,6 +186,8 @@ export function createApplicationEvents({
   const formSubmitHandlers = {
     login: authEvents.submitLogin,
     register: authEvents.submitRegistration,
+    "change-password": accountEvents.submitPasswordChange,
+    "revoke-sessions": accountEvents.submitSessionRevocation,
     "create-key": keyEvents.submitCreate,
     "edit-key": keyEvents.submitEdit,
     "edit-user": userEvents.submitEdit,

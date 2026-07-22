@@ -5,11 +5,11 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
-	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/ratelimit"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -31,7 +31,7 @@ func (handler *Handler) loadUserTierForResponse(ctx context.Context, user *store
 			log.Printf("user %s tier_id %q not found; limits unavailable", user.ID, tierID)
 			return nil
 		}
-		log.Printf("user %s load tier %q failed: %v; limits unavailable", user.ID, tierID, err)
+		log.Printf("user %s load tier %q failed error_type=%T; limits unavailable", user.ID, tierID, err)
 		return nil
 	}
 	if tier == nil {
@@ -63,7 +63,7 @@ func (handler *Handler) login(writer http.ResponseWriter, request *http.Request)
 	authProtector := handler.authProtector()
 	clientIP, shouldApplyIPProtection, clientIPError := authProtector.clientIPForProtection(request)
 	if clientIPError != nil {
-		writeError(writer, http.StatusBadRequest, ratelimit.ErrInvalidForwardedClientIPHeaders.Error())
+		writeClientIPResolutionError(writer, clientIPError)
 		return
 	}
 	var loginAttempt *loginAttempt
@@ -84,7 +84,17 @@ func (handler *Handler) login(writer http.ResponseWriter, request *http.Request)
 	if err == nil && user != nil {
 		hashToCheck = []byte(user.PasswordHash)
 	}
-	compareErr := bcrypt.CompareHashAndPassword(hashToCheck, []byte(loginRequest.Password))
+	passwordWorkRelease := authProtector.tryAcquirePasswordWork()
+	if passwordWorkRelease == nil {
+		writeRetryAfter(writer, time.Second)
+		writeError(writer, http.StatusServiceUnavailable, "authentication temporarily unavailable")
+		return
+	}
+	var compareErr error
+	func() {
+		defer passwordWorkRelease()
+		compareErr = handler.comparePasswordHash(request.Context(), hashToCheck, []byte(loginRequest.Password))
+	}()
 	if err != nil || user == nil || compareErr != nil {
 		loginAttempt.recordFailure()
 		writeError(writer, http.StatusUnauthorized, "invalid credentials")
@@ -106,6 +116,13 @@ func (handler *Handler) login(writer http.ResponseWriter, request *http.Request)
 	})
 }
 
+func (handler *Handler) comparePasswordHash(requestContext context.Context, hashedPassword, password []byte) error {
+	if handler.passwordHashComparator != nil {
+		return handler.passwordHashComparator(requestContext, hashedPassword, password)
+	}
+	return bcrypt.CompareHashAndPassword(hashedPassword, password)
+}
+
 func (handler *Handler) me(writer http.ResponseWriter, request *http.Request) {
 	user, ok := auth.UserFromContext(request.Context())
 	if !ok {
@@ -114,9 +131,135 @@ func (handler *Handler) me(writer http.ResponseWriter, request *http.Request) {
 	}
 	freshUser, err := handler.Store.GetUserByID(request.Context(), user.ID)
 	if err != nil {
-		log.Printf("get user %s failed: %v", user.ID, err)
+		log.Printf("get user %s failed error_type=%T", user.ID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to load user")
 		return
 	}
 	writeJSON(writer, http.StatusOK, toUserResponseWithTier(freshUser, handler.loadUserTierForResponse(request.Context(), freshUser)))
+}
+
+func (handler *Handler) changePassword(writer http.ResponseWriter, request *http.Request) {
+	authenticatedUser, ok := auth.UserFromContext(request.Context())
+	if !ok {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var changeRequest ChangePasswordRequest
+	if !decodeJSONBody(writer, request, &changeRequest) {
+		return
+	}
+	if err := validatePanelPassword(changeRequest.CurrentPassword); err != nil {
+		writeError(writer, http.StatusBadRequest, "current_password must be 8-72 bytes")
+		return
+	}
+	if err := validatePanelPassword(changeRequest.NewPassword); err != nil {
+		writeError(writer, http.StatusBadRequest, "new_password must be 8-72 bytes")
+		return
+	}
+
+	currentUser, err := handler.Store.GetUserByID(request.Context(), authenticatedUser.ID)
+	if err != nil {
+		log.Printf("load user %s for password change failed error_type=%T", authenticatedUser.ID, err)
+		writeError(writer, http.StatusInternalServerError, "failed to change password")
+		return
+	}
+	passwordWorkRelease := handler.authProtector().tryAcquirePasswordWork()
+	if passwordWorkRelease == nil {
+		writeRetryAfter(writer, time.Second)
+		writeError(writer, http.StatusServiceUnavailable, "authentication temporarily unavailable")
+		return
+	}
+	var replacementPasswordHash []byte
+	var compareErr error
+	func() {
+		defer passwordWorkRelease()
+		compareErr = handler.comparePasswordHash(
+			request.Context(),
+			[]byte(currentUser.PasswordHash),
+			[]byte(changeRequest.CurrentPassword),
+		)
+		if compareErr == nil {
+			replacementPasswordHash, err = handler.generatePasswordHash(changeRequest.NewPassword)
+		}
+	}()
+	if compareErr != nil {
+		writeError(writer, http.StatusBadRequest, "current password is incorrect")
+		return
+	}
+	if err != nil {
+		log.Printf("generate replacement password hash for user %s failed error_type=%T", currentUser.ID, err)
+		writeError(writer, http.StatusInternalServerError, "failed to change password")
+		return
+	}
+
+	replacementHash := string(replacementPasswordHash)
+	updatedUser, err := handler.Store.UpdateUser(request.Context(), currentUser.ID, store.UserUpdates{
+		PasswordHash: &replacementHash,
+	})
+	if err != nil {
+		log.Printf("update password for user %s failed error_type=%T", currentUser.ID, err)
+		writeError(writer, http.StatusInternalServerError, "failed to change password")
+		return
+	}
+	handler.removeBootstrapCredentialAfterPasswordChange(updatedUser)
+	handler.writeReplacementSession(writer, request, updatedUser)
+}
+
+func (handler *Handler) revokeSessions(writer http.ResponseWriter, request *http.Request) {
+	authenticatedUser, ok := auth.UserFromContext(request.Context())
+	if !ok {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	revokeTokens := true
+	updatedUser, err := handler.Store.UpdateUser(request.Context(), authenticatedUser.ID, store.UserUpdates{
+		RevokeTokens: &revokeTokens,
+	})
+	if err != nil {
+		log.Printf("revoke sessions for user %s failed error_type=%T", authenticatedUser.ID, err)
+		writeError(writer, http.StatusInternalServerError, "failed to revoke sessions")
+		return
+	}
+	handler.writeReplacementSession(writer, request, updatedUser)
+}
+
+func (handler *Handler) writeReplacementSession(
+	writer http.ResponseWriter,
+	request *http.Request,
+	updatedUser *store.User,
+) {
+	token, expiresAt, err := auth.IssuePanelToken(handler.JWTSecret, updatedUser, 0)
+	if err != nil {
+		log.Printf("issue replacement token for user %s failed error_type=%T", updatedUser.ID, err)
+		writeError(writer, http.StatusInternalServerError, "token issue failed")
+		return
+	}
+	writeJSON(writer, http.StatusOK, SessionReplacementResponse{
+		Token:     token,
+		ExpiresAt: expiresAt,
+		User: toUserResponseWithTier(
+			updatedUser,
+			handler.loadUserTierForResponse(request.Context(), updatedUser),
+		),
+	})
+}
+
+func (handler *Handler) removeBootstrapCredentialAfterPasswordChange(updatedUser *store.User) {
+	if updatedUser == nil || handler.BootstrapCredentialCleaner == nil {
+		return
+	}
+	bootstrapUsername := strings.TrimSpace(handler.BootstrapAdminUsername)
+	if bootstrapUsername == "" {
+		bootstrapUsername = "admin"
+	}
+	if !strings.EqualFold(updatedUser.Username, bootstrapUsername) {
+		return
+	}
+	if err := handler.BootstrapCredentialCleaner(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf(
+			"remove bootstrap credential file %s after password change failed error_type=%T",
+			handler.BootstrapCredentialsPath,
+			err,
+		)
+	}
 }

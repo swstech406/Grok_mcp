@@ -3,12 +3,14 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/ratelimit"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/settings"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
@@ -26,7 +28,8 @@ const (
 	defaultUsageHourlyRetention     = 90 * 24 * time.Hour
 	defaultUsageDailyRetention      = 730 * 24 * time.Hour
 	defaultUsageMaintenanceInterval = time.Hour
-	// defaultMCPIPRPM 在请求携带反向代理客户端 IP Header 时，于 API key 鉴权前限制 /mcp 请求。
+	// defaultMCPIPRPM limits /mcp by the startup-selected client identity
+	// before API-key authentication.
 	defaultMCPIPRPM                     = 300
 	defaultMCPIPMaxEntriesPerShard      = 2048
 	defaultMCPIPFallbackBucketsPerShard = 16
@@ -34,6 +37,17 @@ const (
 	maximumMCPIPFallbackBucketsPerShard = 1024
 	defaultMCPGlobalSearchConcurrency   = 16
 	defaultMCPUserSearchConcurrency     = 4
+	defaultAuthPasswordMaxConcurrent    = 4
+	maximumAuthPasswordMaxConcurrent    = 64
+	defaultAuthKeyMissMaxConcurrent     = 32
+	maximumAuthKeyMissMaxConcurrent     = 1024
+	defaultMaxAPIKeysPerUser            = 20
+	maximumMaxAPIKeysPerUser            = 1000
+	defaultUserRPMMaximumEntries        = 16384
+	defaultUserRPMFallbackBuckets       = 64
+	maximumUserRPMMaximumEntries        = 65536
+	maximumUserRPMFallbackBuckets       = 1024
+	maximumTrustedProxyPrefixes         = 256
 )
 
 // UpstreamProtocol identifies the CPA-compatible HTTP protocol used for
@@ -57,11 +71,18 @@ type Config struct {
 	HTTPAddr                     string
 	DBPath                       string
 	JWTSecret                    string `json:"-"`
+	ClientIPMode                 ratelimit.ClientIPMode
+	TrustedProxyCIDRs            []netip.Prefix
 	MCPIPRPM                     int
 	MCPIPMaxEntriesPerShard      int
 	MCPIPFallbackBucketsPerShard int
 	MCPGlobalSearchConcurrency   int
 	MCPUserSearchConcurrency     int
+	AuthPasswordMaxConcurrent    int
+	AuthKeyMissMaxConcurrent     int
+	MaxAPIKeysPerUser            int
+	UserRPMMaximumEntries        int
+	UserRPMFallbackBuckets       int
 	UsageRawRetention            time.Duration
 	UsageHourlyRetention         time.Duration
 	UsageDailyRetention          time.Duration
@@ -69,6 +90,7 @@ type Config struct {
 	ProxyURL                     string
 	ProxyEnabled                 bool
 	RegistrationMode             store.RegistrationMode
+	BootstrapCredentialsPath     string
 }
 
 // ServerSettings contains runtime-tunable settings exposed in the admin panel.
@@ -79,6 +101,22 @@ type ServerSettings = settings.Runtime
 // Load 读取并校验配置。
 func Load() (*Config, error) {
 	proxyURL := strings.TrimSpace(os.Getenv("GROK_PROXY_URL"))
+	clientIPMode, err := parseClientIPMode(os.Getenv("GROK_CLIENT_IP_MODE"))
+	if err != nil {
+		return nil, err
+	}
+	trustedProxyCIDRs, err := parseTrustedProxyCIDRs(os.Getenv("GROK_TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return nil, err
+	}
+	if clientIPMode == ratelimit.ClientIPModeTrustedProxy && len(trustedProxyCIDRs) == 0 {
+		return nil, fmt.Errorf("GROK_TRUSTED_PROXY_CIDRS is required in trusted_proxy mode")
+	}
+	initialRegistrationMode, err := parseInitialRegistrationMode(os.Getenv("GROK_INITIAL_REGISTRATION_MODE"))
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		CPABaseURL:                   strings.TrimRight(envOrDefault("CPA_BASE_URL", defaultBaseURL), "/"),
 		CPAAPIKey:                    strings.TrimSpace(os.Getenv("CPA_API_KEY")),
@@ -89,18 +127,29 @@ func Load() (*Config, error) {
 		HTTPAddr:                     envOrDefault("GROK_HTTP_ADDR", defaultHTTPAddr),
 		DBPath:                       envOrDefault("GROK_DB_PATH", defaultDBPath),
 		JWTSecret:                    strings.TrimSpace(os.Getenv("GROK_JWT_SECRET")),
+		ClientIPMode:                 clientIPMode,
+		TrustedProxyCIDRs:            trustedProxyCIDRs,
 		MCPIPRPM:                     defaultMCPIPRPM,
 		MCPIPMaxEntriesPerShard:      defaultMCPIPMaxEntriesPerShard,
 		MCPIPFallbackBucketsPerShard: defaultMCPIPFallbackBucketsPerShard,
 		MCPGlobalSearchConcurrency:   defaultMCPGlobalSearchConcurrency,
 		MCPUserSearchConcurrency:     defaultMCPUserSearchConcurrency,
+		AuthPasswordMaxConcurrent:    defaultAuthPasswordMaxConcurrent,
+		AuthKeyMissMaxConcurrent:     defaultAuthKeyMissMaxConcurrent,
+		MaxAPIKeysPerUser:            defaultMaxAPIKeysPerUser,
+		UserRPMMaximumEntries:        defaultUserRPMMaximumEntries,
+		UserRPMFallbackBuckets:       defaultUserRPMFallbackBuckets,
 		UsageRawRetention:            defaultUsageRawRetention,
 		UsageHourlyRetention:         defaultUsageHourlyRetention,
 		UsageDailyRetention:          defaultUsageDailyRetention,
 		UsageMaintenanceInterval:     defaultUsageMaintenanceInterval,
 		ProxyURL:                     proxyURL,
 		ProxyEnabled:                 parseBoolEnv("GROK_PROXY_ENABLED"),
-		RegistrationMode:             store.RegistrationModeFree,
+		RegistrationMode:             initialRegistrationMode,
+	}
+	cfg.BootstrapCredentialsPath = strings.TrimSpace(os.Getenv("GROK_BOOTSTRAP_CREDENTIALS_PATH"))
+	if cfg.BootstrapCredentialsPath == "" {
+		cfg.BootstrapCredentialsPath = cfg.DBPath + ".bootstrap-admin"
 	}
 
 	timeoutSeconds, err := parsePositiveIntegerEnvironmentVariable(
@@ -175,6 +224,47 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY must not exceed GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY")
 	}
 
+	cfg.AuthPasswordMaxConcurrent, err = parseBoundedPositiveIntegerEnvironmentVariable(
+		"GROK_AUTH_PASSWORD_MAX_CONCURRENT",
+		defaultAuthPasswordMaxConcurrent,
+		maximumAuthPasswordMaxConcurrent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AuthKeyMissMaxConcurrent, err = parseBoundedPositiveIntegerEnvironmentVariable(
+		"GROK_AUTH_KEY_MISS_MAX_CONCURRENT",
+		defaultAuthKeyMissMaxConcurrent,
+		maximumAuthKeyMissMaxConcurrent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.MaxAPIKeysPerUser, err = parseBoundedPositiveIntegerEnvironmentVariable(
+		"GROK_MAX_API_KEYS_PER_USER",
+		defaultMaxAPIKeysPerUser,
+		maximumMaxAPIKeysPerUser,
+	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.UserRPMMaximumEntries, err = parseBoundedPositiveIntegerEnvironmentVariable(
+		"GROK_AUTH_USER_RPM_MAX_ENTRIES",
+		defaultUserRPMMaximumEntries,
+		maximumUserRPMMaximumEntries,
+	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.UserRPMFallbackBuckets, err = parseBoundedPositiveIntegerEnvironmentVariable(
+		"GROK_AUTH_USER_RPM_FALLBACK_BUCKETS",
+		defaultUserRPMFallbackBuckets,
+		maximumUserRPMFallbackBuckets,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	if cfg.UsageRawRetention, err = parseRetentionDays(
 		"GROK_USAGE_RAW_RETENTION_DAYS",
 		defaultUsageRawRetention,
@@ -233,6 +323,78 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parseClientIPMode(rawMode string) (ratelimit.ClientIPMode, error) {
+	normalizedMode := ratelimit.ClientIPMode(strings.ToLower(strings.TrimSpace(rawMode)))
+	if normalizedMode == "" {
+		return ratelimit.ClientIPModeDirect, nil
+	}
+	switch normalizedMode {
+	case ratelimit.ClientIPModeDirect, ratelimit.ClientIPModeTrustedProxy:
+		return normalizedMode, nil
+	default:
+		return "", fmt.Errorf(
+			"GROK_CLIENT_IP_MODE must be %q or %q, got %q",
+			ratelimit.ClientIPModeDirect,
+			ratelimit.ClientIPModeTrustedProxy,
+			rawMode,
+		)
+	}
+}
+
+func parseTrustedProxyCIDRs(rawCIDRs string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(rawCIDRs) == "" {
+		return nil, nil
+	}
+
+	rawPrefixes := strings.Split(rawCIDRs, ",")
+	if len(rawPrefixes) > maximumTrustedProxyPrefixes {
+		return nil, fmt.Errorf(
+			"GROK_TRUSTED_PROXY_CIDRS must contain at most %d prefixes",
+			maximumTrustedProxyPrefixes,
+		)
+	}
+
+	trustedProxyCIDRs := make([]netip.Prefix, 0, len(rawPrefixes))
+	for _, rawPrefix := range rawPrefixes {
+		prefixText := strings.TrimSpace(rawPrefix)
+		if prefixText == "" {
+			return nil, fmt.Errorf("GROK_TRUSTED_PROXY_CIDRS must not contain empty list elements")
+		}
+		prefix, err := netip.ParsePrefix(prefixText)
+		if err != nil || !prefix.IsValid() || prefix.Addr().Zone() != "" {
+			return nil, fmt.Errorf("GROK_TRUSTED_PROXY_CIDRS contains invalid prefix %q", prefixText)
+		}
+		canonicalPrefix, err := canonicalizeTrustedProxyPrefix(prefix)
+		if err != nil {
+			return nil, fmt.Errorf("GROK_TRUSTED_PROXY_CIDRS contains invalid prefix %q: %w", prefixText, err)
+		}
+		trustedProxyCIDRs = append(trustedProxyCIDRs, canonicalPrefix)
+	}
+	return trustedProxyCIDRs, nil
+}
+
+func canonicalizeTrustedProxyPrefix(prefix netip.Prefix) (netip.Prefix, error) {
+	if !prefix.Addr().Is4In6() {
+		return prefix.Masked(), nil
+	}
+	if prefix.Bits() < 96 {
+		return netip.Prefix{}, fmt.Errorf("mapped IPv6 prefixes must have at least 96 prefix bits")
+	}
+	return netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96).Masked(), nil
+}
+
+func parseInitialRegistrationMode(rawMode string) (store.RegistrationMode, error) {
+	normalizedMode := store.RegistrationMode(strings.ToLower(strings.TrimSpace(rawMode)))
+	if normalizedMode == "" {
+		return store.RegistrationModeDisabled, nil
+	}
+	registrationMode, err := store.NormalizeRegistrationMode(normalizedMode)
+	if err != nil {
+		return "", fmt.Errorf("GROK_INITIAL_REGISTRATION_MODE must be disabled, invite, or free, got %q", rawMode)
+	}
+	return registrationMode, nil
 }
 
 // ServerSettings returns the current runtime-tunable server settings.
@@ -349,7 +511,7 @@ func NormalizeUpstreamProtocol(protocol UpstreamProtocol) (UpstreamProtocol, err
 // 避免面板保存的模型名在请求时被 grok 层拒绝导致全部搜索不可用。
 func ValidateModel(model string) error {
 	if !strings.Contains(strings.ToLower(model), "grok") {
-		return fmt.Errorf("unsupported model: %q (must contain 'grok')", model)
+		return fmt.Errorf("unsupported model (must contain 'grok')")
 	}
 	return nil
 }
@@ -440,6 +602,26 @@ func parsePositiveIntegerEnvironmentVariable(
 		)
 	}
 
+	return parsedValue, nil
+}
+
+func parseBoundedPositiveIntegerEnvironmentVariable(
+	environmentVariable string,
+	defaultValue int,
+	maximumValue int,
+) (int, error) {
+	parsedValue, err := parsePositiveIntegerEnvironmentVariable(environmentVariable, defaultValue, "")
+	if err != nil {
+		return 0, err
+	}
+	if parsedValue > maximumValue {
+		return 0, fmt.Errorf(
+			"%s must not exceed %d, got %d",
+			environmentVariable,
+			maximumValue,
+			parsedValue,
+		)
+	}
 	return parsedValue, nil
 }
 

@@ -28,7 +28,7 @@ func TestUsageMaintenanceCompactsRetainsAndPreservesStatistics(t *testing.T) {
 	sqliteStore.SetMetricsEnabled(true)
 	ctx := context.Background()
 	userID := testUserID(t, sqliteStore)
-	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "maintenance-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "maintenance-key", 20)
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestUsageMaintenanceKeepsRowsAtRawCutoff(t *testing.T) {
 	sqliteStore := openTestDB(t)
 	ctx := context.Background()
 	userID := testUserID(t, sqliteStore)
-	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "boundary-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "boundary-key", 20)
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}

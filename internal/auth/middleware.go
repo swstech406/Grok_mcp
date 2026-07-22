@@ -24,18 +24,25 @@ type APIKeyStore interface {
 	UserTierLoader
 }
 
-// bearerToken 从 Authorization: Bearer <token> 头解析令牌。
+// bearerToken parses one unambiguous Authorization: Bearer <token> value.
+// Exactly one ASCII space separates the case-insensitive scheme from a
+// non-empty credential, and credentials may not contain whitespace.
 func bearerToken(r *http.Request) (string, bool) {
-	h := r.Header.Get("Authorization")
-	if h == "" {
+	authorizationValues := r.Header.Values("Authorization")
+	if len(authorizationValues) != 1 {
 		return "", false
 	}
-	parts := strings.SplitN(h, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+
+	const bearerPrefixLength = len("Bearer ")
+	authorizationValue := authorizationValues[0]
+	if len(authorizationValue) <= bearerPrefixLength ||
+		!strings.EqualFold(authorizationValue[:bearerPrefixLength-1], "Bearer") ||
+		authorizationValue[bearerPrefixLength-1] != ' ' {
 		return "", false
 	}
-	token := strings.TrimSpace(parts[1])
-	if token == "" {
+
+	token := authorizationValue[bearerPrefixLength:]
+	if strings.ContainsAny(token, " \t\r\n,") {
 		return "", false
 	}
 	return token, true
@@ -69,7 +76,7 @@ func NewStoreAPIKeyResolver(st APIKeyStore) APIKeyResolver {
 
 // writeAuthLoadError 统一 JWT / MCP 鉴权在加载用户+tier 失败时的 HTTP 语义：
 // - 用户不存在 → 401 + "user not found"
-// - tier 缺失（含默认 tier0 / 已分配 tier）→ 500 + 错误信息（fail-closed，避免 0 限额被当成不限）
+// - tier 缺失（含默认 tier0 / 已分配 tier）→ generic 500（fail-closed，避免 0 限额被当成不限）
 // - 其它存储错误 → 500 + "authentication failed"
 func writeAuthLoadError(w http.ResponseWriter, err error, logPrefix string) {
 	if err == nil {
@@ -80,11 +87,21 @@ func writeAuthLoadError(w http.ResponseWriter, err error, logPrefix string) {
 		return
 	}
 	if errors.Is(err, store.ErrTierNotFound) {
-		log.Printf("%s: tier unavailable: %v", logPrefix, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		var tierResolutionError *TierResolutionError
+		if errors.As(err, &tierResolutionError) {
+			log.Printf(
+				"%s: tier unavailable tier_id=%q error_type=%T",
+				logPrefix,
+				tierResolutionError.TierID,
+				err,
+			)
+		} else {
+			log.Printf("%s: tier unavailable error_type=%T", logPrefix, err)
+		}
+		http.Error(w, "authentication failed", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("%s: authentication load failed: %v", logPrefix, err)
+	log.Printf("%s: authentication load failed error_type=%T", logPrefix, err)
 	http.Error(w, "authentication failed", http.StatusInternalServerError)
 }
 
@@ -97,9 +114,18 @@ func APIKeyMiddleware(resolver APIKeyResolver) func(http.Handler) http.Handler {
 				http.Error(w, "missing or invalid Authorization header", http.StatusUnauthorized)
 				return
 			}
+			if !isGeneratedAPIKey(token) {
+				http.Error(w, "invalid API key", http.StatusForbidden)
+				return
+			}
 
 			key, user, err := resolver.Resolve(r.Context(), keyhash.HashAPIKey(token))
 			if err != nil {
+				if errors.Is(err, ErrAPIKeyResolverSaturated) {
+					w.Header().Set("Retry-After", "1")
+					http.Error(w, "authentication temporarily unavailable", http.StatusServiceUnavailable)
+					return
+				}
 				writeAuthLoadError(w, err, "mcp auth")
 				return
 			}
@@ -121,4 +147,20 @@ func APIKeyMiddleware(resolver APIKeyResolver) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func isGeneratedAPIKey(token string) bool {
+	const generatedAPIKeyLength = len("grok_") + 64
+	if len(token) != generatedAPIKeyLength || !strings.HasPrefix(token, "grok_") {
+		return false
+	}
+	for characterIndex := len("grok_"); characterIndex < len(token); characterIndex++ {
+		character := token[characterIndex]
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'f' {
+				return false
+			}
+		}
+	}
+	return true
 }

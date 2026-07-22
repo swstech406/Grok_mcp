@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/config"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
@@ -183,7 +184,10 @@ func TestRegisterReturnsServiceUnavailableWhenReplayTableIsAtCapacity(t *testing
 		t.Fatal(err)
 	}
 	handler := &Handler{
-		Store:         store.TestStore{},
+		Store: store.TestStore{},
+		InitialServerSettings: config.ServerSettings{
+			RegistrationMode: store.RegistrationModeFree,
+		},
 		AuthProtector: authProtector,
 	}
 	request := httptest.NewRequest(http.MethodPost, "/panel/v1/auth/register", bytes.NewReader(requestBody))

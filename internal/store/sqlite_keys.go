@@ -78,8 +78,9 @@ const keyColumns = `id, user_id, name, key_hash, key_prefix, key_ciphertext, key
 
 const listKeysByUserQuery = `SELECT ` + keyColumns + ` FROM apikeys WHERE user_id = ? ORDER BY created_at DESC`
 
-// CreateKey 插入新密钥并返回元数据与初始明文 raw；后续可通过 RevealKey 按需恢复。
-func (s *SQLiteStore) CreateKey(ctx context.Context, userID, name string) (*APIKey, string, error) {
+// CreateKey inserts a new key while enforcing the per-user row limit in the
+// same serialized SQLite write transaction. Disabled keys continue to count.
+func (s *SQLiteStore) CreateKey(ctx context.Context, userID, name string, maximumKeys int) (*APIKey, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, "", fmt.Errorf("name is required")
@@ -87,6 +88,9 @@ func (s *SQLiteStore) CreateKey(ctx context.Context, userID, name string) (*APIK
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return nil, "", fmt.Errorf("user_id is required")
+	}
+	if maximumKeys <= 0 {
+		return nil, "", fmt.Errorf("maximum API keys must be positive")
 	}
 
 	raw, err := generateRawKey()
@@ -108,13 +112,37 @@ func (s *SQLiteStore) CreateKey(ctx context.Context, userID, name string) (*APIK
 		return nil, "", err
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("begin API key creation: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	var userExists int
+	if err := transaction.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, userID).Scan(&userExists); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, "", ErrUserNotFound
+		}
+		return nil, "", fmt.Errorf("validate API key owner: %w", err)
+	}
+	var currentKeyCount int
+	if err := transaction.QueryRowContext(ctx, `SELECT COUNT(*) FROM apikeys WHERE user_id = ?`, userID).Scan(&currentKeyCount); err != nil {
+		return nil, "", fmt.Errorf("count API keys: %w", err)
+	}
+	if currentKeyCount >= maximumKeys {
+		return nil, "", ErrAPIKeyLimit
+	}
+
+	_, err = transaction.ExecContext(ctx,
 		`INSERT INTO apikeys (id, user_id, name, key_hash, key_prefix, key_ciphertext, key_nonce, key_encryption_version, enabled, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		id, userID, name, keyhash.HashAPIKey(raw), prefix, ciphertext, nonce, encryptionVersion, formatTime(now), formatTime(now),
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("insert apikey: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return nil, "", fmt.Errorf("commit API key creation: %w", err)
 	}
 
 	k, err := s.GetKeyByID(ctx, id)

@@ -159,6 +159,57 @@ type crossMonthQuotaStore struct {
 	releasedTokens       []store.SuccessQuotaReservation
 }
 
+func TestHTTPRevokeSessionsReplacesCurrentToken(t *testing.T) {
+	cpa := cpaMockSSE(t)
+	defer cpa.Close()
+	integrationEnvironment := bootIntegrationEnv(t, cpa)
+
+	revokeRequest, _ := http.NewRequest(
+		http.MethodPost,
+		integrationEnvironment.ts.URL+"/panel/v1/me/revoke-sessions",
+		nil,
+	)
+	revokeRequest.Header.Set("Authorization", "Bearer "+integrationEnvironment.login.Token)
+	revokeResponse, err := http.DefaultClient.Do(revokeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer revokeResponse.Body.Close()
+	if revokeResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(revokeResponse.Body)
+		t.Fatalf("revoke status=%d body=%s", revokeResponse.StatusCode, responseBody)
+	}
+	var replacementSession panel.SessionReplacementResponse
+	if err := json.NewDecoder(revokeResponse.Body).Decode(&replacementSession); err != nil {
+		t.Fatal(err)
+	}
+	if replacementSession.Token == "" {
+		t.Fatal("revoke response did not include a replacement token")
+	}
+
+	requestStatus := func(token string) int {
+		t.Helper()
+		currentUserRequest, _ := http.NewRequest(
+			http.MethodGet,
+			integrationEnvironment.ts.URL+"/panel/v1/me",
+			nil,
+		)
+		currentUserRequest.Header.Set("Authorization", "Bearer "+token)
+		currentUserResponse, requestErr := http.DefaultClient.Do(currentUserRequest)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		currentUserResponse.Body.Close()
+		return currentUserResponse.StatusCode
+	}
+	if status := requestStatus(integrationEnvironment.login.Token); status != http.StatusUnauthorized {
+		t.Fatalf("previous token status=%d, want %d", status, http.StatusUnauthorized)
+	}
+	if status := requestStatus(replacementSession.Token); status != http.StatusOK {
+		t.Fatalf("replacement token status=%d, want %d", status, http.StatusOK)
+	}
+}
+
 func (quotaStore *crossMonthQuotaStore) ReserveSuccessCall(
 	requestContext context.Context,
 	userID string,
@@ -423,6 +474,63 @@ func TestHTTPSearchConcurrencyRejectsBeforeUpstreamAndUsage(t *testing.T) {
 	}
 	if usageStats.TotalCalls != 1 {
 		t.Fatalf("usage calls=%d, want only the admitted search", usageStats.TotalCalls)
+	}
+}
+
+func TestHTTPUserRPMRejectsBeforeSearchConcurrencyQuotaUsageAndUpstream(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	cpa := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if err := validateCPAMockRequest(request, newWebSearchCPAExpectation("user rpm guard")); err != nil {
+			t.Errorf("CPA mock received invalid request: %v", err)
+			http.Error(responseWriter, "invalid CPA mock request", http.StatusBadRequest)
+			return
+		}
+		upstreamCalls.Add(1)
+		writeCPAMockSSEResponse(responseWriter, "user rpm answer")
+	}))
+	defer cpa.Close()
+
+	environment := bootIntegrationEnv(t, cpa)
+	userRPM := 1
+	if _, err := environment.st.UpdateTier(
+		context.Background(),
+		environment.login.User.TierID,
+		store.TierUpdates{RPM: &userRPM},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	toolPayload := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"grok_web_search","arguments":{"query":"user rpm guard"}}}`
+	firstStatus, firstBody := callMCPTool(t, environment, toolPayload)
+	if firstStatus != http.StatusOK || !strings.Contains(firstBody, "user rpm answer") {
+		t.Fatalf("first tool call status=%d body=%s", firstStatus, truncate(firstBody, 512))
+	}
+	secondStatus, secondBody := callMCPTool(t, environment, toolPayload)
+	if secondStatus != http.StatusTooManyRequests || !strings.Contains(secondBody, "rate limit exceeded") {
+		t.Fatalf("second tool call status=%d body=%s", secondStatus, truncate(secondBody, 512))
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", upstreamCalls.Load())
+	}
+
+	environment.writer.Close()
+	usageStats, err := environment.st.GetUsageStats(
+		context.Background(),
+		environment.created.Key.ID,
+		time.Now().UTC().Add(-time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usageStats.TotalCalls != 1 {
+		t.Fatalf("usage calls = %d, want 1", usageStats.TotalCalls)
+	}
+	user, err := environment.st.GetUserByID(context.Background(), environment.login.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.SuccessCalls != 1 {
+		t.Fatalf("reserved success calls = %d, want 1", user.SuccessCalls)
 	}
 }
 

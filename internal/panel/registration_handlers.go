@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 	"golang.org/x/crypto/bcrypt"
@@ -15,7 +16,7 @@ const bcryptCost = 12
 func (handler *Handler) registrationChallenge(writer http.ResponseWriter, request *http.Request) {
 	registrationMode, err := handler.currentRegistrationMode(request)
 	if err != nil {
-		log.Printf("load registration mode before issuing challenge failed: %v", err)
+		log.Printf("load registration mode before issuing challenge failed error_type=%T", err)
 		writeError(writer, http.StatusInternalServerError, "registration failed")
 		return
 	}
@@ -27,7 +28,7 @@ func (handler *Handler) registrationChallenge(writer http.ResponseWriter, reques
 	authProtector := handler.authProtector()
 	challenge, err := authProtector.registrationProof.issue(authProtector.now())
 	if err != nil {
-		log.Printf("issue registration challenge failed: %v", err)
+		log.Printf("issue registration challenge failed error_type=%T", err)
 		writeError(writer, http.StatusInternalServerError, "registration failed")
 		return
 	}
@@ -41,7 +42,7 @@ func (handler *Handler) register(writer http.ResponseWriter, request *http.Reque
 	}
 	registrationMode, err := handler.currentRegistrationMode(request)
 	if err != nil {
-		log.Printf("load registration mode before register failed: %v", err)
+		log.Printf("load registration mode before register failed error_type=%T", err)
 		writeError(writer, http.StatusInternalServerError, "registration failed")
 		return
 	}
@@ -71,7 +72,7 @@ func (handler *Handler) register(writer http.ResponseWriter, request *http.Reque
 	if registrationMode == store.RegistrationModeInvite {
 		inviteCodeExists, lookupErr := handler.Store.InviteCodeExists(request.Context(), registerRequest.InviteCode)
 		if lookupErr != nil {
-			log.Printf("check invite code before register failed: %v", lookupErr)
+			log.Printf("check invite code before register failed error_type=%T", lookupErr)
 			writeError(writer, http.StatusInternalServerError, "registration failed")
 			return
 		}
@@ -81,7 +82,7 @@ func (handler *Handler) register(writer http.ResponseWriter, request *http.Reque
 		}
 	} else {
 		if existingUser, lookupErr := handler.Store.GetUserByUsername(request.Context(), username); lookupErr != nil {
-			log.Printf("check user %q before register failed: %v", username, lookupErr)
+			log.Printf("check user %q before register failed error_type=%T", username, lookupErr)
 			writeError(writer, http.StatusInternalServerError, "registration failed")
 			return
 		} else if existingUser != nil {
@@ -89,7 +90,17 @@ func (handler *Handler) register(writer http.ResponseWriter, request *http.Reque
 			return
 		}
 	}
-	passwordHash, err := handler.generatePasswordHash(registerRequest.Password)
+	passwordWorkRelease := authProtector.tryAcquirePasswordWork()
+	if passwordWorkRelease == nil {
+		writeRetryAfter(writer, time.Second)
+		writeError(writer, http.StatusServiceUnavailable, "registration temporarily unavailable")
+		return
+	}
+	var passwordHash []byte
+	func() {
+		defer passwordWorkRelease()
+		passwordHash, err = handler.generatePasswordHash(registerRequest.Password)
+	}()
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "password hash failed")
 		return
@@ -125,7 +136,7 @@ func (handler *Handler) register(writer http.ResponseWriter, request *http.Reque
 			writeError(writer, http.StatusForbidden, "invite code registration limit reached")
 			return
 		}
-		log.Printf("register user %q failed: %v", username, err)
+		log.Printf("register user %q failed error_type=%T", username, err)
 		writeError(writer, http.StatusInternalServerError, "registration failed")
 		return
 	}
@@ -142,7 +153,7 @@ func (handler *Handler) generatePasswordHash(password string) ([]byte, error) {
 func (handler *Handler) registrationSettings(writer http.ResponseWriter, request *http.Request) {
 	registrationMode, err := handler.currentRegistrationMode(request)
 	if err != nil {
-		log.Printf("load registration settings failed: %v", err)
+		log.Printf("load registration settings failed error_type=%T", err)
 		writeError(writer, http.StatusInternalServerError, "failed to load registration settings")
 		return
 	}
@@ -158,7 +169,7 @@ func (handler *Handler) currentRegistrationMode(request *http.Request) (store.Re
 		return store.NormalizeRegistrationMode(storedSettings.RegistrationMode)
 	}
 	if handler.InitialServerSettings.RegistrationMode == "" {
-		return store.RegistrationModeFree, nil
+		return store.RegistrationModeDisabled, nil
 	}
 	return store.NormalizeRegistrationMode(handler.InitialServerSettings.RegistrationMode)
 }

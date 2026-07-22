@@ -96,6 +96,55 @@ export function renderAccountPage(state) {
           })}
         </div>
       </article>
+
+      <article class="content-card account-card account-security-card">
+        <header class="account-card-header">
+          <div>
+            <span class="account-card-kicker">Security</span>
+            <h2>修改密码</h2>
+          </div>
+          <p>更新后自动吊销此前签发的全部会话</p>
+        </header>
+        <form class="account-security-form" data-form="change-password">
+          <label class="field-group is-full">
+            <span class="field-label">当前密码</span>
+            <input class="text-input" name="current_password" type="password" minlength="8" maxlength="72" autocomplete="current-password" required>
+          </label>
+          <label class="field-group is-full">
+            <span class="field-label">新密码</span>
+            <input class="text-input" name="new_password" type="password" minlength="8" maxlength="72" autocomplete="new-password" required>
+          </label>
+          <label class="field-group is-full">
+            <span class="field-label">确认新密码</span>
+            <input class="text-input" name="confirm_new_password" type="password" minlength="8" maxlength="72" autocomplete="new-password" required>
+          </label>
+          <button class="button button-primary" type="submit" ${state.formBusy ? "disabled" : ""}>
+            ${state.formBusy ? "处理中..." : "更新密码并替换会话"}
+          </button>
+        </form>
+      </article>
+
+      <article class="content-card account-card account-security-card">
+        <header class="account-card-header">
+          <div>
+            <span class="account-card-kicker">Sessions</span>
+            <h2>吊销全部会话</h2>
+          </div>
+          <p>当前标签页会收到一个新的替换会话</p>
+        </header>
+        <form class="account-security-form" data-form="revoke-sessions">
+          <p class="account-security-copy">
+            此操作会立即使包括当前令牌在内的所有旧面板令牌失效。API 密钥不受影响。
+          </p>
+          <label class="account-security-confirmation">
+            <input type="checkbox" required>
+            <span>我确认吊销此前签发的全部面板会话</span>
+          </label>
+          <button class="button button-secondary" type="submit" ${state.formBusy ? "disabled" : ""}>
+            ${state.formBusy ? "处理中..." : "吊销并替换当前会话"}
+          </button>
+        </form>
+      </article>
     </section>
   `;
 }

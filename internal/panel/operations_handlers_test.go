@@ -75,12 +75,13 @@ func TestAdminOperationalMetricsReturnsSQLiteAndWriterSnapshots(t *testing.T) {
 	})
 	authProtector.allowAuthRequest(authEndpointLogin, "198.51.100.50")
 	authProtector.allowAuthRequest(authEndpointLogin, "198.51.100.51")
+	userLimiter := ratelimit.NewUserLimiter()
+	defer userLimiter.Close()
 	loginAttempt, _ := authProtector.beginLoginAttempt("metrics-user", "198.51.100.50")
 	if loginAttempt == nil {
 		t.Fatal("metrics login attempt should be admitted")
 	}
 	loginAttempt.recordFailure()
-	expectedAuthProtectorMetrics := authProtector.Metrics()
 	_, err = sqliteStore.UpsertServerSettings(context.Background(), store.ServerSettings{Runtime: config.ServerSettings{
 		CPABaseURL:                 "https://cpa.example.test",
 		CPAAPIKey:                  "operations-api-key",
@@ -102,12 +103,14 @@ func TestAdminOperationalMetricsReturnsSQLiteAndWriterSnapshots(t *testing.T) {
 		SQLiteMetrics:      sqliteStore,
 		UsageWriterMetrics: usageWriter,
 		IPLimiterMetrics:   ipLimiterMetrics,
+		UserLimiterMetrics: userLimiter,
 		AuthProtector:      authProtector,
 	}))
 	defer server.Close()
 
 	createPanelAdminUser(t, sqliteStore, "operations-admin", "password123")
 	loginResponse := loginPanelUser(t, server, "operations-admin", "password123")
+	expectedAuthProtectorMetrics := authProtector.Metrics()
 	request, _ := http.NewRequest(http.MethodGet, server.URL+"/panel/v1/admin/operations/metrics", nil)
 	request = withJWT(request, loginResponse.Token)
 	response, err := http.DefaultClient.Do(request)
@@ -129,6 +132,7 @@ func TestAdminOperationalMetricsReturnsSQLiteAndWriterSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertIPLimiterMetricsJSONFields(t, responseBody)
+	assertUserLimiterMetricsJSONFields(t, responseBody)
 	assertAuthProtectorMetricsJSONFields(t, responseBody)
 	if payload.SQLite.PrimaryWritePool.MaximumOpenConnections != 1 {
 		t.Fatalf("primary write pool metrics = %+v", payload.SQLite.PrimaryWritePool)
@@ -158,7 +162,7 @@ func assertAuthProtectorMetricsJSONFields(t *testing.T, responseBody []byte) {
 	if err := json.Unmarshal(rawPayload["auth_protector"], &rawAuthProtectorMetrics); err != nil {
 		t.Fatalf("decode raw auth_protector metrics: %v", err)
 	}
-	expectedGroupNames := []string{"login", "register", "registration_challenge", "login_failures"}
+	expectedGroupNames := []string{"login", "register", "registration_challenge", "login_failures", "username_failures", "password_work"}
 	for _, expectedGroupName := range expectedGroupNames {
 		if _, exists := rawAuthProtectorMetrics[expectedGroupName]; !exists {
 			t.Fatalf("auth_protector group %q is missing from raw JSON: %s", expectedGroupName, string(responseBody))
@@ -198,9 +202,28 @@ func assertAuthProtectorMetricsJSONFields(t *testing.T, responseBody []byte) {
 	assertRawMetricFields(t, rawAuthProtectorMetrics["login_failures"], []string{
 		"current_entries",
 		"maximum_entries",
+		"fallback_bucket_count",
 		"admissions",
 		"expired_entries_removed",
 		"capacity_rejections",
+		"fallback_attempts",
+		"fallback_rejections",
+	})
+	assertRawMetricFields(t, rawAuthProtectorMetrics["username_failures"], []string{
+		"current_entries",
+		"maximum_entries",
+		"fallback_bucket_count",
+		"admissions",
+		"expired_entries_removed",
+		"capacity_rejections",
+		"fallback_attempts",
+		"fallback_rejections",
+	})
+	assertRawMetricFields(t, rawAuthProtectorMetrics["password_work"], []string{
+		"current_work",
+		"capacity",
+		"admissions",
+		"rejections",
 	})
 }
 
@@ -251,6 +274,24 @@ func assertIPLimiterMetricsJSONFields(t *testing.T, responseBody []byte) {
 	if len(rawIPLimiterMetrics) != 0 {
 		t.Fatalf("unexpected ip_limiter metric fields in raw JSON: %+v", rawIPLimiterMetrics)
 	}
+}
+
+func assertUserLimiterMetricsJSONFields(t *testing.T, responseBody []byte) {
+	t.Helper()
+
+	var rawPayload map[string]json.RawMessage
+	if err := json.Unmarshal(responseBody, &rawPayload); err != nil {
+		t.Fatal(err)
+	}
+	assertRawMetricFields(t, rawPayload["user_limiter"], []string{
+		"current_entries",
+		"maximum_entries",
+		"fallback_bucket_count",
+		"dedicated_admissions",
+		"expired_entries_removed",
+		"fallback_requests",
+		"fallback_rejections",
+	})
 }
 
 func TestAdminOperationalMetricsAreDisabledByDefault(t *testing.T) {

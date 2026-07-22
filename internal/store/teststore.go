@@ -57,7 +57,7 @@ func (TestStore) UpdateTier(context.Context, string, TierUpdates) (*Tier, error)
 func (TestStore) DeleteTier(context.Context, string) error                { return nil }
 func (TestStore) CountUsersByTier(context.Context, string) (int64, error) { return 0, nil }
 
-func (TestStore) CreateKey(context.Context, string, string) (*APIKey, string, error) {
+func (TestStore) CreateKey(context.Context, string, string, int) (*APIKey, string, error) {
 	return nil, "", nil
 }
 func (TestStore) ConfigureAPIKeyEncryption(string) error                { return nil }

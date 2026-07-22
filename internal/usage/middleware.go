@@ -309,7 +309,7 @@ func releaseReservedSuccessCall(releaser SuccessQuotaReleaser, requestContext co
 	releaseContext, cancel := context.WithTimeout(context.WithoutCancel(requestContext), quotaReleaseTimeout)
 	defer cancel()
 	if err := releaser.ReleaseSuccessCall(releaseContext, reservation); err != nil {
-		log.Printf("release success quota failed user=%s period=%s: %v", reservation.UserID, reservation.Period, err)
+		log.Printf("release success quota failed user=%s period=%s error_type=%T", reservation.UserID, reservation.Period, err)
 	}
 }
 
@@ -401,7 +401,19 @@ func headerSnapshot(headers http.Header) map[string][]string {
 
 func isSensitiveHeader(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key":
+	case "authorization",
+		"proxy-authorization",
+		"cookie",
+		"set-cookie",
+		"api-key",
+		"apikey",
+		"x-api-key",
+		"x-auth-token",
+		"x-access-token",
+		"x-csrf-token",
+		"x-xsrf-token",
+		"x-amz-security-token",
+		"x-goog-api-key":
 		return true
 	default:
 		return false

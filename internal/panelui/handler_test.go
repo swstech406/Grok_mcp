@@ -183,6 +183,92 @@ func TestHandlerServesSearchConcurrencySettingsFields(t *testing.T) {
 	}
 }
 
+func TestHandlerServesAccountSecurityLifecycleControls(t *testing.T) {
+	testCases := []struct {
+		path            string
+		expectedContent []string
+	}{
+		{
+			path: "/panel/js/pages/account.js",
+			expectedContent: []string{
+				`data-form="change-password"`,
+				`name="current_password"`,
+				`name="new_password"`,
+				`data-form="revoke-sessions"`,
+			},
+		},
+		{
+			path: "/panel/js/api.js",
+			expectedContent: []string{
+				`/panel/v1/me/change-password`,
+				`/panel/v1/me/revoke-sessions`,
+				`grok-search-mcp-panel-session`,
+			},
+		},
+	}
+	for _, testCase := range testCases {
+		request := httptest.NewRequest(http.MethodGet, testCase.path, nil)
+		responseRecorder := httptest.NewRecorder()
+		Handler().ServeHTTP(responseRecorder, request)
+		if responseRecorder.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", testCase.path, responseRecorder.Code)
+		}
+		responseBody := responseRecorder.Body.String()
+		for _, expectedContent := range testCase.expectedContent {
+			if !strings.Contains(responseBody, expectedContent) {
+				t.Fatalf("%s does not contain %q", testCase.path, expectedContent)
+			}
+		}
+	}
+}
+
+func TestHandlerServesOneTimeInviteCodeUIContract(t *testing.T) {
+	testCases := []struct {
+		path             string
+		expectedContent  []string
+		forbiddenContent []string
+	}{
+		{
+			path: "/panel/js/pages/invite-codes.js",
+			expectedContent: []string{
+				"完整邀请码仅在创建成功后显示一次",
+				"列表仅保留前缀和使用状态",
+			},
+			forbiddenContent: []string{
+				"inviteCode.code ||",
+				"复制邀请码",
+			},
+		},
+		{
+			path: "/panel/js/components/modal.js",
+			expectedContent: []string{
+				"完整邀请码只显示一次",
+				"完整邀请码将无法再次获取",
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		request := httptest.NewRequest(http.MethodGet, testCase.path, nil)
+		responseRecorder := httptest.NewRecorder()
+		Handler().ServeHTTP(responseRecorder, request)
+		if responseRecorder.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want %d", testCase.path, responseRecorder.Code, http.StatusOK)
+		}
+		responseBody := responseRecorder.Body.String()
+		for _, expectedContent := range testCase.expectedContent {
+			if !strings.Contains(responseBody, expectedContent) {
+				t.Fatalf("%s does not contain %q", testCase.path, expectedContent)
+			}
+		}
+		for _, forbiddenContent := range testCase.forbiddenContent {
+			if strings.Contains(responseBody, forbiddenContent) {
+				t.Fatalf("%s still contains forbidden raw-code behavior %q", testCase.path, forbiddenContent)
+			}
+		}
+	}
+}
+
 func TestHandlerFallsBackToIndexForSpaRoutesAndUnknownAssets(t *testing.T) {
 	testCases := []struct {
 		name string

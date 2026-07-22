@@ -1,13 +1,17 @@
 package panel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
@@ -121,5 +125,107 @@ func TestAdminListInviteCodeRedemptionsRejectsCursorFromAnotherCollection(t *tes
 	}
 	if testStore.redemptionListCallCount != 0 {
 		t.Fatalf("store call count = %d, want 0", testStore.redemptionListCallCount)
+	}
+}
+
+func TestInviteCodeHTTPResponsesRevealRawCodeOnlyOnCreate(t *testing.T) {
+	sqliteStore, err := store.OpenSQLite(filepath.Join(t.TempDir(), "invite-responses.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+
+	administrator, err := sqliteStore.CreateUser(t.Context(), "invite-response-admin", "hash", store.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{Store: sqliteStore}
+	authenticatedAdministrator := &auth.AuthenticatedUser{User: *administrator}
+
+	createRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/panel/v1/admin/invite-codes",
+		bytes.NewBufferString(`{"registration_limit":3}`),
+	)
+	createRequest.Header.Set("Content-Type", "application/json")
+	createRequest = createRequest.WithContext(auth.WithUser(createRequest.Context(), authenticatedAdministrator))
+	createResponseRecorder := httptest.NewRecorder()
+	handler.adminCreateInviteCode(createResponseRecorder, createRequest)
+
+	if createResponseRecorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d: %s", createResponseRecorder.Code, http.StatusCreated, createResponseRecorder.Body.String())
+	}
+	createResponseBody := createResponseRecorder.Body.String()
+	var createResponse CreateInviteCodeResponse
+	if err := json.Unmarshal([]byte(createResponseBody), &createResponse); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(createResponse.Code) == "" {
+		t.Fatal("create response did not include the raw invite code")
+	}
+	if strings.Count(createResponseBody, createResponse.Code) != 1 {
+		t.Fatalf("raw invite code appeared %d times in create response, want exactly once: %s", strings.Count(createResponseBody, createResponse.Code), createResponseBody)
+	}
+	assertJSONFieldAbsent(t, []byte(createResponseBody), []string{"invite_code", "code"})
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/panel/v1/admin/invite-codes", nil)
+	listResponseRecorder := httptest.NewRecorder()
+	handler.adminListInviteCodes(listResponseRecorder, listRequest)
+
+	if listResponseRecorder.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want %d: %s", listResponseRecorder.Code, http.StatusOK, listResponseRecorder.Body.String())
+	}
+	assertRawInviteAbsent(t, listResponseRecorder.Body.Bytes(), createResponse.Code)
+	assertJSONFieldAbsent(t, listResponseRecorder.Body.Bytes(), []string{"invite_codes", "0", "code"})
+
+	updateRequest := httptest.NewRequest(
+		http.MethodPatch,
+		"/panel/v1/admin/invite-codes/"+createResponse.InviteCode.ID,
+		bytes.NewBufferString(`{"enabled":false}`),
+	)
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.SetPathValue("id", createResponse.InviteCode.ID)
+	updateResponseRecorder := httptest.NewRecorder()
+	handler.adminUpdateInviteCode(updateResponseRecorder, updateRequest)
+
+	if updateResponseRecorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want %d: %s", updateResponseRecorder.Code, http.StatusOK, updateResponseRecorder.Body.String())
+	}
+	assertRawInviteAbsent(t, updateResponseRecorder.Body.Bytes(), createResponse.Code)
+	assertJSONFieldAbsent(t, updateResponseRecorder.Body.Bytes(), []string{"code"})
+}
+
+func assertRawInviteAbsent(t *testing.T, responseBody []byte, rawInviteCode string) {
+	t.Helper()
+	if bytes.Contains(responseBody, []byte(rawInviteCode)) {
+		t.Fatalf("response disclosed raw invite code %q: %s", rawInviteCode, responseBody)
+	}
+}
+
+func assertJSONFieldAbsent(t *testing.T, responseBody []byte, path []string) {
+	t.Helper()
+	var currentValue any
+	if err := json.Unmarshal(responseBody, &currentValue); err != nil {
+		t.Fatal(err)
+	}
+	for pathIndex, pathElement := range path {
+		switch typedValue := currentValue.(type) {
+		case map[string]any:
+			nextValue, exists := typedValue[pathElement]
+			if !exists {
+				return
+			}
+			if pathIndex == len(path)-1 {
+				t.Fatalf("response unexpectedly contains JSON field path %s: %s", strings.Join(path, "."), responseBody)
+			}
+			currentValue = nextValue
+		case []any:
+			if pathElement != "0" || len(typedValue) == 0 {
+				return
+			}
+			currentValue = typedValue[0]
+		default:
+			return
+		}
 	}
 }

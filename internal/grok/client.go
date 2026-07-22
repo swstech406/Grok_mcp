@@ -126,7 +126,7 @@ func newHTTPClientWithProxy(phaseTimeout time.Duration, proxyURL string, proxyEn
 		}
 		parsedProxyURL, err := url.Parse(explicitProxyURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse proxy URL: %w", err)
+			return nil, fmt.Errorf("proxy URL is invalid")
 		}
 		transport.Proxy = http.ProxyURL(parsedProxyURL)
 	} else {
@@ -177,11 +177,18 @@ func (c *Client) SearchStream(ctx context.Context, req SearchRequest, onRound fu
 }
 
 func (s clientSnapshot) searchResponses(ctx context.Context, req SearchRequest, onRound func(SearchRound)) (*SearchResult, error) {
-	model, body, err := buildSearchRequestBody(req, s.defaultModel)
+	_, body, err := buildSearchRequestBody(req, s.defaultModel)
 	if err != nil {
 		return nil, err
 	}
-	s.log.Debugf("SearchStream start protocol=%s model=%s tool=%s query=%q", s.protocol, model, req.ToolType, logx.Truncate(req.Query, 80))
+	s.log.Debugf(
+		"SearchStream start protocol=%s tool=%s query_bytes=%d allowed_domains=%d excluded_domains=%d",
+		s.protocol,
+		req.ToolType,
+		len(req.Query),
+		len(req.AllowedDomains),
+		len(req.ExcludedDomains),
+	)
 
 	response, err := s.postJSON(ctx, "/v1/responses", body, false)
 	if err != nil {
@@ -198,7 +205,7 @@ func (s clientSnapshot) searchResponses(ctx context.Context, req SearchRequest, 
 func (s clientSnapshot) postJSON(ctx context.Context, endpoint string, body []byte, anthropicHeaders bool) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, newUpstreamTransportError(string(s.protocol), "create_request", err)
 	}
 	requestTimings := newUpstreamRequestTimings()
 	httpReq = httpReq.WithContext(httptrace.WithClientTrace(httpReq.Context(), requestTimings.clientTrace()))
@@ -218,7 +225,7 @@ func (s clientSnapshot) postJSON(ctx context.Context, endpoint string, body []by
 	resp, err := s.httpClient.Do(httpReq)
 	requestTimings.log(s.log, endpoint, err)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, newUpstreamTransportError(string(s.protocol), endpoint, err)
 	}
 	return resp, nil
 }
@@ -298,15 +305,19 @@ func (timings *upstreamRequestTimings) log(logger *logx.Logger, endpoint string,
 	totalDuration := time.Since(timings.requestStartedAt)
 	timings.mu.Unlock()
 
+	requestErrorCategory := "none"
+	if requestErr != nil {
+		requestErrorCategory = string(UpstreamErrorCategoryTransport)
+	}
 	logger.Debugf(
-		"upstream request timings endpoint=%s connect=%s reused=%t tls=%s response_headers=%s total_to_headers=%s error=%v",
+		"upstream request timings endpoint=%s connect=%s reused=%t tls=%s response_headers=%s total_to_headers=%s error_category=%s",
 		endpoint,
 		connectDuration,
 		connectionReused,
 		tlsDuration,
 		responseHeadersDuration,
 		totalDuration,
-		requestErr,
+		requestErrorCategory,
 	)
 }
 
@@ -315,19 +326,33 @@ func (s clientSnapshot) httpError(resp *http.Response) error {
 	limitedBody := io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes+1)
 	respBody, readErr := io.ReadAll(limitedBody)
 	if readErr != nil {
-		s.log.Debugf("upstream HTTP %d read body error: %v", resp.StatusCode, readErr)
-		return fmt.Errorf("upstream returned HTTP %d: read body: %w", resp.StatusCode, readErr)
+		s.log.Debugf(
+			"upstream response read failed protocol=%s status=%d body_bytes=%d error_type=%T",
+			s.protocol,
+			resp.StatusCode,
+			len(respBody),
+			readErr,
+		)
+		return newUpstreamResponseReadError(string(s.protocol), "read_error_response", resp.StatusCode, len(respBody), readErr)
 	}
 	bodyWasTruncated := int64(len(respBody)) > maxUpstreamErrorBodyBytes
+	observedBodyBytes := len(respBody)
 	if bodyWasTruncated {
 		respBody = respBody[:maxUpstreamErrorBodyBytes]
 	}
 	s.log.Debugf(
-		"upstream HTTP %d body_truncated=%t: %s",
+		"upstream HTTP error protocol=%s status=%d body_bytes=%d body_truncated=%t",
+		s.protocol,
 		resp.StatusCode,
+		observedBodyBytes,
 		bodyWasTruncated,
-		logx.Truncate(string(respBody), 256),
 	)
-	// 错误信息只暴露状态码，body 仅写日志，避免向 MCP 客户端泄露 CPA 内部细节。
-	return fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
+	return &UpstreamError{
+		Category:      UpstreamErrorCategoryHTTPStatus,
+		Protocol:      string(s.protocol),
+		Operation:     "upstream_response",
+		StatusCode:    resp.StatusCode,
+		BodyBytes:     observedBodyBytes,
+		BodyTruncated: bodyWasTruncated,
+	}
 }

@@ -316,7 +316,7 @@ func TestDeleteUserRemovesUserKeysAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, _, err := s.CreateKey(ctx, user.ID, "temporary key")
+	key, _, err := s.CreateKey(ctx, user.ID, "temporary key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestDeleteUserSucceedsWhenDebugCleanupFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.CreateKey(ctx, user.ID, "temporary key"); err != nil {
+	if _, _, err := store.CreateKey(ctx, user.ID, "temporary key", 20); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.debugDB.Close(); err != nil {

@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS server_settings (
 
 CREATE TABLE IF NOT EXISTS invite_codes (
     id                 TEXT PRIMARY KEY,
+    -- Legacy compatibility column. New code stores only an empty value here;
+    -- code_hash is the authoritative redemption credential.
     code               TEXT NOT NULL DEFAULT '',
     code_hash          TEXT NOT NULL UNIQUE,
     code_prefix        TEXT NOT NULL,

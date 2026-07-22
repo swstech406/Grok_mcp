@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"errors"
 	"hash/maphash"
 	"net/http"
 	"net/netip"
@@ -63,9 +64,8 @@ type IPLimiterMetricsSnapshot struct {
 	FallbackRejections    uint64 `json:"fallback_rejections"`
 }
 
-// IPLimiter 对能够解析出有效反向代理客户端 IP 的请求按来源 IP 共享令牌桶。
-// 无有效 X-Real-IP 或 X-Forwarded-For 的请求不会启用 IP 限流。
-// 部署必须确保应用仅能由会清理并覆盖这些 Header 的可信反向代理访问。
+// IPLimiter applies a shared token bucket to every request using the client
+// identity established by its injected network-trust resolver.
 type IPLimiter struct {
 	requestsPerMinute     int
 	clientIPResolver      *ClientIPResolver
@@ -333,17 +333,21 @@ func (limiter *IPLimiter) Close() {
 	})
 }
 
-// Middleware 仅对能够从 X-Real-IP 或 X-Forwarded-For 解析出有效 IP 的请求限流。
+// Middleware rejects incomplete network identity before applying IP limits.
 func (limiter *IPLimiter) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientAddress, err := limiter.clientIPResolver.ResolveAddress(r)
 			if err != nil {
-				http.Error(w, ErrInvalidForwardedClientIPHeaders.Error(), http.StatusBadRequest)
+				if errors.Is(err, ErrUntrustedClientIPPeer) {
+					http.Error(w, ErrUntrustedClientIPPeer.Error(), http.StatusForbidden)
+					return
+				}
+				http.Error(w, ErrInvalidClientIPIdentity.Error(), http.StatusBadRequest)
 				return
 			}
 			if !clientAddress.IsValid() {
-				next.ServeHTTP(w, r)
+				http.Error(w, ErrInvalidClientIPIdentity.Error(), http.StatusBadRequest)
 				return
 			}
 			if !limiter.allow(clientAddress) {

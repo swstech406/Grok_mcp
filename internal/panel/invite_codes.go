@@ -23,7 +23,7 @@ func (h *Handler) adminListInviteCodes(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := h.Store.ListInviteCodesPage(r.Context(), cursor, limit)
 	if err != nil {
-		log.Printf("admin list invite codes failed: %v", err)
+		log.Printf("admin list invite codes failed error_type=%T", err)
 		writeError(w, http.StatusInternalServerError, "failed to list invite codes")
 		return
 	}
@@ -59,7 +59,7 @@ func (h *Handler) adminListInviteCodeRedemptions(w http.ResponseWriter, r *http.
 
 	page, err := h.Store.ListInviteCodeRedemptionsPage(r.Context(), inviteCodeID, cursor, limit)
 	if err != nil {
-		log.Printf("admin list invite code %q redemptions failed: %v", inviteCodeID, err)
+		log.Printf("admin list invite code %q redemptions failed error_type=%T", inviteCodeID, err)
 		writeError(w, http.StatusInternalServerError, "failed to list invite code registrations")
 		return
 	}
@@ -83,7 +83,7 @@ func (h *Handler) adminCreateInviteCode(w http.ResponseWriter, r *http.Request) 
 
 	inviteCode, rawInviteCode, err := h.Store.CreateInviteCode(r.Context(), createdByUserID, req.RegistrationLimit)
 	if err != nil {
-		log.Printf("admin create invite code failed: %v", err)
+		log.Printf("admin create invite code failed error_type=%T", err)
 		writeError(w, http.StatusInternalServerError, "failed to create invite code")
 		return
 	}
@@ -122,7 +122,7 @@ func (h *Handler) adminUpdateInviteCode(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "registration_limit cannot be lower than current usage")
 			return
 		}
-		log.Printf("admin update invite code %q failed: %v", inviteCodeID, err)
+		log.Printf("admin update invite code %q failed error_type=%T", inviteCodeID, err)
 		writeError(w, http.StatusInternalServerError, "failed to update invite code")
 		return
 	}
@@ -140,7 +140,7 @@ func (h *Handler) adminDeleteInviteCode(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "invite code not found")
 			return
 		}
-		log.Printf("admin delete invite code %q failed: %v", inviteCodeID, err)
+		log.Printf("admin delete invite code %q failed error_type=%T", inviteCodeID, err)
 		writeError(w, http.StatusInternalServerError, "failed to delete invite code")
 		return
 	}

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestIPLimiterBypassesRequestsWithoutForwardedClientIPHeaders(t *testing.T) {
+func TestIPLimiterDirectModeLimitsHeaderlessRequestsAndIgnoresSpoofedHeaders(t *testing.T) {
 	limiter := NewIPLimiter(1)
 	defer limiter.Close()
 
@@ -21,6 +21,7 @@ func TestIPLimiterBypassesRequestsWithoutForwardedClientIPHeaders(t *testing.T) 
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	firstRequest.RemoteAddr = "198.51.100.10:10001"
+	firstRequest.Header.Set("X-Forwarded-For", "203.0.113.10")
 	firstRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(firstRecorder, firstRequest)
 	if firstRecorder.Code != http.StatusOK {
@@ -29,19 +30,23 @@ func TestIPLimiterBypassesRequestsWithoutForwardedClientIPHeaders(t *testing.T) 
 
 	secondRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	secondRequest.RemoteAddr = "198.51.100.10:10002"
+	secondRequest.Header.Set("X-Forwarded-For", "203.0.113.11")
 	secondRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(secondRecorder, secondRequest)
-	if secondRecorder.Code != http.StatusOK {
-		t.Fatalf("second headerless request status = %d, want %d", secondRecorder.Code, http.StatusOK)
+	if secondRecorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second direct request status = %d, want %d", secondRecorder.Code, http.StatusTooManyRequests)
 	}
 
-	if allowedRequests != 2 {
-		t.Fatalf("allowed request count = %d, want %d", allowedRequests, 2)
+	if allowedRequests != 1 {
+		t.Fatalf("allowed request count = %d, want %d", allowedRequests, 1)
 	}
 }
 
 func TestIPLimiterRejectsEmptyOrMalformedForwardedClientIPHeaders(t *testing.T) {
-	limiter := NewIPLimiter(1)
+	limiter := NewIPLimiterWithConfig(IPLimiterConfig{
+		RequestsPerMinute: 1,
+		ClientIPResolver:  newTrustedProxyResolver(),
+	})
 	defer limiter.Close()
 
 	allowedRequestCount := 0
@@ -70,8 +75,11 @@ func TestIPLimiterRejectsEmptyOrMalformedForwardedClientIPHeaders(t *testing.T) 
 	}
 }
 
-func TestIPLimiterUsesForwardedClientIPWithoutProxyConfiguration(t *testing.T) {
-	limiter := NewIPLimiter(1)
+func TestIPLimiterTrustedProxyUsesForwardedClientIP(t *testing.T) {
+	limiter := NewIPLimiterWithConfig(IPLimiterConfig{
+		RequestsPerMinute: 1,
+		ClientIPResolver:  newTrustedProxyResolver(),
+	})
 	defer limiter.Close()
 
 	handler := limiter.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -79,7 +87,7 @@ func TestIPLimiterUsesForwardedClientIPWithoutProxyConfiguration(t *testing.T) {
 	}))
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	firstRequest.RemoteAddr = "203.0.113.10:10001"
+	firstRequest.RemoteAddr = "192.0.2.10:10001"
 	firstRequest.Header.Set("X-Forwarded-For", "198.51.100.10")
 	firstRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(firstRecorder, firstRequest)
@@ -88,7 +96,7 @@ func TestIPLimiterUsesForwardedClientIPWithoutProxyConfiguration(t *testing.T) {
 	}
 
 	secondRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	secondRequest.RemoteAddr = "203.0.113.10:10002"
+	secondRequest.RemoteAddr = "192.0.2.10:10002"
 	secondRequest.Header.Set("X-Forwarded-For", "198.51.100.11")
 	secondRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(secondRecorder, secondRequest)
@@ -98,7 +106,10 @@ func TestIPLimiterUsesForwardedClientIPWithoutProxyConfiguration(t *testing.T) {
 }
 
 func TestIPLimiterRequiresRealIPAndForwardedForToAgree(t *testing.T) {
-	limiter := NewIPLimiter(1)
+	limiter := NewIPLimiterWithConfig(IPLimiterConfig{
+		RequestsPerMinute: 1,
+		ClientIPResolver:  newTrustedProxyResolver(),
+	})
 	defer limiter.Close()
 
 	handler := limiter.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -106,7 +117,7 @@ func TestIPLimiterRequiresRealIPAndForwardedForToAgree(t *testing.T) {
 	}))
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	firstRequest.RemoteAddr = "203.0.113.10:10001"
+	firstRequest.RemoteAddr = "192.0.2.10:10001"
 	firstRequest.Header.Set("X-Real-IP", "198.51.100.10")
 	firstRequest.Header.Set("X-Forwarded-For", "198.51.100.10, 203.0.113.20")
 	firstRecorder := httptest.NewRecorder()
@@ -116,7 +127,7 @@ func TestIPLimiterRequiresRealIPAndForwardedForToAgree(t *testing.T) {
 	}
 
 	secondRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	secondRequest.RemoteAddr = "203.0.113.10:10002"
+	secondRequest.RemoteAddr = "192.0.2.10:10002"
 	secondRequest.Header.Set("X-Forwarded-For", "198.51.100.20, 203.0.113.20")
 	secondRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(secondRecorder, secondRequest)
@@ -125,7 +136,7 @@ func TestIPLimiterRequiresRealIPAndForwardedForToAgree(t *testing.T) {
 	}
 
 	thirdRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	thirdRequest.RemoteAddr = "203.0.113.10:10003"
+	thirdRequest.RemoteAddr = "192.0.2.10:10003"
 	thirdRequest.Header.Set("X-Real-IP", "198.51.100.10")
 	thirdRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(thirdRecorder, thirdRequest)
@@ -144,7 +155,10 @@ func TestIPLimiterRequiresRealIPAndForwardedForToAgree(t *testing.T) {
 }
 
 func TestIPLimiterCanonicalizesEquivalentAddressesIntoOneBucket(t *testing.T) {
-	limiter := NewIPLimiter(1)
+	limiter := NewIPLimiterWithConfig(IPLimiterConfig{
+		RequestsPerMinute: 1,
+		ClientIPResolver:  newTrustedProxyResolver(),
+	})
 	defer limiter.Close()
 
 	handler := limiter.Middleware()(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {

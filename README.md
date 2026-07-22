@@ -32,7 +32,7 @@ MCP client -- HTTPS --> reverse proxy / load balancer -- HTTP --> grok-search-mc
 - MCP progress notifications for upstream search rounds
 - Per-user client API keys with enable/disable controls
 - Tier-based RPM and monthly successful-call quotas
-- Valid-forwarded-IP-triggered protection for `/mcp` and panel authentication
+- Peer-aware direct or trusted-proxy IP protection for `/mcp` and panel authentication
 - SQLite persistence for users, keys, tiers, usage, invite codes, and server settings
 - Embedded administration panel with no separate frontend build step
 - Runtime updates for upstream settings, search concurrency, proxy settings, registration mode, debug mode, and operational metrics collection
@@ -207,12 +207,24 @@ an external atomic counter instead of increasing SQLite write connections.
 
 ### 3. Sign in and create an MCP client key
 
-When no enabled administrator exists, the server bootstraps an `admin` account and writes its one-time random password to the startup log. Sign in, rotate the credentials as soon as possible, and create an MCP client API key.
+When no enabled administrator exists, the server bootstraps an `admin` account
+and writes a bounded JSON credential file with exact `0600` permissions. By
+default it is `<GROK_DB_PATH>.bootstrap-admin`; startup logs report only that
+path and never the password. Read it as the same operating-system user that
+runs the service, then rotate the password promptly:
 
 ```bash
+bootstrap_password="$(jq -r '.password' ./data/grok-search-mcp.db.bootstrap-admin)"
 login_token="$(curl -sS -X POST "http://127.0.0.1:8080/panel/v1/auth/login" \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"password-from-startup-log"}' | jq -r '.token')"
+  -d "$(jq -n --arg password "${bootstrap_password}" '{username:"admin",password:$password}')" | jq -r '.token')"
+
+replacement_session="$(curl -sS -X POST "http://127.0.0.1:8080/panel/v1/me/change-password" \
+  -H "Authorization: Bearer ${login_token}" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --arg current "${bootstrap_password}" --arg new "replace-with-a-new-password" \
+    '{current_password:$current,new_password:$new}')")"
+login_token="$(jq -r '.token' <<<"${replacement_session}")"
 
 curl -sS -X POST "http://127.0.0.1:8080/panel/v1/keys" \
   -H "Authorization: Bearer ${login_token}" \
@@ -222,7 +234,14 @@ curl -sS -X POST "http://127.0.0.1:8080/panel/v1/keys" \
 
 The `api_key` in the response can be used immediately. It can also be revealed
 and copied later from the **API Keys** page. Protect access to the panel and
-the database because the key can be recovered there.
+the database because the key can be recovered there. A user may own at most 20
+keys by default; disabled keys count, while deleting a key frees capacity.
+
+Changing the bootstrap administrator password removes the credential file on a
+best-effort basis after the database update commits. A removal failure never
+rolls back the password change; remove any stale file manually. Existing secure
+credential files are reused after a startup failure before account creation,
+so do not edit, broaden permissions on, or restore stale copies from backups.
 
 ### 4. Connect Claude Code
 
@@ -328,15 +347,24 @@ Accepts no arguments. It reads CPA `GET /v1/models`, trims and deduplicates IDs,
 | `GROK_HTTP_TIMEOUT` | `120` | Per-phase timeout in seconds for upstream connection establishment, TLS handshake, and response headers. It does not limit an active SSE response body; caller cancellation defines the total search lifetime. |
 | `GROK_HTTP_ADDR` | `:8080` | HTTP listen address. Requires restart to change. |
 | `GROK_DB_PATH` | `./grok-search-mcp.db` | SQLite database path. Requires restart to change. |
+| `GROK_BOOTSTRAP_CREDENTIALS_PATH` | `<GROK_DB_PATH>.bootstrap-admin` | Startup-only path for the `0600` bootstrap administrator JSON credential file. Existing files must be regular, non-symlink files with exact restrictive permissions. |
+| `GROK_CLIENT_IP_MODE` | `direct` | Startup-only client identity mode: `direct` uses `RemoteAddr` and ignores forwarding headers; `trusted_proxy` authenticates the immediate peer before accepting forwarding headers. |
+| `GROK_TRUSTED_PROXY_CIDRS` | Empty | Comma-separated IPv4/IPv6 prefixes for trusted immediate proxy peers. Required and non-empty in `trusted_proxy` mode; parsed and validated at startup in both modes. |
+| `GROK_INITIAL_REGISTRATION_MODE` | `disabled` | Initial registration policy: `disabled`, `invite`, or `free`. Used only when no persisted server-settings row exists. |
+| `GROK_MAX_API_KEYS_PER_USER` | `20` | Startup-only per-user API-key row limit; accepted range 1-1,000. Disabled keys count and deletion frees capacity. |
+| `GROK_AUTH_PASSWORD_MAX_CONCURRENT` | `4` | Startup-only process-wide bcrypt work limit for login, registration, and password changes; accepted range 1-64. |
+| `GROK_AUTH_KEY_MISS_MAX_CONCURRENT` | `32` | Startup-only concurrent SQLite resolution limit for distinct API-key cache misses; same-key misses are coalesced; accepted range 1-1,024. |
 | `GROK_USAGE_RAW_RETENTION_DAYS` | `7` | Raw usage and debug-detail retention before hourly compaction. |
 | `GROK_USAGE_HOURLY_RETENTION_DAYS` | `90` | Hourly usage retention before daily compaction. |
 | `GROK_USAGE_DAILY_RETENTION_DAYS` | `730` | Daily aggregate retention before deletion. |
 | `GROK_USAGE_MAINTENANCE_INTERVAL` | `1h` | Interval for rollup, cleanup, and WAL checkpoint maintenance. |
-| `GROK_SEARCH_MCP_IP_RPM` | `300` | Source-IP RPM applied before MCP API-key authentication only when `X-Real-IP` or `X-Forwarded-For` contains a valid IP. |
+| `GROK_SEARCH_MCP_IP_RPM` | `300` | Source-IP RPM applied before MCP API-key authentication to every request using the identity selected by `GROK_CLIENT_IP_MODE`. |
 | `GROK_SEARCH_MCP_IP_MAX_ENTRIES_PER_SHARD` | `2048` | Maximum dedicated source-IP token buckets retained in each of the 64 registry shards. The default process-wide bound is 131,072 entries; accepted values are 1-65,536. Requires restart to change. |
 | `GROK_SEARCH_MCP_IP_FALLBACK_BUCKETS_PER_SHARD` | `16` | Fixed shared buckets used by new IPs when their shard remains full after expired-entry cleanup; accepted values are 1-1,024. Requires restart to change. |
 | `GROK_SEARCH_MCP_GLOBAL_SEARCH_CONCURRENCY` | `16` | Environment default for the process-wide in-flight streaming search limit. The persisted panel setting takes precedence after initialization. |
 | `GROK_SEARCH_MCP_USER_SEARCH_CONCURRENCY` | `4` | Environment default for the per-user limit; must not exceed the global limit. The persisted panel setting takes precedence after initialization. |
+| `GROK_AUTH_USER_RPM_MAX_ENTRIES` | `16,384` | Startup-only maximum dedicated authenticated-user RPM entries; accepted range 1-65,536. Overflow identities use fixed shared fallback buckets. |
+| `GROK_AUTH_USER_RPM_FALLBACK_BUCKETS` | `64` | Startup-only number of shared authenticated-user RPM fallback buckets; accepted range 1-1,024. |
 | `GROK_SEARCH_MCP_DEBUG` | `false` | Accepts `1`, `true`, or `yes`. May capture debug request/response context in usage records. |
 | `GROK_PROXY_URL` | Empty | Explicit upstream HTTP(S) proxy URL. |
 | `GROK_PROXY_ENABLED` | `false` | Explicit proxy switch. Set this to `true` together with `GROK_PROXY_URL`; the URL alone does not enable the project-specific proxy. |
@@ -349,21 +377,29 @@ as compatibility aliases. When both names are configured, the corresponding
 
 When either search concurrency limit is exhausted, the server rejects the request immediately with HTTP `503` and `Retry-After: 1` instead of queueing another long-lived HTTP/SSE request. Search responses expose semaphore acquisition time in `X-Grok-Search-Queue-Time-Ms`.
 
-### Forwarded client-IP protection
+### Client-IP trust modes
 
-Application-level IP protection is enabled only when a valid IP can be resolved from `X-Real-IP` or `X-Forwarded-For`. The same policy is used for:
+Application-level IP protection always requires a valid client identity. The same startup-only resolver is injected into:
 
 - the `/mcp` token bucket that runs before API-key authentication;
 - the panel login and registration endpoint token buckets;
 - the panel username/IP failed-login lockout.
 
-The request behavior is:
+The two modes behave as follows:
 
-| Request state | IP-protection behavior |
+| Mode / request state | IP-protection behavior |
 |---|---|
-| Both headers are absent | Application-level IP rate limiting and login IP lockout are skipped. User-tier RPM and quota checks still apply after successful MCP authentication. |
-| Either header is present but empty, malformed, duplicated, oversized, contains an invalid forwarded hop, or conflicts with the other header | The request is rejected with HTTP `400`. |
-| Valid forwarded client-IP headers are present | IP protection runs using `X-Real-IP` when present; otherwise it uses the first `X-Forwarded-For` IP. When both are present, their canonical client addresses must agree. No trusted-proxy allowlist is required. |
+| `direct` (default) | Uses the canonical IP from the connection's `RemoteAddr` for every request and completely ignores `X-Real-IP` and `X-Forwarded-For`, including malformed or spoofed values. A missing, malformed, or zoned `RemoteAddr` is rejected with HTTP `400`. |
+| `trusted_proxy`, immediate peer outside `GROK_TRUSTED_PROXY_CIDRS` | Rejects with HTTP `403` without accepting any forwarded identity. |
+| `trusted_proxy`, trusted peer with no forwarding header | Rejects with HTTP `400`; there is no headerless bypass. |
+| `trusted_proxy`, trusted peer with malformed, duplicated, oversized, excessive-hop, or conflicting forwarding headers | Rejects with HTTP `400`. |
+| `trusted_proxy`, trusted peer with valid forwarding headers | Uses `X-Real-IP` when present; otherwise uses the first `X-Forwarded-For` IP. If both are present, their canonical client addresses must agree. |
+
+`GROK_TRUSTED_PROXY_CIDRS` accepts at most 256 comma-separated canonical IPv4
+or IPv6 prefixes. In direct mode a non-empty list is validated but ignored. In
+trusted-proxy mode the list is mandatory. Trust applies only to the immediate
+TCP peer; the trusted proxy remains responsible for removing client-supplied
+forwarding headers and rebuilding them from its own connection metadata.
 
 The `/mcp` source-IP registry is capacity bounded. Existing IPs keep their
 dedicated token bucket until the normal idle TTL expires; they are never
@@ -395,7 +431,7 @@ saturation counters. All panel-auth protector state and cumulative counters are
 process-local and reset when the service restarts.
 
 > [!IMPORTANT]
-> The application directly trusts `X-Real-IP` and `X-Forwarded-For`. It must be reachable only through a trusted reverse proxy that always injects a valid client IP and removes client-supplied values first. If clients can reach `grok-search-mcp` directly, they can omit both headers to skip IP protection, send malformed headers that are rejected with HTTP `400`, or forge valid headers to select arbitrary rate-limit buckets. Keep proxy-layer rate limits enabled for `/mcp`, `/panel/v1/auth/login`, and `/panel/v1/auth/register`.
+> Enable `trusted_proxy` only after identifying the CIDR of the proxy as seen by `grok-search-mcp`, which may be a container bridge or load-balancer subnet rather than the proxy's public address. A wrong CIDR fails closed with `403`. Keep proxy-layer rate limits enabled for `/mcp`, `/panel/v1/auth/login`, and `/panel/v1/auth/register`.
 
 The proxy must overwrite `X-Real-IP` and rebuild `X-Forwarded-For` from the connection source. Because the application selects the first valid `X-Forwarded-For` entry, do not preserve an untrusted client-provided chain.
 
@@ -410,9 +446,20 @@ location / {
 }
 ```
 
+Pair that proxy with startup settings such as:
+
+```dotenv
+GROK_CLIENT_IP_MODE=trusted_proxy
+GROK_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+```
+
+The default Compose publication is `127.0.0.1:8080:8080`, so it does not expose
+the plaintext backend on all host interfaces. Change that host binding only as
+part of a deliberate proxy/network design.
+
 ### Persistence and live updates
 
-On startup, environment variables provide the initial runtime defaults. If SQLite already contains server settings, the complete persisted runtime settings object takes precedence, including upstream, proxy, registration, debug, operations-metrics, and search-concurrency values. Listener address, database path, JWT secret, IP RPM/registry capacity, and retention/maintenance settings remain environment-only. Administrators can update the following values from **Server Settings** without restarting:
+On startup, environment variables provide the initial runtime defaults. `GROK_INITIAL_REGISTRATION_MODE` supplies registration policy only when SQLite has no server-settings row; its safe default is `disabled`. If SQLite already contains server settings, the complete persisted runtime settings object takes precedence, including registration mode, and restarting with a different initial value does not overwrite the administrator's choice. Listener address, database path, JWT secret, client-IP trust mode/CIDRs, IP RPM/registry capacity, and retention/maintenance settings remain environment-only. Administrators can update the following values from **Server Settings** without restarting:
 
 - CPA base URL and API key
 - Upstream search protocol
@@ -425,8 +472,9 @@ On startup, environment variables provide the initial runtime defaults. If SQLit
 
 Settings updates are persisted before the running process applies them. The panel exposes separate persisted and confirmed-live settings versions. If persistence succeeds but live application fails, the saved values remain durable, the panel shows **saved but not applied** instead of a generic save failure, and the settings form reloads the persisted values. While the versions differ, upstream health is reported as unknown to avoid probing with mixed configuration state. A service restart loads the persisted revision and restores the versions to a synchronized state after startup succeeds.
 
-The listen address, database path, JWT secret, source-IP RPM, registry capacity,
-and fallback-bucket count remain startup-only settings.
+The listen address, database path, JWT secret, client-IP mode/trusted CIDRs,
+source-IP RPM, registry capacity, and fallback-bucket count remain startup-only
+settings.
 
 > [!WARNING]
 > The CPA API key is persisted in SQLite. Protect and back up the database as sensitive data. The panel only returns a masked preview of this key.
@@ -450,7 +498,10 @@ The protocols can expose different metadata even when their answer text is equiv
 
 ## Users, registration, tiers, and quotas
 
-Registration can be changed at runtime:
+New databases begin with registration disabled unless
+`GROK_INITIAL_REGISTRATION_MODE` explicitly selects `invite` or `free`. After
+the initial settings row is created, registration can be changed at runtime and
+the persisted value remains authoritative:
 
 | Mode | Behavior |
 |---|---|
@@ -476,7 +527,7 @@ Default tiers for a new database:
 
 Successful-call periods use UTC calendar months. A call reserves quota before tool execution; failed calls roll the reservation back. Tier values can be customized in the panel.
 
-The `/mcp` middleware order is shown below. The `IP RPM` step immediately passes through when neither forwarded header yields a valid IP:
+The `/mcp` middleware order is unchanged. The `IP RPM` step always resolves and validates a client identity before API-key authentication:
 
 ```text
 MaxBody -> IP RPM -> API Key -> ExtractToolName -> User RPM -> Search Concurrency -> Quota -> Usage -> MCP handler
@@ -497,10 +548,13 @@ POST /panel/v1/auth/login
 
 Registration uses a one-time proof of work. The client first requests a signed challenge that is valid for five minutes, locally finds a SHA-256 nonce satisfying the required difficulty, and submits `proof.challenge` plus `proof.nonce` with the registration request. The default target requires 20 leading zero bits. A successfully verified challenge is consumed and cannot be replayed. The embedded panel performs this work in a Web Worker so the page remains responsive.
 
-Authenticated user routes cover profile information, API-key management, and usage:
+Authenticated user routes cover profile information, credential/session
+lifecycle, API-key management, and usage:
 
 ```text
 GET    /panel/v1/me
+POST   /panel/v1/me/change-password
+POST   /panel/v1/me/revoke-sessions
 GET    /panel/v1/overview/health
 GET    /panel/v1/keys
 POST   /panel/v1/keys
@@ -512,6 +566,13 @@ GET    /panel/v1/usage
 GET    /panel/v1/usage/records
 GET    /panel/v1/usage/records/{id}
 ```
+
+Password changes require `current_password` and `new_password` values of 8-72
+bytes. Both lifecycle endpoints increment the current user's `token_version`,
+immediately invalidating every previously issued panel JWT, and return a
+replacement `token`, `expires_at`, and current `user`. The account page stores
+the replacement token and expiry together in `sessionStorage`. Revoke-all is
+self-service panel-session revocation; it does not revoke MCP API keys.
 
 `GET /panel/v1/overview/health` reports authenticated upstream/model availability for the dashboard. It is distinct from the container's unauthenticated `/panel/` liveness check.
 
@@ -539,7 +600,7 @@ docker run -d \
   --name grok-search-mcp \
   --restart unless-stopped \
   --env-file .env \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v grok-search-mcp-data:/app/data \
   maplemaplecat/grok-search-mcp:v0.2.2
 ```
@@ -565,10 +626,11 @@ The Compose file does not forward every optional outbound proxy variable. Extend
 
 - Put the service behind an HTTPS reverse proxy before exposing it publicly. The server does not provide TLS.
 - Never expose panel JWTs, MCP client API keys, CPA keys, invite codes, or a real `.env` file.
-- Rotate the bootstrap administrator credentials immediately.
+- Protect the `0600` bootstrap credential file, rotate the password immediately, and exclude stale credential-file copies from ordinary backups/log collection.
 - Restrict access to the SQLite file and include it in secure backups.
-- Ensure the reverse proxy overwrites `X-Real-IP`, rebuilds `X-Forwarded-For`, and always adds at least one of them; otherwise application-level IP protection can be bypassed.
-- Prevent all direct client access to the application port because forwarded client-IP headers are trusted without an application-level proxy allowlist.
+- Keep `GROK_CLIENT_IP_MODE=direct` when clients connect directly; forwarding headers are ignored and cannot select limiter identities.
+- For reverse-proxy deployment, set `GROK_CLIENT_IP_MODE=trusted_proxy`, allow only the proxy's immediate-peer CIDRs, and make the proxy overwrite `X-Real-IP` and rebuild `X-Forwarded-For`. Missing headers fail with `400`; untrusted peers fail with `403`.
+- Keep the plaintext application port loopback- or network-internally bound; the supplied Compose and `docker run` examples publish it on host loopback only.
 - Add reverse-proxy rate limits for `/mcp`, panel login, and panel registration.
 - Keep debug mode disabled unless troubleshooting. Debug context may retain request or response content even though authentication headers are redacted.
 - MCP client API keys authenticate through an irreversible hash and are also stored as AES-256-GCM ciphertext for authorized panel reveal/copy. Protect database backups and `GROK_JWT_SECRET` as access to recoverable client credentials.

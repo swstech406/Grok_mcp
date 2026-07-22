@@ -78,7 +78,7 @@ func parseSearchStream(body io.Reader, onRound func(SearchRound), log *logx.Logg
 		case "response.completed":
 			completedBody = bytes.Clone(payload)
 		case "error":
-			return fmt.Errorf("upstream stream error: %s", logx.Truncate(string(payload), 1024))
+			return newUpstreamStreamError("responses", event.Type, len(payload))
 		}
 		return nil
 	})
@@ -106,11 +106,11 @@ func logStreamRound(log *logx.Logger, itemType string, searchRound SearchRound) 
 	if log == nil {
 		return
 	}
-	if searchRound.Query != "" {
-		log.Debugf("%s round=%d query=%q", itemType, searchRound.Round, searchRound.Query)
-	} else if searchRound.URL != "" {
-		log.Debugf("%s round=%d url=%s", itemType, searchRound.Round, searchRound.URL)
-	} else {
-		log.Debugf("%s round=%d", itemType, searchRound.Round)
-	}
+	log.Debugf(
+		"search round event=%s round=%d query_bytes=%d has_source_url=%t",
+		itemType,
+		searchRound.Round,
+		len(searchRound.Query),
+		searchRound.URL != "",
+	)
 }

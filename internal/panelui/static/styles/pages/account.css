@@ -224,6 +224,37 @@
   line-height: 1.55;
 }
 
+.account-security-form {
+  display: grid;
+  gap: 16px;
+  padding: 22px 25px 25px;
+}
+
+.account-security-form .button {
+  justify-self: start;
+}
+
+.account-security-copy {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.account-security-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.account-security-confirmation input {
+  margin-top: 2px;
+  accent-color: var(--accent-strong);
+}
+
 @media (max-width: 900px) {
   .account-grid {
     grid-template-columns: 1fr;

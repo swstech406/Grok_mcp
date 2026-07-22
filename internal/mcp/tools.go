@@ -3,7 +3,9 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/grok"
@@ -151,7 +153,7 @@ func runListModels(ctx context.Context, client *grok.Client, log *logx.Logger) (
 	log.Debugf("list models start")
 	models, err := client.ListModels(ctx)
 	if err != nil {
-		log.Debugf("list models failed: %v", err)
+		log.Debugf("list models failed category=%s", safeErrorCategory(err))
 		usage.MarkToolOutcome(ctx, false)
 		return toolError(classifyListModelsError(err)), ListModelsOutput{}, nil
 	}
@@ -179,7 +181,14 @@ func runSearch(ctx context.Context, req *mcp.CallToolRequest, client *grok.Clien
 		token = req.Params.GetProgressToken()
 	}
 
-	log.Debugf("search start tool=%s query=%q", toolType, logx.Truncate(query, 80))
+	log.Debugf(
+		"search start tool=%s query_bytes=%d model_override=%t allowed_domains=%d excluded_domains=%d",
+		toolType,
+		len(query),
+		searchReq.Model != "",
+		len(searchReq.AllowedDomains),
+		len(searchReq.ExcludedDomains),
+	)
 	result, err := client.SearchStream(ctx, searchReq, func(round grok.SearchRound) {
 		if token == nil || req == nil {
 			return
@@ -195,7 +204,7 @@ func runSearch(ctx context.Context, req *mcp.CallToolRequest, client *grok.Clien
 		})
 	})
 	if err != nil {
-		log.Debugf("search failed tool=%s: %v", toolType, err)
+		log.Debugf("search failed tool=%s category=%s", toolType, safeErrorCategory(err))
 		usage.MarkToolOutcome(ctx, false)
 		return toolError(classifySearchError(err)), SearchOutput{}, nil
 	}
@@ -237,13 +246,25 @@ func classifySearchError(err error) string {
 	if err == nil {
 		return "search request failed"
 	}
+	if upstreamError, ok := grok.UpstreamErrorMetadata(err); ok {
+		switch upstreamError.Category {
+		case grok.UpstreamErrorCategoryHTTPStatus:
+			return fmt.Sprintf("upstream returned HTTP %d", upstreamError.StatusCode)
+		case grok.UpstreamErrorCategoryStream:
+			return "upstream stream error"
+		case grok.UpstreamErrorCategoryTransport:
+			if isTimeoutError(err) {
+				return "upstream search timed out"
+			}
+			return "search request failed"
+		default:
+			return "search request failed"
+		}
+	}
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "timeout"):
+	case isTimeoutError(err):
 		return "upstream search timed out"
-	case strings.Contains(msg, "upstream returned HTTP"):
-		// 提取状态码片段供客户端区分 4xx/5xx，不附带 body。
-		return strings.TrimSpace(strings.SplitN(msg, ":", 2)[0])
 	case strings.Contains(msg, "did not contain answer text"):
 		return "upstream returned empty answer"
 	case strings.Contains(msg, "ended without response.completed"):
@@ -259,13 +280,36 @@ func classifyListModelsError(err error) string {
 	if err == nil {
 		return "model list request failed"
 	}
-	msg := err.Error()
+	if upstreamError, ok := grok.UpstreamErrorMetadata(err); ok {
+		if upstreamError.Category == grok.UpstreamErrorCategoryHTTPStatus {
+			return fmt.Sprintf("upstream returned HTTP %d", upstreamError.StatusCode)
+		}
+	}
 	switch {
-	case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "timeout"):
+	case isTimeoutError(err):
 		return "upstream model list timed out"
-	case strings.Contains(msg, "upstream returned HTTP"):
-		return strings.TrimSpace(strings.SplitN(msg, ":", 2)[0])
 	default:
 		return "model list request failed"
 	}
+}
+
+func safeErrorCategory(err error) string {
+	if upstreamError, ok := grok.UpstreamErrorMetadata(err); ok {
+		return string(upstreamError.Category)
+	}
+	if isTimeoutError(err) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "request"
+}
+
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) && networkError.Timeout()
 }

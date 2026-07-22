@@ -3,6 +3,7 @@ package auth
 import (
 	"container/list"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,11 +12,21 @@ import (
 )
 
 const (
-	defaultAuthCacheTTL         = 30 * time.Second
-	defaultAuthCacheMaxEntries  = 4096
-	defaultAuthCacheShardCount  = 32
-	defaultAuthNegativeCacheTTL = 2 * time.Second
-	authCacheCleanupInterval    = time.Minute
+	defaultAuthCacheTTL          = 30 * time.Second
+	defaultAuthCacheMaxEntries   = 4096
+	defaultAuthCacheShardCount   = 32
+	defaultAuthNegativeCacheTTL  = 2 * time.Second
+	defaultAuthMissMaxConcurrent = 32
+	maximumAuthMissMaxConcurrent = 1024
+	authCacheCleanupInterval     = time.Minute
+)
+
+var (
+	// ErrAPIKeyResolverSaturated identifies fail-fast rejection before storage work.
+	ErrAPIKeyResolverSaturated = errors.New("API key resolver is saturated")
+	// ErrAPIKeyResolverClosed identifies use after resolver shutdown.
+	ErrAPIKeyResolverClosed         = errors.New("API key resolver is closed")
+	errAPIKeyResolverLeaderPanicked = errors.New("API key resolver load panicked")
 )
 
 type cacheEntry struct {
@@ -34,28 +45,41 @@ type authCacheShard struct {
 	maxEntries int
 }
 
+type apiKeyResolveFlight struct {
+	done chan struct{}
+	once sync.Once
+	key  *store.APIKey
+	user *AuthenticatedUser
+	err  error
+}
+
 // APIKeyCacheConfig controls the bounded authentication cache. Zero values use
 // conservative defaults suitable for the MCP request path.
 type APIKeyCacheConfig struct {
-	TTL             time.Duration
-	NegativeTTL     time.Duration
-	CleanupInterval time.Duration
-	MaxEntries      int
-	ShardCount      int
+	TTL               time.Duration
+	NegativeTTL       time.Duration
+	CleanupInterval   time.Duration
+	MaxEntries        int
+	ShardCount        int
+	MissMaxConcurrent int
 }
 
 // CachedAPIKeyResolver 缓存 MCP 鉴权链上的完整认证快照，避免热路径重复查询
 // API key、用户与 tier。管理员修改鉴权数据后应调用 InvalidateAll。
 type CachedAPIKeyResolver struct {
-	st          APIKeyStore
-	ttl         time.Duration
-	negativeTTL time.Duration
-	now         func() time.Time
-	shards      []authCacheShard
-	generation  atomic.Uint64
-	stopCleanup chan struct{}
-	cleanupDone chan struct{}
-	closeOnce   sync.Once
+	st            APIKeyStore
+	ttl           time.Duration
+	negativeTTL   time.Duration
+	now           func() time.Time
+	shards        []authCacheShard
+	generation    atomic.Uint64
+	flightMu      sync.Mutex
+	inFlight      map[string]*apiKeyResolveFlight
+	missAdmission chan struct{}
+	closed        atomic.Bool
+	stopCleanup   chan struct{}
+	cleanupDone   chan struct{}
+	closeOnce     sync.Once
 }
 
 // NewCachedAPIKeyResolver 创建鉴权解析缓存；ttl<=0 时使用默认 30s。
@@ -69,13 +93,15 @@ func NewCachedAPIKeyResolver(st APIKeyStore, ttl time.Duration) *CachedAPIKeyRes
 func NewCachedAPIKeyResolverWithConfig(st APIKeyStore, config APIKeyCacheConfig) *CachedAPIKeyResolver {
 	config = normalizeAPIKeyCacheConfig(config)
 	resolver := &CachedAPIKeyResolver{
-		st:          st,
-		ttl:         config.TTL,
-		negativeTTL: config.NegativeTTL,
-		now:         time.Now,
-		shards:      make([]authCacheShard, config.ShardCount),
-		stopCleanup: make(chan struct{}),
-		cleanupDone: make(chan struct{}),
+		st:            st,
+		ttl:           config.TTL,
+		negativeTTL:   config.NegativeTTL,
+		now:           time.Now,
+		shards:        make([]authCacheShard, config.ShardCount),
+		inFlight:      make(map[string]*apiKeyResolveFlight),
+		missAdmission: make(chan struct{}, config.MissMaxConcurrent),
+		stopCleanup:   make(chan struct{}),
+		cleanupDone:   make(chan struct{}),
 	}
 
 	baseShardCapacity := config.MaxEntries / config.ShardCount
@@ -97,7 +123,70 @@ func NewCachedAPIKeyResolverWithConfig(st APIKeyStore, config APIKeyCacheConfig)
 
 // Resolve 按 API Key 哈希加载密钥与启用用户（含 tier 限额）。
 func (c *CachedAPIKeyResolver) Resolve(ctx context.Context, keyHash string) (*store.APIKey, *AuthenticatedUser, error) {
-	now := c.now()
+	if c.closed.Load() {
+		return nil, nil, ErrAPIKeyResolverClosed
+	}
+	if key, user, found := c.loadCachedEntry(keyHash, c.now()); found {
+		return key, user, nil
+	}
+
+	c.flightMu.Lock()
+	if c.closed.Load() {
+		c.flightMu.Unlock()
+		return nil, nil, ErrAPIKeyResolverClosed
+	}
+	if existingFlight := c.inFlight[keyHash]; existingFlight != nil {
+		c.flightMu.Unlock()
+		return waitForAPIKeyResolveFlight(ctx, existingFlight)
+	}
+	// A previous leader may have populated the cache between the first cache
+	// check and acquiring the flight lock.
+	if key, user, found := c.loadCachedEntry(keyHash, c.now()); found {
+		c.flightMu.Unlock()
+		return key, user, nil
+	}
+
+	flight := &apiKeyResolveFlight{done: make(chan struct{})}
+	c.inFlight[keyHash] = flight
+	loadGeneration := c.generation.Load()
+	c.flightMu.Unlock()
+
+	select {
+	case c.missAdmission <- struct{}{}:
+	case <-ctx.Done():
+		c.completeFlight(keyHash, flight, nil, nil, ctx.Err())
+		return nil, nil, ctx.Err()
+	default:
+		c.completeFlight(keyHash, flight, nil, nil, ErrAPIKeyResolverSaturated)
+		return nil, nil, ErrAPIKeyResolverSaturated
+	}
+
+	var key *store.APIKey
+	var user *AuthenticatedUser
+	var loadErr error
+	func() {
+		defer func() {
+			<-c.missAdmission
+			if recoveredValue := recover(); recoveredValue != nil {
+				c.completeFlight(keyHash, flight, nil, nil, errAPIKeyResolverLeaderPanicked)
+				panic(recoveredValue)
+			}
+		}()
+		key, user, loadErr = c.loadFromStore(ctx, keyHash)
+	}()
+
+	if loadErr == nil && !c.closed.Load() {
+		if key == nil {
+			c.storeEntry(keyHash, nil, nil, c.negativeTTL, true, loadGeneration)
+		} else {
+			c.storeEntry(keyHash, key, user, c.ttl, false, loadGeneration)
+		}
+	}
+	c.completeFlight(keyHash, flight, key, user, loadErr)
+	return waitForAPIKeyResolveFlight(ctx, flight)
+}
+
+func (c *CachedAPIKeyResolver) loadCachedEntry(keyHash string, now time.Time) (*store.APIKey, *AuthenticatedUser, bool) {
 	shard := c.shardFor(keyHash)
 	shard.mu.Lock()
 	if entry, ok := shard.byHash[keyHash]; ok && now.Before(entry.until) {
@@ -107,22 +196,23 @@ func (c *CachedAPIKeyResolver) Resolve(ctx context.Context, keyHash string) (*st
 		negative := entry.negative
 		shard.mu.Unlock()
 		if negative {
-			return nil, nil, nil
+			return nil, nil, true
 		}
-		return key, user, nil
+		return key, user, true
 	}
 	if expiredEntry, ok := shard.byHash[keyHash]; ok {
 		shard.removeEntry(expiredEntry)
 	}
-	loadGeneration := c.generation.Load()
 	shard.mu.Unlock()
+	return nil, nil, false
+}
 
+func (c *CachedAPIKeyResolver) loadFromStore(ctx context.Context, keyHash string) (*store.APIKey, *AuthenticatedUser, error) {
 	key, err := c.st.GetKeyByHash(ctx, keyHash)
 	if err != nil {
 		return nil, nil, err
 	}
 	if key == nil {
-		c.storeEntry(keyHash, nil, nil, c.negativeTTL, true, loadGeneration)
 		return nil, nil, nil
 	}
 	user, err := LoadUserWithTierLimits(ctx, c.st, key.UserID)
@@ -130,8 +220,37 @@ func (c *CachedAPIKeyResolver) Resolve(ctx context.Context, keyHash string) (*st
 		return nil, nil, err
 	}
 
-	c.storeEntry(keyHash, key, user, c.ttl, false, loadGeneration)
-	return cloneAPIKey(key), cloneAuthenticatedUser(user), nil
+	return key, user, nil
+}
+
+func waitForAPIKeyResolveFlight(ctx context.Context, flight *apiKeyResolveFlight) (*store.APIKey, *AuthenticatedUser, error) {
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-flight.done:
+		return cloneAPIKey(flight.key), cloneAuthenticatedUser(flight.user), flight.err
+	}
+}
+
+func (c *CachedAPIKeyResolver) completeFlight(
+	keyHash string,
+	flight *apiKeyResolveFlight,
+	key *store.APIKey,
+	user *AuthenticatedUser,
+	err error,
+) {
+	flight.once.Do(func() {
+		flight.key = cloneAPIKey(key)
+		flight.user = cloneAuthenticatedUser(user)
+		flight.err = err
+		close(flight.done)
+
+		c.flightMu.Lock()
+		if c.inFlight[keyHash] == flight {
+			delete(c.inFlight, keyHash)
+		}
+		c.flightMu.Unlock()
+	})
 }
 
 func normalizeAPIKeyCacheConfig(config APIKeyCacheConfig) APIKeyCacheConfig {
@@ -152,6 +271,12 @@ func normalizeAPIKeyCacheConfig(config APIKeyCacheConfig) APIKeyCacheConfig {
 	}
 	if config.ShardCount > config.MaxEntries {
 		config.ShardCount = config.MaxEntries
+	}
+	if config.MissMaxConcurrent <= 0 {
+		config.MissMaxConcurrent = defaultAuthMissMaxConcurrent
+	}
+	if config.MissMaxConcurrent > maximumAuthMissMaxConcurrent {
+		config.MissMaxConcurrent = maximumAuthMissMaxConcurrent
 	}
 	return config
 }
@@ -180,7 +305,7 @@ func (c *CachedAPIKeyResolver) storeEntry(
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	if c.generation.Load() != loadGeneration {
+	if c.closed.Load() || c.generation.Load() != loadGeneration {
 		return
 	}
 	if existingEntry, ok := shard.byHash[keyHash]; ok {
@@ -255,6 +380,17 @@ func (c *CachedAPIKeyResolver) InvalidateAll() {
 // Close stops the background expiration worker. It is safe to call repeatedly.
 func (c *CachedAPIKeyResolver) Close() {
 	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		c.generation.Add(1)
+		c.flightMu.Lock()
+		activeFlights := make(map[string]*apiKeyResolveFlight, len(c.inFlight))
+		for keyHash, flight := range c.inFlight {
+			activeFlights[keyHash] = flight
+		}
+		c.flightMu.Unlock()
+		for keyHash, flight := range activeFlights {
+			c.completeFlight(keyHash, flight, nil, nil, ErrAPIKeyResolverClosed)
+		}
 		close(c.stopCleanup)
 		<-c.cleanupDone
 	})

@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -8,6 +9,8 @@ import (
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/auth"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
+
+const defaultMaximumAPIKeysPerUser = 20
 
 func (handler *Handler) listKeys(writer http.ResponseWriter, request *http.Request) {
 	user, ok := auth.UserFromContext(request.Context())
@@ -27,7 +30,7 @@ func (handler *Handler) listKeys(writer http.ResponseWriter, request *http.Reque
 	}
 	page, err := handler.Store.ListKeysByUserPage(request.Context(), user.ID, cursor, limit)
 	if err != nil {
-		log.Printf("list keys for user %s failed: %v", user.ID, err)
+		log.Printf("list keys for user %s failed error_type=%T", user.ID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to load keys")
 		return
 	}
@@ -58,9 +61,17 @@ func (handler *Handler) createKey(writer http.ResponseWriter, request *http.Requ
 		writeError(writer, http.StatusBadRequest, "name is required")
 		return
 	}
-	apiKey, rawAPIKey, err := handler.Store.CreateKey(request.Context(), user.ID, createRequest.Name)
+	maximumKeys := handler.MaxAPIKeysPerUser
+	if maximumKeys <= 0 {
+		maximumKeys = defaultMaximumAPIKeysPerUser
+	}
+	apiKey, rawAPIKey, err := handler.Store.CreateKey(request.Context(), user.ID, createRequest.Name, maximumKeys)
 	if err != nil {
-		log.Printf("create key for user %s failed: %v", user.ID, err)
+		if errors.Is(err, store.ErrAPIKeyLimit) {
+			writeError(writer, http.StatusConflict, "API key limit reached")
+			return
+		}
+		log.Printf("create key for user %s failed error_type=%T", user.ID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to create key")
 		return
 	}
@@ -81,7 +92,7 @@ func (handler *Handler) revealKey(writer http.ResponseWriter, request *http.Requ
 	}
 	rawAPIKey, err := handler.Store.RevealKey(request.Context(), keyID)
 	if err != nil {
-		log.Printf("reveal key %s failed: %v", keyID, err)
+		log.Printf("reveal key %s failed error_type=%T", keyID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to reveal key")
 		return
 	}
@@ -113,7 +124,7 @@ func (handler *Handler) updateKey(writer http.ResponseWriter, request *http.Requ
 		Enabled: updateRequest.Enabled,
 	})
 	if err != nil {
-		log.Printf("update key %s failed: %v", keyID, err)
+		log.Printf("update key %s failed error_type=%T", keyID, err)
 		writeError(writer, http.StatusBadRequest, "failed to update key")
 		return
 	}
@@ -134,7 +145,7 @@ func (handler *Handler) deleteKey(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	if err := handler.Store.DeleteKey(request.Context(), keyID); err != nil {
-		log.Printf("delete key %s failed: %v", keyID, err)
+		log.Printf("delete key %s failed error_type=%T", keyID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to delete key")
 		return
 	}

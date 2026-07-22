@@ -2,6 +2,7 @@ package grok
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -39,7 +40,17 @@ func TestUpstreamProtocolsRejectOversizedResponses(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			err := testCase.parse()
-			if err == nil || !strings.Contains(err.Error(), "total byte limit") {
+			if err == nil {
+				t.Fatal("expected total byte limit error")
+			}
+			if testCase.name == "anthropic messages" {
+				var upstreamError *UpstreamError
+				if !errors.As(err, &upstreamError) || upstreamError.Category != UpstreamErrorCategoryResponseRead {
+					t.Fatalf("expected safe upstream response-read error, got %v", err)
+				}
+				return
+			}
+			if !strings.Contains(err.Error(), "total byte limit") {
 				t.Fatalf("expected total byte limit error, got %v", err)
 			}
 		})

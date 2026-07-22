@@ -13,7 +13,7 @@ func TestRecordUsageBatchPersistsRowsAndCoalescesAPIKeyUpdates(t *testing.T) {
 	sqliteStore.SetMetricsEnabled(true)
 	ctx := context.Background()
 	userID := testUserID(t, sqliteStore)
-	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "batch-usage-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "batch-usage-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestRecordUsageBatchRollsBackPrimaryTransactionOnInvalidRecord(t *testing.T
 	sqliteStore.SetMetricsEnabled(true)
 	ctx := context.Background()
 	userID := testUserID(t, sqliteStore)
-	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "rollback-batch-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "rollback-batch-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestRecordUsageBatchPersistsDebugRecordsWithoutRunningCleanup(t *testing.T)
 	sqliteStore := openTestDB(t)
 	ctx := context.Background()
 	userID := testUserID(t, sqliteStore)
-	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "debug-batch-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "debug-batch-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}

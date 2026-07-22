@@ -38,7 +38,7 @@ func (m *memStore) GetTierByID(_ context.Context, id string) (*store.Tier, error
 }
 
 func TestAPIKeyMiddleware(t *testing.T) {
-	raw := "grok_testtoken"
+	raw := generatedAPIKeyForTest('a')
 	hash := keyhash.HashAPIKey(raw)
 	st := &memStore{
 		byHash: map[string]*store.APIKey{
@@ -102,7 +102,7 @@ func TestAPIKeyMiddlewareRejectsInvalidDisabledKeyAndDisabledUser(t *testing.T) 
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			raw := "grok_" + stringsForAuthTest(testCase.name)
+			raw := generatedAPIKeyForTest('b')
 			hash := keyhash.HashAPIKey(raw)
 			st := &memStore{byHash: map[string]*store.APIKey{}, users: map[string]*store.User{}}
 			if testCase.key != nil {
@@ -135,7 +135,7 @@ func TestAPIKeyMiddlewareResolverErrorReturnsInternalServerError(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer grok_testtoken")
+	req.Header.Set("Authorization", "Bearer "+generatedAPIKeyForTest('c'))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -143,6 +143,151 @@ func TestAPIKeyMiddlewareResolverErrorReturnsInternalServerError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
+}
+
+func TestAPIKeyMiddlewareRejectsMalformedGeneratedKeysBeforeResolver(t *testing.T) {
+	testCases := []string{
+		"grok_short",
+		"grok_" + strings.Repeat("A", 64),
+		"grok_" + strings.Repeat("g", 64),
+		"other_" + strings.Repeat("a", 64),
+	}
+	for _, malformedKey := range testCases {
+		resolver := &recordingAPIKeyResolver{}
+		handler := APIKeyMiddleware(resolver)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("malformed API key reached next handler")
+		}))
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request.Header.Set("Authorization", "Bearer "+malformedKey)
+		response := httptest.NewRecorder()
+
+		handler.ServeHTTP(response, request)
+
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("key %q status = %d, want %d", malformedKey, response.Code, http.StatusForbidden)
+		}
+		if resolver.callCount != 0 {
+			t.Fatalf("key %q caused %d resolver calls, want 0", malformedKey, resolver.callCount)
+		}
+	}
+}
+
+func TestAuthorizationHeaderRejectionsDoNotReachAuthenticationDependencies(t *testing.T) {
+	panelUser := &store.User{
+		ID:           "authorization-header-user",
+		Username:     "authorization-header-user",
+		Role:         store.RoleUser,
+		Enabled:      true,
+		TokenVersion: 0,
+	}
+	panelToken, _, err := IssuePanelToken(testSecret, panelUser, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiKey := generatedAPIKeyForTest('f')
+
+	testCases := []struct {
+		name         string
+		headerValues func(string) []string
+	}{
+		{name: "missing", headerValues: func(string) []string { return nil }},
+		{name: "duplicate", headerValues: func(token string) []string { return []string{"Bearer " + token, "Bearer " + token} }},
+		{name: "wrong scheme", headerValues: func(token string) []string { return []string{"Basic " + token} }},
+		{name: "empty credential", headerValues: func(string) []string { return []string{"Bearer "} }},
+		{name: "leading whitespace", headerValues: func(token string) []string { return []string{" Bearer " + token} }},
+		{name: "trailing whitespace", headerValues: func(token string) []string { return []string{"Bearer " + token + " "} }},
+		{name: "multiple spaces", headerValues: func(token string) []string { return []string{"Bearer  " + token} }},
+		{name: "tab separator", headerValues: func(token string) []string { return []string{"Bearer\t" + token} }},
+		{name: "credential whitespace", headerValues: func(token string) []string { return []string{"Bearer " + token + " extra"} }},
+		{name: "comma joined credentials", headerValues: func(token string) []string { return []string{"Bearer " + token + ",Bearer " + token} }},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Run("panel JWT", func(t *testing.T) {
+				loader := &recordingPanelTokenLoader{}
+				downstreamCallCount := 0
+				handler := JWTMiddleware(testSecret, loader)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					downstreamCallCount++
+				}))
+				request := httptest.NewRequest(http.MethodGet, "/panel/v1/me", nil)
+				for _, headerValue := range testCase.headerValues(panelToken) {
+					request.Header.Add("Authorization", headerValue)
+				}
+				responseRecorder := httptest.NewRecorder()
+
+				handler.ServeHTTP(responseRecorder, request)
+
+				if responseRecorder.Code != http.StatusUnauthorized {
+					t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusUnauthorized)
+				}
+				if loader.userLoadCount != 0 || loader.tierLoadCount != 0 {
+					t.Fatalf("malformed header caused panel store loads: %+v", loader)
+				}
+				if downstreamCallCount != 0 {
+					t.Fatalf("malformed header reached panel downstream %d time(s)", downstreamCallCount)
+				}
+			})
+
+			t.Run("MCP API key", func(t *testing.T) {
+				resolver := &recordingAPIKeyResolver{}
+				downstreamCallCount := 0
+				handler := APIKeyMiddleware(resolver)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					downstreamCallCount++
+				}))
+				request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+				for _, headerValue := range testCase.headerValues(apiKey) {
+					request.Header.Add("Authorization", headerValue)
+				}
+				responseRecorder := httptest.NewRecorder()
+
+				handler.ServeHTTP(responseRecorder, request)
+
+				if responseRecorder.Code != http.StatusUnauthorized && responseRecorder.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want authentication rejection", responseRecorder.Code)
+				}
+				if resolver.callCount != 0 {
+					t.Fatalf("malformed header caused %d MCP resolver calls", resolver.callCount)
+				}
+				if downstreamCallCount != 0 {
+					t.Fatalf("malformed header reached MCP downstream %d time(s)", downstreamCallCount)
+				}
+			})
+		})
+	}
+}
+
+func TestAPIKeyMiddlewareMapsResolverSaturationToServiceUnavailable(t *testing.T) {
+	handler := APIKeyMiddleware(saturatedAPIKeyResolver{})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("saturated resolver reached next handler")
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+generatedAPIKeyForTest('e'))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if response.Header().Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After = %q, want 1", response.Header().Get("Retry-After"))
+	}
+}
+
+type recordingAPIKeyResolver struct {
+	callCount int
+}
+
+func (resolver *recordingAPIKeyResolver) Resolve(context.Context, string) (*store.APIKey, *AuthenticatedUser, error) {
+	resolver.callCount++
+	return nil, nil, nil
+}
+
+type saturatedAPIKeyResolver struct{}
+
+func (saturatedAPIKeyResolver) Resolve(context.Context, string) (*store.APIKey, *AuthenticatedUser, error) {
+	return nil, nil, ErrAPIKeyResolverSaturated
 }
 
 type failingAPIKeyResolver struct{}
@@ -270,18 +415,12 @@ func (s *cacheResolverStore) GetTierByName(_ context.Context, tierName string) (
 	return nil, nil
 }
 
-func stringsForAuthTest(value string) string {
-	var builder strings.Builder
-	for _, character := range value {
-		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' {
-			builder.WriteRune(character)
-		}
-	}
-	return builder.String()
+func generatedAPIKeyForTest(hexCharacter byte) string {
+	return "grok_" + strings.Repeat(string(hexCharacter), 64)
 }
 
 func TestAPIKeyMiddlewareMissingTierReturnsInternalServerError(t *testing.T) {
-	raw := "grok_missing_tier"
+	raw := generatedAPIKeyForTest('d')
 	hash := keyhash.HashAPIKey(raw)
 	st := &memStore{
 		byHash: map[string]*store.APIKey{
@@ -302,7 +441,7 @@ func TestAPIKeyMiddlewareMissingTierReturnsInternalServerError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d body=%q", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "tier") {
-		t.Fatalf("expected tier error body, got %q", rec.Body.String())
+	if rec.Body.String() != "authentication failed\n" {
+		t.Fatalf("expected generic authentication error body, got %q", rec.Body.String())
 	}
 }

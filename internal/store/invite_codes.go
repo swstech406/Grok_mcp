@@ -10,7 +10,7 @@ import (
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/keyhash"
 )
 
-const inviteCodeColumns = `id, code, code_hash, code_prefix, registration_limit, registration_count, enabled, created_by_user_id, created_at, updated_at`
+const inviteCodeColumns = `id, code_hash, code_prefix, registration_limit, registration_count, enabled, created_by_user_id, created_at, updated_at`
 
 func scanInviteCode(row interface {
 	Scan(dest ...any) error
@@ -23,7 +23,6 @@ func scanInviteCode(row interface {
 
 	err := row.Scan(
 		&inviteCode.ID,
-		&inviteCode.Code,
 		&inviteCode.CodeHash,
 		&inviteCode.CodePrefix,
 		&inviteCode.RegistrationLimit,
@@ -222,7 +221,7 @@ func (s *SQLiteStore) CreateInviteCode(ctx context.Context, createdByUserID stri
 		`INSERT INTO invite_codes (id, code, code_hash, code_prefix, registration_limit, registration_count, enabled, created_by_user_id, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
 		inviteCodeID,
-		rawInviteCode,
+		"",
 		keyhash.HashAPIKey(rawInviteCode),
 		codePrefix,
 		registrationLimit,

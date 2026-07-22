@@ -35,6 +35,10 @@ var ErrTierNotAssignable = errors.New("tier_id must reference an existing tier")
 // ErrQuotaSuccess 表示用户成功请求额度已耗尽。
 var ErrQuotaSuccess = errors.New("success request limit exceeded")
 
+// ErrAPIKeyLimit indicates that a user already owns the configured maximum
+// number of API keys. Disabled keys count toward this storage limit.
+var ErrAPIKeyLimit = errors.New("API key limit reached")
+
 // ErrInviteCodeNotFound 表示按 ID 未找到邀请码。
 var ErrInviteCodeNotFound = errors.New("invite code not found")
 
@@ -150,10 +154,10 @@ type APIKey struct {
 	keyEncryptionVersion int
 }
 
-// InviteCode 表示一条注册邀请码。管理员需要在创建后继续复制邀请码，因此数据库保存明文；哈希用于注册时查找。
+// InviteCode represents invite metadata. CodeHash is authoritative for
+// redemption; raw invite material is returned only by CreateInviteCode.
 type InviteCode struct {
 	ID                string
-	Code              string
 	CodeHash          string
 	CodePrefix        string
 	RegistrationLimit int
@@ -387,7 +391,7 @@ type Store interface {
 	DeleteTier(ctx context.Context, id string) error
 	CountUsersByTier(ctx context.Context, tierID string) (int64, error)
 
-	CreateKey(ctx context.Context, userID, name string) (*APIKey, string, error)
+	CreateKey(ctx context.Context, userID, name string, maximumKeys int) (*APIKey, string, error)
 	ConfigureAPIKeyEncryption(applicationSecret string) error
 	RevealKey(ctx context.Context, id string) (string, error)
 	GetKeyByHash(ctx context.Context, hash string) (*APIKey, error)

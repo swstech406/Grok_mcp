@@ -279,7 +279,7 @@ function renderSecretModal(modal) {
   const secretType = modal.secretType === "invite" ? "邀请码" : "API 密钥";
   const body = `
     <div class="secret-display"><span class="secret-label">${escapeHTML(secretType)}</span><code class="secret-value">${escapeHTML(modal.secret)}</code></div>
-    <div class="warning-callout">${renderIcon("warning")}<span>${modal.secretType === "invite" ? "请将邀请码安全发送给目标用户。" : "请立即复制并安全保存。关闭窗口后，API 密钥明文将无法再次获取。"}</span></div>
+    <div class="warning-callout">${renderIcon("warning")}<span>${modal.secretType === "invite" ? "请立即复制并安全发送给目标用户。关闭窗口后，完整邀请码将无法再次获取。" : "请立即复制并安全保存。关闭窗口后，API 密钥明文将无法再次获取。"}</span></div>
   `;
   const footer = `<button class="button button-secondary" type="button" data-action="close-modal">完成</button><button class="button button-accent" type="button" data-action="copy-value" data-value="${escapeHTML(modal.secret)}">${renderIcon("copy")} 复制${escapeHTML(secretType)}</button>`;
   return renderModalFrame({ title: modal.title || `${secretType}已创建`, description: modal.subtitle || "创建成功", body, footer });
@@ -400,7 +400,7 @@ function renderTierModal(modal, isEdit) {
 }
 
 function renderCreateInviteModal(modal) {
-  const body = `<form class="stack-form" id="create-invite-form" data-form="create-invite"><label class="field-group"><span class="field-label">最多注册人数</span><input class="text-input" name="registration_limit" type="number" min="1" step="1" value="1" required autofocus></label><div class="warning-callout">${renderIcon("warning")}<span>邀请码创建后可被重复使用，直到达到注册人数上限或被管理员停用。</span></div>${modal.error ? `<div class="inline-alert">${renderIcon("alert")}<span>${escapeHTML(modal.error)}</span></div>` : ""}</form>`;
+  const body = `<form class="stack-form" id="create-invite-form" data-form="create-invite"><label class="field-group"><span class="field-label">最多注册人数</span><input class="text-input" name="registration_limit" type="number" min="1" step="1" value="1" required autofocus></label><div class="warning-callout">${renderIcon("warning")}<span>完整邀请码只显示一次，请在创建后立即保存。邀请码可重复使用，直到达到注册人数上限或被管理员停用。</span></div>${modal.error ? `<div class="inline-alert">${renderIcon("alert")}<span>${escapeHTML(modal.error)}</span></div>` : ""}</form>`;
   const footer = `<button class="button button-secondary" type="button" data-action="close-modal">取消</button><button class="button button-primary" type="submit" form="create-invite-form" ${modal.busy ? "disabled" : ""}>${renderIcon("plus")} 创建邀请码</button>`;
   return renderModalFrame({ title: "创建邀请码", description: "为邀请注册模式生成新的注册凭证。", body, footer });
 }

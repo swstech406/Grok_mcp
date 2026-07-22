@@ -45,7 +45,7 @@ func (handler *Handler) keyUsage(writer http.ResponseWriter, request *http.Reque
 	}
 	stats, err := handler.Store.GetUsageStats(request.Context(), keyID, since)
 	if err != nil {
-		log.Printf("usage stats for key %s failed: %v", keyID, err)
+		log.Printf("usage stats for key %s failed error_type=%T", keyID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to load usage")
 		return
 	}
@@ -75,7 +75,7 @@ func (handler *Handler) userUsage(writer http.ResponseWriter, request *http.Requ
 	}
 	stats, err := handler.Store.GetUserUsageStatsPage(request.Context(), user.ID, since, cursor, limit)
 	if err != nil {
-		log.Printf("usage stats for user %s failed: %v", user.ID, err)
+		log.Printf("usage stats for user %s failed error_type=%T", user.ID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to load usage")
 		return
 	}
@@ -105,7 +105,7 @@ func (handler *Handler) userUsageRecords(writer http.ResponseWriter, request *ht
 	}
 	page, err := handler.Store.ListUsageRecordsPage(request.Context(), store.UsageRecordListScope{UserID: user.ID}, since, cursor, limit)
 	if err != nil {
-		log.Printf("usage record page for user %s failed: %v", user.ID, err)
+		log.Printf("usage record page for user %s failed error_type=%T", user.ID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to load usage records")
 		return
 	}
@@ -134,7 +134,7 @@ func (handler *Handler) usageRecordDetail(writer http.ResponseWriter, request *h
 		return
 	}
 	if err != nil {
-		log.Printf("usage record %d detail failed: %v", usageRecordID, err)
+		log.Printf("usage record %d detail failed error_type=%T", usageRecordID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to load usage record")
 		return
 	}
@@ -164,7 +164,7 @@ func (handler *Handler) adminUserUsage(writer http.ResponseWriter, request *http
 	}
 	stats, err := handler.Store.GetUserUsageStatsPage(request.Context(), userID, since, cursor, limit)
 	if err != nil {
-		log.Printf("admin usage stats for user %s failed: %v", userID, err)
+		log.Printf("admin usage stats for user %s failed error_type=%T", userID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to load usage")
 		return
 	}

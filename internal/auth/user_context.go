@@ -40,6 +40,24 @@ type AuthenticatedUser struct {
 
 type userCtxKey struct{}
 
+// TierResolutionError retains the assigned tier identifier for safe operator
+// diagnostics while keeping the ordinary error string free of internal data.
+type TierResolutionError struct {
+	TierID string
+	Cause  error
+}
+
+func (tierResolutionError *TierResolutionError) Error() string {
+	return "assigned tier is unavailable"
+}
+
+func (tierResolutionError *TierResolutionError) Unwrap() error {
+	if tierResolutionError == nil {
+		return nil
+	}
+	return tierResolutionError.Cause
+}
+
 // WithUser attaches an authenticated user (with effective limits) to the request context.
 func WithUser(ctx context.Context, user *AuthenticatedUser) context.Context {
 	return context.WithValue(ctx, userCtxKey{}, user)
@@ -90,12 +108,12 @@ func resolveTier(ctx context.Context, loader TierLoader, user *store.User) (*sto
 	tier, err := loader.GetTierByID(ctx, tierID)
 	if err != nil {
 		if errors.Is(err, store.ErrTierNotFound) {
-			return nil, fmt.Errorf("assigned tier %q not found: %w", tierID, err)
+			return nil, &TierResolutionError{TierID: tierID, Cause: store.ErrTierNotFound}
 		}
 		return nil, err
 	}
 	if tier == nil {
-		return nil, fmt.Errorf("assigned tier %q not found: %w", tierID, store.ErrTierNotFound)
+		return nil, &TierResolutionError{TierID: tierID, Cause: store.ErrTierNotFound}
 	}
 	return tier, nil
 }

@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const anthropicDefaultMaxTokens = 4096
+const (
+	anthropicDefaultMaxTokens = 4096
+	anthropicProtocolName     = "anthropic_messages"
+)
 
 const anthropicXSearchInstruction = "Search public posts on X (x.com) only. " +
 	"Use the web search tool to find relevant posts, then return a final answer with direct X post URLs."
@@ -83,11 +86,18 @@ type anthropicUsage struct {
 }
 
 func (s clientSnapshot) searchAnthropicMessages(ctx context.Context, req SearchRequest) (*SearchResult, error) {
-	model, body, err := buildAnthropicMessagesRequestBody(req, s.defaultModel)
+	_, body, err := buildAnthropicMessagesRequestBody(req, s.defaultModel)
 	if err != nil {
 		return nil, err
 	}
-	s.log.Debugf("SearchStream start protocol=%s model=%s tool=%s query=%q", s.protocol, model, req.ToolType, req.Query)
+	s.log.Debugf(
+		"SearchStream start protocol=%s tool=%s query_bytes=%d allowed_domains=%d excluded_domains=%d",
+		s.protocol,
+		req.ToolType,
+		len(req.Query),
+		len(req.AllowedDomains),
+		len(req.ExcludedDomains),
+	)
 
 	response, err := s.postJSON(ctx, "/v1/messages", body, true)
 	if err != nil {
@@ -145,15 +155,15 @@ func buildAnthropicMessagesRequestBody(req SearchRequest, defaultModel string) (
 func parseAnthropicMessagesResponse(body io.Reader) (*SearchResult, error) {
 	rawBody, err := readAllUpstreamResponse(body)
 	if err != nil {
-		return nil, fmt.Errorf("read anthropic messages response: %w", err)
+		return nil, newUpstreamResponseReadError(anthropicProtocolName, "read_messages_response", 0, 0, err)
 	}
 
 	var answer strings.Builder
 	collector := newCitationCollector()
 	usage := anthropicUsage{}
-	consumeResponse := func(response anthropicMessagesResponse) error {
+	consumeResponse := func(response anthropicMessagesResponse, payloadBytes int) error {
 		if response.Type == "error" {
-			return fmt.Errorf("upstream stream error: %s", string(rawBody))
+			return newUpstreamStreamError(anthropicProtocolName, response.Type, payloadBytes)
 		}
 		if response.Message != nil {
 			if err := collectAnthropicContent(&answer, collector, response.Message.Content); err != nil {
@@ -188,7 +198,7 @@ func parseAnthropicMessagesResponse(body io.Reader) (*SearchResult, error) {
 			if response.Type == "message_stop" {
 				sawMessageStop = true
 			}
-			return consumeResponse(response)
+			return consumeResponse(response, len(payload))
 		})
 		if err == nil && !sawMessageStop {
 			return nil, fmt.Errorf("upstream anthropic messages stream ended prematurely without message_stop event")
@@ -197,7 +207,7 @@ func parseAnthropicMessagesResponse(body io.Reader) (*SearchResult, error) {
 		var response anthropicMessagesResponse
 		err = json.Unmarshal(rawBody, &response)
 		if err == nil {
-			err = consumeResponse(response)
+			err = consumeResponse(response, len(rawBody))
 		}
 	}
 	if err != nil {

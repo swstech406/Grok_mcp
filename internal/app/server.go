@@ -6,13 +6,11 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"errors"
 	"fmt"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -30,7 +28,6 @@ import (
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/usage"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"golang.org/x/crypto/bcrypt"
 )
 
 const bootstrapAdminUsername = "admin"
@@ -47,12 +44,6 @@ var contentSecurityPolicy = strings.Join([]string{
 	"frame-ancestors 'none'",
 	"form-action 'self'",
 }, "; ")
-
-// BootstrapAdminCredentials holds the one-time bootstrap admin password printed at startup.
-type BootstrapAdminCredentials struct {
-	Username string
-	Password string
-}
 
 // HTTPDependencies contains the initialized resources needed to build the
 // production HTTP routing tree. Resource ownership remains with the caller.
@@ -136,12 +127,12 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	})
 	mcpserver.RegisterToolsWithLogger(mcpServer, grokClient, logx.NewWithDebugState("mcp", debugState))
 
-	bootstrapCredentials, err := EnsureBootstrapAdmin(ctx, st)
+	bootstrapCredentials, err := EnsureBootstrapAdmin(ctx, st, cfg.BootstrapCredentialsPath)
 	if err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
 	if bootstrapCredentials != nil {
-		log.Printf("BOOTSTRAP ADMIN CREATED username=%s password=%s", bootstrapCredentials.Username, bootstrapCredentials.Password)
+		logBootstrapCredentialsAvailable(cfg.BootstrapCredentialsPath)
 	}
 
 	usageWriter := store.NewAsyncUsageWriter(st, 256)
@@ -162,21 +153,32 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	defer usageMaintenanceRunner.Close()
 
-	userLimiter := ratelimit.NewUserLimiter()
+	userLimiter := ratelimit.NewUserLimiterWithConfig(ratelimit.UserLimiterConfig{
+		MaximumEntries:      cfg.UserRPMMaximumEntries,
+		FallbackBucketCount: cfg.UserRPMFallbackBuckets,
+	})
 	defer userLimiter.Close()
 	searchConcurrencyLimiter := ratelimit.NewSearchConcurrencyLimiter(
 		serverSettings.MCPGlobalSearchConcurrency,
 		serverSettings.MCPUserSearchConcurrency,
 	)
 	defer searchConcurrencyLimiter.Close()
+	clientIPResolver := ratelimit.NewClientIPResolverWithConfig(ratelimit.ClientIPResolverConfig{
+		Mode:                 cfg.ClientIPMode,
+		TrustedProxyPrefixes: cfg.TrustedProxyCIDRs,
+	})
 	mcpIPLimiter := ratelimit.NewIPLimiterWithConfig(ratelimit.IPLimiterConfig{
 		RequestsPerMinute:       cfg.MCPIPRPM,
+		ClientIPResolver:        clientIPResolver,
 		MaximumEntriesPerShard:  cfg.MCPIPMaxEntriesPerShard,
 		FallbackBucketsPerShard: cfg.MCPIPFallbackBucketsPerShard,
 	})
 	defer mcpIPLimiter.Close()
 
-	authResolver := auth.NewCachedAPIKeyResolver(st, 30*time.Second)
+	authResolver := auth.NewCachedAPIKeyResolverWithConfig(st, auth.APIKeyCacheConfig{
+		TTL:               30 * time.Second,
+		MissMaxConcurrent: cfg.AuthKeyMissMaxConcurrent,
+	})
 	defer authResolver.Close()
 	settingsApplier := &runtimeServerSettingsApplier{
 		upstreamApplier:          grokClient,
@@ -186,15 +188,26 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	settingsApplier.liveVersion.Store(storedServerSettings.Revision)
 	panelHandler := &panel.Handler{
-		Store:                 st,
-		JWTSecret:             cfg.JWTSecret,
+		Store:                    st,
+		JWTSecret:                cfg.JWTSecret,
+		MaxAPIKeysPerUser:        cfg.MaxAPIKeysPerUser,
+		BootstrapAdminUsername:   bootstrapAdminUsername,
+		BootstrapCredentialsPath: cfg.BootstrapCredentialsPath,
+		BootstrapCredentialCleaner: func() error {
+			return os.Remove(cfg.BootstrapCredentialsPath)
+		},
 		InitialServerSettings: serverSettings,
 		SettingsApplier:       settingsApplier,
 		ModelLister:           grokClient,
 		AuthCache:             authResolver,
-		SQLiteMetrics:         st,
-		UsageWriterMetrics:    usageWriter,
-		IPLimiterMetrics:      mcpIPLimiter,
+		AuthProtector: panel.NewAuthProtector(panel.AuthProtectorConfig{
+			ClientIPResolver:          clientIPResolver,
+			PasswordMaximumConcurrent: cfg.AuthPasswordMaxConcurrent,
+		}),
+		SQLiteMetrics:      st,
+		UsageWriterMetrics: usageWriter,
+		IPLimiterMetrics:   mcpIPLimiter,
+		UserLimiterMetrics: userLimiter,
 	}
 	httpHandler := BuildHTTPHandler(HTTPDependencies{
 		Store:                    st,
@@ -308,77 +321,6 @@ func InitializeServerSettings(ctx context.Context, st store.Store, cfg *config.C
 		return nil, fmt.Errorf("persist settings: %w", err)
 	}
 	return persistedSettings, nil
-}
-
-// EnsureBootstrapAdmin creates a default admin when no enabled admin exists.
-func EnsureBootstrapAdmin(ctx context.Context, st store.Store) (*BootstrapAdminCredentials, error) {
-	enabledAdminCount, err := st.CountEnabledAdmins(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("count enabled admins: %w", err)
-	}
-	if enabledAdminCount > 0 {
-		return nil, nil
-	}
-
-	password, err := randomBootstrapPassword(12)
-	if err != nil {
-		return nil, fmt.Errorf("generate password: %w", err)
-	}
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
-	if err != nil {
-		return nil, fmt.Errorf("hash password: %w", err)
-	}
-
-	if _, err := st.CreateUser(ctx, bootstrapAdminUsername, string(passwordHash), store.RoleAdmin); err != nil {
-		if errors.Is(err, store.ErrUsernameTaken) {
-			return promoteExistingBootstrapAdmin(ctx, st, string(passwordHash), password)
-		}
-		return nil, fmt.Errorf("create admin user: %w", err)
-	}
-
-	return &BootstrapAdminCredentials{Username: bootstrapAdminUsername, Password: password}, nil
-}
-
-// promoteExistingBootstrapAdmin 在 "admin" 用户名已被普通用户占用时，
-// 将其提升为启用状态的管理员并重置密码，返回新的凭证。
-func promoteExistingBootstrapAdmin(ctx context.Context, st store.Store, passwordHash, password string) (*BootstrapAdminCredentials, error) {
-	existingUser, err := st.GetUserByUsername(ctx, bootstrapAdminUsername)
-	if err != nil {
-		return nil, fmt.Errorf("lookup existing admin user: %w", err)
-	}
-	if existingUser == nil {
-		return nil, fmt.Errorf("username taken but user not found")
-	}
-	enabled := true
-	adminRole := store.RoleAdmin
-	revokeTokens := true
-	if _, err := st.UpdateUser(ctx, existingUser.ID, store.UserUpdates{
-		Enabled:      &enabled,
-		Role:         &adminRole,
-		PasswordHash: &passwordHash,
-		RevokeTokens: &revokeTokens,
-	}); err != nil {
-		return nil, fmt.Errorf("promote existing admin: %w", err)
-	}
-	return &BootstrapAdminCredentials{Username: bootstrapAdminUsername, Password: password}, nil
-}
-
-func randomBootstrapPassword(length int) (string, error) {
-	const passwordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-	if length <= 0 {
-		return "", fmt.Errorf("password length must be positive")
-	}
-
-	passwordBytes := make([]byte, length)
-	maxIndex := big.NewInt(int64(len(passwordAlphabet)))
-	for index := range passwordBytes {
-		randomIndex, err := rand.Int(rand.Reader, maxIndex)
-		if err != nil {
-			return "", err
-		}
-		passwordBytes[index] = passwordAlphabet[randomIndex.Int64()]
-	}
-	return string(passwordBytes), nil
 }
 
 // SecurityHeadersMiddleware attaches baseline browser security headers.

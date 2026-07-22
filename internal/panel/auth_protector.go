@@ -31,6 +31,9 @@ const (
 	defaultRegisterIPMaximumEntries              = 2048
 	defaultRegistrationChallengeIPMaximumEntries = 2048
 	defaultLoginFailureMaximumEntries            = 8192
+	defaultUsernameFailureMaximumEntries         = 8192
+	defaultUsernameFailureFallbackBuckets        = 16
+	defaultPasswordMaximumConcurrent             = 4
 	defaultAuthEndpointFallbackBuckets           = 16
 	maximumAuthEndpointEntries                   = 65536
 	maximumLoginFailureEntries                   = 131072
@@ -89,9 +92,20 @@ type AuthEndpointMetricsSnapshot struct {
 type LoginFailureMetricsSnapshot struct {
 	CurrentEntries        int64  `json:"current_entries"`
 	MaximumEntries        int64  `json:"maximum_entries"`
+	FallbackBucketCount   int64  `json:"fallback_bucket_count"`
 	Admissions            uint64 `json:"admissions"`
 	ExpiredEntriesRemoved uint64 `json:"expired_entries_removed"`
 	CapacityRejections    uint64 `json:"capacity_rejections"`
+	FallbackAttempts      uint64 `json:"fallback_attempts"`
+	FallbackRejections    uint64 `json:"fallback_rejections"`
+}
+
+// PasswordWorkMetricsSnapshot reports aggregate bcrypt admission state.
+type PasswordWorkMetricsSnapshot struct {
+	CurrentWork int64  `json:"current_work"`
+	Capacity    int64  `json:"capacity"`
+	Admissions  uint64 `json:"admissions"`
+	Rejections  uint64 `json:"rejections"`
 }
 
 // AuthProtectorMetricsSnapshot is an aggregate, non-sensitive protector view.
@@ -100,11 +114,14 @@ type AuthProtectorMetricsSnapshot struct {
 	Register              AuthEndpointMetricsSnapshot `json:"register"`
 	RegistrationChallenge AuthEndpointMetricsSnapshot `json:"registration_challenge"`
 	LoginFailures         LoginFailureMetricsSnapshot `json:"login_failures"`
+	UsernameFailures      LoginFailureMetricsSnapshot `json:"username_failures"`
+	PasswordWork          PasswordWorkMetricsSnapshot `json:"password_work"`
 }
 
 // AuthProtectorConfig controls the in-memory protections for unauthenticated
 // panel auth endpoints. Zero values are replaced with conservative defaults.
 type AuthProtectorConfig struct {
+	ClientIPResolver                      *ratelimit.ClientIPResolver
 	LoginIPRequestsPerMinute              int
 	LoginIPBurst                          int
 	RegisterIPRequestsPerMinute           int
@@ -120,6 +137,9 @@ type AuthProtectorConfig struct {
 	RegisterIPMaximumEntries              int
 	RegistrationChallengeIPMaximumEntries int
 	LoginFailureMaximumEntries            int
+	UsernameFailureMaximumEntries         int
+	UsernameFailureFallbackBuckets        int
+	PasswordMaximumConcurrent             int
 	AuthEndpointFallbackBuckets           int
 }
 
@@ -131,23 +151,38 @@ type AuthProtector struct {
 	now              func() time.Time
 	clientIPResolver *ratelimit.ClientIPResolver
 
-	endpointStates   map[authEndpoint]*authEndpointState
-	fallbackHashSeed maphash.Seed
-	failures         map[string]*loginFailureEntry
+	endpointStates            map[authEndpoint]*authEndpointState
+	fallbackHashSeed          maphash.Seed
+	failures                  map[string]*loginFailureEntry
+	usernameFailures          map[string]*loginFailureEntry
+	usernameFailureFallbacks  []*loginFailureEntry
+	passwordMaximumConcurrent int64
 
-	loginFailureThreshold             int
-	loginFailureWindow                time.Duration
-	loginBaseLockout                  time.Duration
-	loginMaxLockout                   time.Duration
-	loginFailureMaximumEntries        int
-	loginFailureNextExpiryCheck       time.Time
-	loginFailureExpiryCheckKnown      bool
-	registrationProof                 *registrationProofState
-	loginFailureCurrentEntries        atomic.Int64
-	loginFailureAdmissions            atomic.Uint64
-	loginFailureExpiredEntriesRemoved atomic.Uint64
-	loginFailureCapacityRejections    atomic.Uint64
-	loginFailureCleanupScans          atomic.Uint64
+	loginFailureThreshold                int
+	loginFailureWindow                   time.Duration
+	loginBaseLockout                     time.Duration
+	loginMaxLockout                      time.Duration
+	loginFailureMaximumEntries           int
+	usernameFailureMaximumEntries        int
+	loginFailureNextExpiryCheck          time.Time
+	loginFailureExpiryCheckKnown         bool
+	registrationProof                    *registrationProofState
+	loginFailureCurrentEntries           atomic.Int64
+	loginFailureAdmissions               atomic.Uint64
+	loginFailureExpiredEntriesRemoved    atomic.Uint64
+	loginFailureCapacityRejections       atomic.Uint64
+	loginFailureCleanupScans             atomic.Uint64
+	usernameFailureCurrentEntries        atomic.Int64
+	usernameFailureAdmissions            atomic.Uint64
+	usernameFailureExpiredEntriesRemoved atomic.Uint64
+	usernameFailureCapacityRejections    atomic.Uint64
+	usernameFailureFallbackAttempts      atomic.Uint64
+	usernameFailureFallbackRejections    atomic.Uint64
+	usernameFailureNextExpiryCheck       time.Time
+	usernameFailureExpiryCheckKnown      bool
+	passwordWorkCurrent                  atomic.Int64
+	passwordWorkAdmissions               atomic.Uint64
+	passwordWorkRejections               atomic.Uint64
 
 	lastCleanup time.Time
 }
@@ -201,6 +236,21 @@ func NewAuthProtector(config AuthProtectorConfig) *AuthProtector {
 		defaultLoginFailureMaximumEntries,
 		maximumLoginFailureEntries,
 	)
+	config.UsernameFailureMaximumEntries = normalizeBoundedAuthCapacity(
+		config.UsernameFailureMaximumEntries,
+		defaultUsernameFailureMaximumEntries,
+		maximumLoginFailureEntries,
+	)
+	config.UsernameFailureFallbackBuckets = normalizeBoundedAuthCapacity(
+		config.UsernameFailureFallbackBuckets,
+		defaultUsernameFailureFallbackBuckets,
+		maximumAuthEndpointFallbackBuckets,
+	)
+	config.PasswordMaximumConcurrent = normalizeBoundedAuthCapacity(
+		config.PasswordMaximumConcurrent,
+		defaultPasswordMaximumConcurrent,
+		64,
+	)
 	config.AuthEndpointFallbackBuckets = normalizeBoundedAuthCapacity(
 		config.AuthEndpointFallbackBuckets,
 		defaultAuthEndpointFallbackBuckets,
@@ -208,17 +258,25 @@ func NewAuthProtector(config AuthProtectorConfig) *AuthProtector {
 	)
 
 	now := time.Now
+	clientIPResolver := config.ClientIPResolver
+	if clientIPResolver == nil {
+		clientIPResolver = ratelimit.NewClientIPResolver()
+	}
 	protector := &AuthProtector{
-		now:                        now,
-		clientIPResolver:           ratelimit.NewClientIPResolver(),
-		endpointStates:             make(map[authEndpoint]*authEndpointState, 3),
-		fallbackHashSeed:           maphash.MakeSeed(),
-		failures:                   make(map[string]*loginFailureEntry),
-		loginFailureThreshold:      config.LoginFailureThreshold,
-		loginFailureWindow:         config.LoginFailureWindow,
-		loginBaseLockout:           config.LoginBaseLockout,
-		loginMaxLockout:            config.LoginMaxLockout,
-		loginFailureMaximumEntries: config.LoginFailureMaximumEntries,
+		now:                           now,
+		clientIPResolver:              clientIPResolver,
+		endpointStates:                make(map[authEndpoint]*authEndpointState, 3),
+		fallbackHashSeed:              maphash.MakeSeed(),
+		failures:                      make(map[string]*loginFailureEntry),
+		usernameFailures:              make(map[string]*loginFailureEntry),
+		usernameFailureFallbacks:      make([]*loginFailureEntry, config.UsernameFailureFallbackBuckets),
+		passwordMaximumConcurrent:     int64(config.PasswordMaximumConcurrent),
+		loginFailureThreshold:         config.LoginFailureThreshold,
+		loginFailureWindow:            config.LoginFailureWindow,
+		loginBaseLockout:              config.LoginBaseLockout,
+		loginMaxLockout:               config.LoginMaxLockout,
+		loginFailureMaximumEntries:    config.LoginFailureMaximumEntries,
+		usernameFailureMaximumEntries: config.UsernameFailureMaximumEntries,
 		registrationProof: newRegistrationProofState(
 			config.RegistrationProofDifficultyBits,
 			config.RegistrationProofValidity,
@@ -275,13 +333,13 @@ func (h *Handler) authProtector() *AuthProtector {
 	return h.AuthProtector
 }
 
-// RateLimitAuthEndpoint applies an IP-scoped token bucket to public auth
-// endpoints only when a valid forwarded client IP can be resolved.
+// RateLimitAuthEndpoint applies an IP-scoped token bucket to every public auth
+// request after validating identity against the configured network boundary.
 func (p *AuthProtector) RateLimitAuthEndpoint(endpoint authEndpoint, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientIP, shouldApplyIPProtection, err := p.clientIPForProtection(r)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, ratelimit.ErrInvalidForwardedClientIPHeaders.Error())
+			writeClientIPResolutionError(w, err)
 			return
 		}
 		if !shouldApplyIPProtection {
@@ -299,6 +357,14 @@ func (p *AuthProtector) RateLimitAuthEndpoint(endpoint authEndpoint, next http.H
 	})
 }
 
+func writeClientIPResolutionError(writer http.ResponseWriter, err error) {
+	if errors.Is(err, ratelimit.ErrUntrustedClientIPPeer) {
+		writeError(writer, http.StatusForbidden, ratelimit.ErrUntrustedClientIPPeer.Error())
+		return
+	}
+	writeError(writer, http.StatusBadRequest, ratelimit.ErrInvalidClientIPIdentity.Error())
+}
+
 func (p *AuthProtector) clientIP(request *http.Request) string {
 	return p.clientIPResolver.Resolve(request)
 }
@@ -309,7 +375,7 @@ func (p *AuthProtector) clientIPForProtection(request *http.Request) (string, bo
 		return "", false, err
 	}
 	if !clientAddress.IsValid() {
-		return "", false, nil
+		return "", false, ratelimit.ErrInvalidClientIPIdentity
 	}
 	return clientAddress.String(), true, nil
 }
@@ -401,10 +467,17 @@ const (
 )
 
 type loginAttempt struct {
-	protector    *AuthProtector
-	failureKey   string
-	entry        *loginFailureEntry
-	completeOnce sync.Once
+	protector           *AuthProtector
+	sourceReservation   loginFailureReservation
+	usernameReservation loginFailureReservation
+	completeOnce        sync.Once
+}
+
+type loginFailureReservation struct {
+	key      string
+	entry    *loginFailureEntry
+	username bool
+	fallback bool
 }
 
 // beginLoginAttempt reserves bounded failure-tracking state before user lookup
@@ -416,16 +489,31 @@ func (p *AuthProtector) beginLoginAttempt(username, clientIP string) (*loginAtte
 	p.cleanupLocked(now)
 
 	failureKey := loginFailureKey(username, clientIP)
-	entry := p.failures[failureKey]
-	if entry != nil {
-		if entry.lockedUntil.After(now) {
-			return nil, entry.lockedUntil.Sub(now)
+	sourceReservation, retryAfter := p.reserveSourceFailureLocked(failureKey, now)
+	if sourceReservation.entry == nil {
+		return nil, retryAfter
+	}
+
+	normalizedUsername := normalizeLoginUsername(username)
+	usernameReservation, retryAfter := p.reserveUsernameFailureLocked(normalizedUsername, now)
+	if usernameReservation.entry == nil {
+		p.abandonFailureReservationLocked(sourceReservation, now)
+		return nil, retryAfter
+	}
+
+	return &loginAttempt{
+		protector:           p,
+		sourceReservation:   sourceReservation,
+		usernameReservation: usernameReservation,
+	}, 0
+}
+
+func (p *AuthProtector) reserveSourceFailureLocked(failureKey string, now time.Time) (loginFailureReservation, time.Duration) {
+	if entry := p.failures[failureKey]; entry != nil {
+		if retryAfter := p.reserveExistingFailureEntryLocked(entry, now); retryAfter > 0 {
+			return loginFailureReservation{}, retryAfter
 		}
-		if entry.inFlightAttempts > 0 && entry.failureCount+entry.inFlightAttempts >= p.loginFailureThreshold {
-			return nil, time.Minute
-		}
-		entry.inFlightAttempts++
-		return &loginAttempt{protector: p, failureKey: failureKey, entry: entry}, 0
+		return loginFailureReservation{key: failureKey, entry: entry}, 0
 	}
 
 	shouldCheckForExpiredEntries := p.loginFailureExpiryCheckKnown && !now.Before(p.loginFailureNextExpiryCheck)
@@ -434,14 +522,60 @@ func (p *AuthProtector) beginLoginAttempt(username, clientIP string) (*loginAtte
 	}
 	if len(p.failures) >= p.loginFailureMaximumEntries {
 		p.loginFailureCapacityRejections.Add(1)
-		return nil, time.Minute
+		return loginFailureReservation{}, time.Minute
 	}
 
-	entry = &loginFailureEntry{inFlightAttempts: 1}
+	entry := &loginFailureEntry{inFlightAttempts: 1}
 	p.failures[failureKey] = entry
 	p.loginFailureCurrentEntries.Add(1)
 	p.loginFailureAdmissions.Add(1)
-	return &loginAttempt{protector: p, failureKey: failureKey, entry: entry}, 0
+	return loginFailureReservation{key: failureKey, entry: entry}, 0
+}
+
+func (p *AuthProtector) reserveUsernameFailureLocked(username string, now time.Time) (loginFailureReservation, time.Duration) {
+	if entry := p.usernameFailures[username]; entry != nil {
+		if retryAfter := p.reserveExistingFailureEntryLocked(entry, now); retryAfter > 0 {
+			return loginFailureReservation{}, retryAfter
+		}
+		return loginFailureReservation{key: username, entry: entry, username: true}, 0
+	}
+
+	shouldCheckForExpiredEntries := p.usernameFailureExpiryCheckKnown && !now.Before(p.usernameFailureNextExpiryCheck)
+	if len(p.usernameFailures) >= p.usernameFailureMaximumEntries && shouldCheckForExpiredEntries {
+		p.cleanupUsernameFailuresLocked(now)
+	}
+	if len(p.usernameFailures) < p.usernameFailureMaximumEntries {
+		entry := &loginFailureEntry{inFlightAttempts: 1}
+		p.usernameFailures[username] = entry
+		p.usernameFailureCurrentEntries.Add(1)
+		p.usernameFailureAdmissions.Add(1)
+		return loginFailureReservation{key: username, entry: entry, username: true}, 0
+	}
+
+	p.usernameFailureCapacityRejections.Add(1)
+	fallbackIndex := p.fallbackBucketIndexFor(username, len(p.usernameFailureFallbacks))
+	entry := p.usernameFailureFallbacks[fallbackIndex]
+	if entry == nil {
+		entry = &loginFailureEntry{}
+		p.usernameFailureFallbacks[fallbackIndex] = entry
+	}
+	p.usernameFailureFallbackAttempts.Add(1)
+	if retryAfter := p.reserveExistingFailureEntryLocked(entry, now); retryAfter > 0 {
+		p.usernameFailureFallbackRejections.Add(1)
+		return loginFailureReservation{}, retryAfter
+	}
+	return loginFailureReservation{entry: entry, username: true, fallback: true}, 0
+}
+
+func (p *AuthProtector) reserveExistingFailureEntryLocked(entry *loginFailureEntry, now time.Time) time.Duration {
+	if entry.lockedUntil.After(now) {
+		return entry.lockedUntil.Sub(now)
+	}
+	if entry.inFlightAttempts > 0 && entry.failureCount+entry.inFlightAttempts >= p.loginFailureThreshold {
+		return time.Minute
+	}
+	entry.inFlightAttempts++
+	return 0
 }
 
 func (attempt *loginAttempt) recordFailure() {
@@ -469,41 +603,75 @@ func (attempt *loginAttempt) complete(outcome loginAttemptOutcome) {
 		protector.mu.Lock()
 		defer protector.mu.Unlock()
 
-		entry := protector.failures[attempt.failureKey]
-		if entry != attempt.entry || entry.inFlightAttempts <= 0 {
+		protector.completeFailureReservationLocked(attempt.sourceReservation, outcome, now)
+		protector.completeFailureReservationLocked(attempt.usernameReservation, outcome, now)
+	})
+}
+
+func (p *AuthProtector) abandonFailureReservationLocked(reservation loginFailureReservation, now time.Time) {
+	p.completeFailureReservationLocked(reservation, loginAttemptAbandoned, now)
+}
+
+func (p *AuthProtector) completeFailureReservationLocked(
+	reservation loginFailureReservation,
+	outcome loginAttemptOutcome,
+	now time.Time,
+) {
+	entry := reservation.entry
+	if entry == nil || entry.inFlightAttempts <= 0 {
+		return
+	}
+	if !reservation.fallback {
+		registryEntry := p.failures[reservation.key]
+		if reservation.username {
+			registryEntry = p.usernameFailures[reservation.key]
+		}
+		if registryEntry != entry {
 			return
 		}
-		entry.inFlightAttempts--
+	}
+	entry.inFlightAttempts--
 
-		switch outcome {
-		case loginAttemptFailed:
-			failureWindowExpired := !entry.lastFailure.IsZero() && !entry.lastFailure.Add(protector.loginFailureWindow).After(now)
-			if failureWindowExpired {
-				entry.failureCount = 0
-				entry.lastFailure = time.Time{}
-				entry.lockedUntil = time.Time{}
-			}
-			entry.failureCount++
-			entry.lastFailure = now
-			if entry.failureCount >= protector.loginFailureThreshold {
-				entry.lockedUntil = now.Add(protector.lockoutDurationForFailures(entry.failureCount))
-			}
-		case loginAttemptSucceeded:
+	switch outcome {
+	case loginAttemptFailed:
+		failureWindowExpired := !entry.lastFailure.IsZero() && !entry.lastFailure.Add(p.loginFailureWindow).After(now)
+		if failureWindowExpired {
 			entry.failureCount = 0
 			entry.lastFailure = time.Time{}
 			entry.lockedUntil = time.Time{}
-		case loginAttemptAbandoned:
 		}
+		entry.failureCount++
+		entry.lastFailure = now
+		if entry.failureCount >= p.loginFailureThreshold {
+			entry.lockedUntil = now.Add(p.lockoutDurationForFailures(entry.failureCount))
+		}
+	case loginAttemptSucceeded:
+		entry.failureCount = 0
+		entry.lastFailure = time.Time{}
+		entry.lockedUntil = time.Time{}
+	case loginAttemptAbandoned:
+	}
 
-		if entry.inFlightAttempts == 0 && entry.failureCount == 0 && !entry.lockedUntil.After(now) {
-			delete(protector.failures, attempt.failureKey)
-			protector.loginFailureCurrentEntries.Add(-1)
-			return
+	if reservation.fallback {
+		return
+	}
+	if entry.inFlightAttempts == 0 && entry.failureCount == 0 && !entry.lockedUntil.After(now) {
+		if reservation.username {
+			delete(p.usernameFailures, reservation.key)
+			p.usernameFailureCurrentEntries.Add(-1)
+		} else {
+			delete(p.failures, reservation.key)
+			p.loginFailureCurrentEntries.Add(-1)
 		}
-		if entry.inFlightAttempts == 0 {
-			protector.recordLoginFailureExpiryLocked(entry)
+		return
+	}
+	if entry.inFlightAttempts == 0 {
+		if reservation.username {
+			p.recordUsernameFailureExpiryLocked(entry)
+		} else {
+			p.recordLoginFailureExpiryLocked(entry)
 		}
-	})
+	}
 }
 
 func (p *AuthProtector) lockoutDurationForFailures(failureCount int) time.Duration {
@@ -532,6 +700,7 @@ func (p *AuthProtector) cleanupLocked(now time.Time) {
 		p.cleanupEndpointLimitersLocked(endpointState, now)
 	}
 	p.cleanupLoginFailuresLocked(now)
+	p.cleanupUsernameFailuresLocked(now)
 }
 
 func (p *AuthProtector) cleanupEndpointLimitersLocked(endpointState *authEndpointState, now time.Time) {
@@ -594,6 +763,44 @@ func (p *AuthProtector) recordLoginFailureExpiryLocked(entry *loginFailureEntry)
 	}
 }
 
+func (p *AuthProtector) cleanupUsernameFailuresLocked(now time.Time) {
+	removedEntryCount := 0
+	nextExpiryCheck := time.Time{}
+	expiryCheckKnown := false
+	for username, entry := range p.usernameFailures {
+		failureWindowExpired := entry.lastFailure.IsZero() || !entry.lastFailure.Add(p.loginFailureWindow).After(now)
+		if entry.inFlightAttempts == 0 && failureWindowExpired && !entry.lockedUntil.After(now) {
+			delete(p.usernameFailures, username)
+			removedEntryCount++
+			continue
+		}
+		if entry.inFlightAttempts == 0 {
+			entryExpiry := loginFailureEntryExpiry(entry, p.loginFailureWindow)
+			if !entryExpiry.IsZero() && (!expiryCheckKnown || entryExpiry.Before(nextExpiryCheck)) {
+				nextExpiryCheck = entryExpiry
+				expiryCheckKnown = true
+			}
+		}
+	}
+	p.usernameFailureNextExpiryCheck = nextExpiryCheck
+	p.usernameFailureExpiryCheckKnown = expiryCheckKnown
+	if removedEntryCount > 0 {
+		p.usernameFailureCurrentEntries.Add(-int64(removedEntryCount))
+		p.usernameFailureExpiredEntriesRemoved.Add(uint64(removedEntryCount))
+	}
+}
+
+func (p *AuthProtector) recordUsernameFailureExpiryLocked(entry *loginFailureEntry) {
+	entryExpiry := loginFailureEntryExpiry(entry, p.loginFailureWindow)
+	if entryExpiry.IsZero() {
+		return
+	}
+	if !p.usernameFailureExpiryCheckKnown || entryExpiry.Before(p.usernameFailureNextExpiryCheck) {
+		p.usernameFailureNextExpiryCheck = entryExpiry
+		p.usernameFailureExpiryCheckKnown = true
+	}
+}
+
 func loginFailureEntryExpiry(entry *loginFailureEntry, failureWindow time.Duration) time.Time {
 	entryExpiry := time.Time{}
 	if !entry.lastFailure.IsZero() {
@@ -621,6 +828,22 @@ func (p *AuthProtector) Metrics() AuthProtectorMetricsSnapshot {
 			ExpiredEntriesRemoved: p.loginFailureExpiredEntriesRemoved.Load(),
 			CapacityRejections:    p.loginFailureCapacityRejections.Load(),
 		},
+		UsernameFailures: LoginFailureMetricsSnapshot{
+			CurrentEntries:        p.usernameFailureCurrentEntries.Load(),
+			MaximumEntries:        int64(p.usernameFailureMaximumEntries),
+			FallbackBucketCount:   int64(len(p.usernameFailureFallbacks)),
+			Admissions:            p.usernameFailureAdmissions.Load(),
+			ExpiredEntriesRemoved: p.usernameFailureExpiredEntriesRemoved.Load(),
+			CapacityRejections:    p.usernameFailureCapacityRejections.Load(),
+			FallbackAttempts:      p.usernameFailureFallbackAttempts.Load(),
+			FallbackRejections:    p.usernameFailureFallbackRejections.Load(),
+		},
+		PasswordWork: PasswordWorkMetricsSnapshot{
+			CurrentWork: p.passwordWorkCurrent.Load(),
+			Capacity:    p.passwordMaximumConcurrent,
+			Admissions:  p.passwordWorkAdmissions.Load(),
+			Rejections:  p.passwordWorkRejections.Load(),
+		},
 	}
 }
 
@@ -644,14 +867,46 @@ func validatePanelAuthCredentials(rawUsername, password string) (string, error) 
 	if len(username) < minPanelUsernameBytes || len(username) > maxPanelUsernameBytes {
 		return "", errInvalidPanelAuthCredentials
 	}
-	if len(password) < minPanelPasswordBytes || len(password) > maxPanelPasswordBytes {
+	if err := validatePanelPassword(password); err != nil {
 		return "", errInvalidPanelAuthCredentials
 	}
 	return username, nil
 }
 
+func validatePanelPassword(password string) error {
+	if len(password) < minPanelPasswordBytes || len(password) > maxPanelPasswordBytes {
+		return errors.New("password must be 8-72 bytes")
+	}
+	return nil
+}
+
 func loginFailureKey(username, clientIP string) string {
-	return strings.ToLower(strings.TrimSpace(username)) + "\x00" + clientIP
+	return normalizeLoginUsername(username) + "\x00" + clientIP
+}
+
+func normalizeLoginUsername(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
+}
+
+func (p *AuthProtector) tryAcquirePasswordWork() func() {
+	for {
+		currentWork := p.passwordWorkCurrent.Load()
+		if currentWork >= p.passwordMaximumConcurrent {
+			p.passwordWorkRejections.Add(1)
+			return nil
+		}
+		if p.passwordWorkCurrent.CompareAndSwap(currentWork, currentWork+1) {
+			p.passwordWorkAdmissions.Add(1)
+			break
+		}
+	}
+
+	var releaseOnce sync.Once
+	return func() {
+		releaseOnce.Do(func() {
+			p.passwordWorkCurrent.Add(-1)
+		})
+	}
 }
 
 func writeRetryAfter(w http.ResponseWriter, retryAfter time.Duration) {

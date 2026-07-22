@@ -53,10 +53,10 @@ func normalizeDomainFilters(fieldName string, rawDomains []string) ([]string, er
 		return nil, nil
 	}
 	normalizedDomains := make([]string, 0, len(rawDomains))
-	for _, rawDomain := range rawDomains {
+	for domainIndex, rawDomain := range rawDomains {
 		normalizedDomain, err := normalizeDomainFilter(rawDomain)
 		if err != nil {
-			return nil, fmt.Errorf("%s entry %q is invalid: %w", fieldName, rawDomain, err)
+			return nil, fmt.Errorf("%s entry %d is invalid: %w", fieldName, domainIndex, err)
 		}
 		normalizedDomains = append(normalizedDomains, normalizedDomain)
 	}

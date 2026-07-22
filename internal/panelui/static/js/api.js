@@ -1,5 +1,6 @@
 const configuredAPIBase = new URLSearchParams(window.location.search).get("apiBase") || "";
 const normalizedAPIBase = configuredAPIBase.trim().replace(/\/$/, "");
+const panelSessionStorageKey = "grok-search-mcp-panel-session";
 const panelTokenStorageKey = "grok-search-mcp-panel-token";
 const panelTokenExpiryStorageKey = "grok-search-mcp-panel-token-expiry";
 const legacyPanelTokenStorageKey = "grok-mcp-panel-token";
@@ -18,10 +19,13 @@ export class APIError extends Error {
 
 export class PanelAPI {
   constructor() {
-    this.token = sessionStorage.getItem(panelTokenStorageKey)
+    const storedSession = readStoredSession();
+    this.token = storedSession.token
+      || sessionStorage.getItem(panelTokenStorageKey)
       || sessionStorage.getItem(legacyPanelTokenStorageKey)
       || "";
-    this.expiresAt = sessionStorage.getItem(panelTokenExpiryStorageKey)
+    this.expiresAt = storedSession.expiresAt
+      || sessionStorage.getItem(panelTokenExpiryStorageKey)
       || sessionStorage.getItem(legacyPanelTokenExpiryStorageKey)
       || "";
 
@@ -48,19 +52,27 @@ export class PanelAPI {
   }
 
   saveSession(token, expiresAt) {
-    this.token = token;
-    this.expiresAt = expiresAt || "";
-    sessionStorage.setItem(panelTokenStorageKey, token);
-    if (expiresAt) {
-      sessionStorage.setItem(panelTokenExpiryStorageKey, expiresAt);
-    } else {
-      sessionStorage.removeItem(panelTokenExpiryStorageKey);
+    const replacementSession = {
+      token: String(token || ""),
+      expires_at: String(expiresAt || "")
+    };
+    if (!replacementSession.token) {
+      throw new Error("The replacement session token is missing.");
     }
+
+    // One storage write publishes the token and expiry together. In-memory
+    // state changes only after that atomic browser-storage operation succeeds.
+    sessionStorage.setItem(panelSessionStorageKey, JSON.stringify(replacementSession));
+    this.token = replacementSession.token;
+    this.expiresAt = replacementSession.expires_at;
+    sessionStorage.removeItem(panelTokenStorageKey);
+    sessionStorage.removeItem(panelTokenExpiryStorageKey);
   }
 
   clearSession() {
     this.token = "";
     this.expiresAt = "";
+    sessionStorage.removeItem(panelSessionStorageKey);
     sessionStorage.removeItem(panelTokenStorageKey);
     sessionStorage.removeItem(panelTokenExpiryStorageKey);
     sessionStorage.removeItem(legacyPanelTokenStorageKey);
@@ -96,7 +108,7 @@ export class PanelAPI {
     const responseData = await parseResponseData(response);
 
     if (!response.ok) {
-      if (response.status === 401 && options.auth !== false) {
+      if (response.status === 401 && options.auth !== false && options.clearSessionOnUnauthorized !== false) {
         this.clearSession();
       }
       const retryAfterHeader = response.headers.get("Retry-After");
@@ -158,6 +170,8 @@ function translateBackendError(message, status) {
   const normalizedMessage = String(message || "").trim();
   const messageTranslations = {
     "invalid credentials": "用户名或密码不正确。",
+    "current password is incorrect": "当前密码不正确。",
+    "API key limit reached": "已达到当前账户的 API 密钥数量上限。",
     "user disabled": "该账户已被管理员禁用。",
     "too many failed login attempts": "登录失败次数过多，请稍后再试。",
     "rate limit exceeded": "请求过于频繁，请稍后再试。",
@@ -210,6 +224,23 @@ function translateBackendError(message, status) {
 
 export const panelAPI = new PanelAPI();
 
+function readStoredSession() {
+  const serializedSession = sessionStorage.getItem(panelSessionStorageKey);
+  if (!serializedSession) {
+    return { token: "", expiresAt: "" };
+  }
+  try {
+    const parsedSession = JSON.parse(serializedSession);
+    return {
+      token: typeof parsedSession?.token === "string" ? parsedSession.token : "",
+      expiresAt: typeof parsedSession?.expires_at === "string" ? parsedSession.expires_at : ""
+    };
+  } catch {
+    sessionStorage.removeItem(panelSessionStorageKey);
+    return { token: "", expiresAt: "" };
+  }
+}
+
 export function fetchRegistrationSettings() {
   return panelAPI.request("/panel/v1/auth/registration-settings", { auth: false });
 }
@@ -239,6 +270,24 @@ export function register(registrationData) {
 
 export function fetchCurrentUser(options = {}) {
   return panelAPI.request("/panel/v1/me", options);
+}
+
+export async function changePassword(passwords) {
+  const replacementSession = await panelAPI.request("/panel/v1/me/change-password", {
+    method: "POST",
+    body: passwords,
+    clearSessionOnUnauthorized: false
+  });
+  panelAPI.saveSession(replacementSession.token, replacementSession.expires_at);
+  return replacementSession;
+}
+
+export async function revokeSessions() {
+  const replacementSession = await panelAPI.request("/panel/v1/me/revoke-sessions", {
+    method: "POST"
+  });
+  panelAPI.saveSession(replacementSession.token, replacementSession.expires_at);
+  return replacementSession;
 }
 
 export function fetchOverviewHealth(options = {}) {

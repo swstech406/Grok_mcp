@@ -12,7 +12,10 @@ import (
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/logx"
 )
 
-const maxChatContinuationAttempts = 2
+const (
+	maxChatContinuationAttempts = 2
+	chatCompletionsProtocolName  = "chat_completions"
+)
 
 const chatFinalAnswerInstruction = "Complete the requested research and return the final answer now. Do not only describe that you are searching, researching, checking, or preparing an answer."
 
@@ -79,11 +82,18 @@ type chatUsage struct {
 }
 
 func (s clientSnapshot) searchChatCompletions(ctx context.Context, req SearchRequest, onRound func(SearchRound)) (*SearchResult, error) {
-	model, upstreamRequest, err := buildChatCompletionsRequest(req, s.defaultModel)
+	_, upstreamRequest, err := buildChatCompletionsRequest(req, s.defaultModel)
 	if err != nil {
 		return nil, err
 	}
-	s.log.Debugf("SearchStream start protocol=%s model=%s tool=%s query=%q", s.protocol, model, req.ToolType, req.Query)
+	s.log.Debugf(
+		"SearchStream start protocol=%s tool=%s query_bytes=%d allowed_domains=%d excluded_domains=%d",
+		s.protocol,
+		req.ToolType,
+		len(req.Query),
+		len(req.AllowedDomains),
+		len(req.ExcludedDomains),
+	)
 
 	var accumulatedUsage Usage
 	var hasAccumulatedUsage bool
@@ -245,7 +255,10 @@ func parseChatCompletionsResponse(body io.Reader, onRound func(SearchRound), log
 	var answer strings.Builder
 	collector := newCitationCollector()
 	var normalizedUsage *Usage
-	consumeResponse := func(response chatCompletionsResponse) error {
+	consumeResponse := func(response chatCompletionsResponse, payloadBytes int) error {
+		if response.Type == "error" {
+			return newUpstreamStreamError(chatCompletionsProtocolName, response.Type, payloadBytes)
+		}
 		for _, choice := range response.Choices {
 			if err := appendAnswerText(&answer, choice.Delta.Content); err != nil {
 				return err
@@ -291,7 +304,7 @@ func parseChatCompletionsResponse(body io.Reader, onRound func(SearchRound), log
 			if searchErr := searchRounds.emitSearchRound(response.Type, response.Item, onRound, log); searchErr != nil {
 				return searchErr
 			}
-			return consumeResponse(response)
+			return consumeResponse(response, len(payload))
 		}, func() error {
 			sawTerminalEvent = true
 			return nil
@@ -303,7 +316,7 @@ func parseChatCompletionsResponse(body io.Reader, onRound func(SearchRound), log
 		var response chatCompletionsResponse
 		err = decodeSingleChatCompletionsResponse(capturedBody, &response)
 		if err == nil {
-			err = consumeResponse(response)
+			err = consumeResponse(response, rawBody.Len())
 		}
 	}
 	if limitedBody.N == 0 {

@@ -45,14 +45,14 @@ func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
 func (s clientSnapshot) getModels(ctx context.Context) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/v1/models", nil)
 	if err != nil {
-		return nil, fmt.Errorf("create models request: %w", err)
+		return nil, newUpstreamTransportError(string(s.protocol), "create_models_request", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
 	httpReq.Header.Set("Accept", "application/json")
 
 	resp, err := s.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("models request failed: %w", err)
+		return nil, newUpstreamTransportError(string(s.protocol), "list_models", err)
 	}
 	return resp, nil
 }

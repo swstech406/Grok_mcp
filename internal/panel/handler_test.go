@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -101,11 +103,27 @@ func panelTestServerWithAuthProtector(t *testing.T, authProtector *AuthProtector
 		t.Fatal(err)
 	}
 	h := &Handler{
-		Store:         st,
-		JWTSecret:     cfg.JWTSecret,
+		Store:     st,
+		JWTSecret: cfg.JWTSecret,
+		InitialServerSettings: config.ServerSettings{
+			RegistrationMode: store.RegistrationModeFree,
+		},
 		AuthProtector: authProtector,
 	}
 	return httptest.NewServer(NewMux(h)), st, cfg
+}
+
+func TestCurrentRegistrationModeDefaultsToDisabledWithoutSettings(t *testing.T) {
+	handler := &Handler{Store: store.TestStore{}}
+	request := httptest.NewRequest(http.MethodGet, "/panel/v1/auth/registration-settings", nil)
+
+	registrationMode, err := handler.currentRegistrationMode(request)
+	if err != nil {
+		t.Fatalf("currentRegistrationMode returned error: %v", err)
+	}
+	if registrationMode != store.RegistrationModeDisabled {
+		t.Fatalf("registration mode = %q, want %q", registrationMode, store.RegistrationModeDisabled)
+	}
 }
 
 func panelTestServerWithModelLister(t *testing.T, modelLister ModelLister) (*httptest.Server, *store.SQLiteStore, *config.Config) {
@@ -269,7 +287,7 @@ func TestUsageRecordDetailLoadsBodiesOnDemandAndEnforcesOwnership(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	apiKey, _, err := sqliteStore.CreateKey(ctx, owner.ID, "usage-detail-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, owner.ID, "usage-detail-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,11 +382,11 @@ func TestUsageEndpointsApplyRequestedDatabasePageSizeAndCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetKey, _, err := sqliteStore.CreateKey(ctx, targetUser.ID, "target-key")
+	targetKey, _, err := sqliteStore.CreateKey(ctx, targetUser.ID, "target-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherKey, _, err := sqliteStore.CreateKey(ctx, otherUser.ID, "other-key")
+	otherKey, _, err := sqliteStore.CreateKey(ctx, otherUser.ID, "other-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1070,7 @@ func TestLoginAttemptAbandonsReservedEntryDuringPanic(t *testing.T) {
 	}
 }
 
-func TestHeaderlessLoginFailureDoesNotCreateIPLockout(t *testing.T) {
+func TestHeaderlessDirectLoginFailureCreatesIPLockout(t *testing.T) {
 	authProtector := NewAuthProtector(AuthProtectorConfig{
 		LoginIPRequestsPerMinute:    1,
 		LoginIPBurst:                1,
@@ -1094,8 +1112,8 @@ func TestHeaderlessLoginFailureDoesNotCreateIPLockout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer goodLoginResponse.Body.Close()
-	if goodLoginResponse.StatusCode != http.StatusOK {
-		t.Fatalf("expected headerless valid login to bypass IP lockout, got %d", goodLoginResponse.StatusCode)
+	if goodLoginResponse.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected headerless valid login to remain protected, got %d", goodLoginResponse.StatusCode)
 	}
 }
 
@@ -1331,6 +1349,279 @@ func TestAdminRevokeTokensInvalidatesExistingJWT(t *testing.T) {
 	if meResponse.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected revoked token to return 401, got %d", meResponse.StatusCode)
 	}
+}
+
+func TestChangePasswordRevokesPreviousTokensAndReturnsReplacement(t *testing.T) {
+	testServer, sqliteStore, _ := panelTestServer(t)
+	defer testServer.Close()
+	registerPanelUser(t, testServer, "password-user", "password123")
+	firstLogin := loginPanelUser(t, testServer, "password-user", "password123")
+	secondLogin := loginPanelUser(t, testServer, "password-user", "password123")
+
+	wrongPasswordStatus, _ := postSessionAction(
+		t,
+		testServer,
+		"/panel/v1/me/change-password",
+		firstLogin.Token,
+		`{"current_password":"incorrect-password","new_password":"replacement123"}`,
+	)
+	if wrongPasswordStatus != http.StatusBadRequest {
+		t.Fatalf("wrong current password status = %d, want %d", wrongPasswordStatus, http.StatusBadRequest)
+	}
+	if status := requestCurrentUserStatus(t, testServer, firstLogin.Token); status != http.StatusOK {
+		t.Fatalf("wrong password invalidated current token, status = %d", status)
+	}
+
+	changeStatus, replacementSession := postSessionAction(
+		t,
+		testServer,
+		"/panel/v1/me/change-password",
+		firstLogin.Token,
+		`{"current_password":"password123","new_password":"replacement123"}`,
+	)
+	if changeStatus != http.StatusOK {
+		t.Fatalf("password change status = %d, want %d", changeStatus, http.StatusOK)
+	}
+	if replacementSession.Token == "" || replacementSession.User.ID != firstLogin.User.ID {
+		t.Fatalf("invalid replacement session: %+v", replacementSession)
+	}
+	for _, previousToken := range []string{firstLogin.Token, secondLogin.Token} {
+		if status := requestCurrentUserStatus(t, testServer, previousToken); status != http.StatusUnauthorized {
+			t.Fatalf("previous token status = %d, want %d", status, http.StatusUnauthorized)
+		}
+	}
+	if status := requestCurrentUserStatus(t, testServer, replacementSession.Token); status != http.StatusOK {
+		t.Fatalf("replacement token status = %d, want %d", status, http.StatusOK)
+	}
+
+	oldLoginRequest, _ := http.NewRequest(http.MethodPost, testServer.URL+"/panel/v1/auth/login", bytes.NewBufferString(`{"username":"password-user","password":"password123"}`))
+	oldLoginResponse, err := http.DefaultClient.Do(oldLoginRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLoginResponse.Body.Close()
+	if oldLoginResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old password login status = %d, want %d", oldLoginResponse.StatusCode, http.StatusUnauthorized)
+	}
+	loginPanelUser(t, testServer, "password-user", "replacement123")
+
+	updatedUser, err := sqliteStore.GetUserByID(context.Background(), firstLogin.User.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedUser.TokenVersion < 1 {
+		t.Fatalf("token version = %d, want at least 1", updatedUser.TokenVersion)
+	}
+}
+
+func TestChangePasswordRejectsNonStrictJSONWithoutRevokingSession(t *testing.T) {
+	testServer, _, _ := panelTestServer(t)
+	defer testServer.Close()
+	registerPanelUser(t, testServer, "strict-password-user", "password123")
+	loginResponse := loginPanelUser(t, testServer, "strict-password-user", "password123")
+
+	invalidRequestBodies := []string{
+		`{"current_password":"password123","new_password":"replacement123","unexpected":true}`,
+		`{"current_password":"password123","new_password":"replacement123"} {}`,
+	}
+	for _, requestBody := range invalidRequestBodies {
+		status, _ := postSessionAction(
+			t,
+			testServer,
+			"/panel/v1/me/change-password",
+			loginResponse.Token,
+			requestBody,
+		)
+		if status != http.StatusBadRequest {
+			t.Fatalf("non-strict password request status = %d, want %d", status, http.StatusBadRequest)
+		}
+	}
+	if status := requestCurrentUserStatus(t, testServer, loginResponse.Token); status != http.StatusOK {
+		t.Fatalf("rejected password request invalidated current token, status = %d", status)
+	}
+}
+
+func TestRevokeSessionsInvalidatesPreviousTokensAndReturnsReplacement(t *testing.T) {
+	testServer, _, _ := panelTestServer(t)
+	defer testServer.Close()
+	registerPanelUser(t, testServer, "revoke-user", "password123")
+	firstLogin := loginPanelUser(t, testServer, "revoke-user", "password123")
+	secondLogin := loginPanelUser(t, testServer, "revoke-user", "password123")
+
+	revokeStatus, replacementSession := postSessionAction(
+		t,
+		testServer,
+		"/panel/v1/me/revoke-sessions",
+		firstLogin.Token,
+		"",
+	)
+	if revokeStatus != http.StatusOK || replacementSession.Token == "" {
+		t.Fatalf("revoke response status=%d session=%+v", revokeStatus, replacementSession)
+	}
+	for _, previousToken := range []string{firstLogin.Token, secondLogin.Token} {
+		if status := requestCurrentUserStatus(t, testServer, previousToken); status != http.StatusUnauthorized {
+			t.Fatalf("previous token status = %d, want %d", status, http.StatusUnauthorized)
+		}
+	}
+	if status := requestCurrentUserStatus(t, testServer, replacementSession.Token); status != http.StatusOK {
+		t.Fatalf("replacement token status = %d, want %d", status, http.StatusOK)
+	}
+}
+
+func TestBootstrapAdminPasswordChangeRemovesCredentialFile(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+	credentialPath := filepath.Join(temporaryDirectory, "bootstrap-admin.json")
+	if err := os.WriteFile(credentialPath, []byte(`{"username":"admin","password":"password123"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sqliteStore, err := store.OpenSQLite(filepath.Join(temporaryDirectory, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+	configuration := &config.Config{JWTSecret: "jwt-secret-must-be-at-least-32-bytes!"}
+	createPanelAdminUser(t, sqliteStore, "admin", "password123")
+	handler := &Handler{
+		Store:                      sqliteStore,
+		JWTSecret:                  configuration.JWTSecret,
+		AuthProtector:              newTestAuthProtector(),
+		BootstrapAdminUsername:     "admin",
+		BootstrapCredentialsPath:   credentialPath,
+		BootstrapCredentialCleaner: func() error { return os.Remove(credentialPath) },
+	}
+	testServer := httptest.NewServer(NewMux(handler))
+	defer testServer.Close()
+	adminLogin := loginPanelUser(t, testServer, "admin", "password123")
+
+	status, _ := postSessionAction(
+		t,
+		testServer,
+		"/panel/v1/me/change-password",
+		adminLogin.Token,
+		`{"current_password":"password123","new_password":"replacement123"}`,
+	)
+	if status != http.StatusOK {
+		t.Fatalf("bootstrap admin password change status = %d", status)
+	}
+	if _, err := os.Stat(credentialPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap credential file still exists or stat failed: %v", err)
+	}
+}
+
+func TestCreateKeyReturnsStableLimitResponse(t *testing.T) {
+	testServer, _, _ := panelTestServer(t)
+	defer testServer.Close()
+	registerPanelUser(t, testServer, "key-limit-user", "password123")
+	loginResponse := loginPanelUser(t, testServer, "key-limit-user", "password123")
+
+	for keyIndex := 0; keyIndex < defaultMaximumAPIKeysPerUser; keyIndex++ {
+		request, _ := http.NewRequest(
+			http.MethodPost,
+			testServer.URL+"/panel/v1/keys",
+			bytes.NewBufferString(fmt.Sprintf(`{"name":"key-%d"}`, keyIndex)),
+		)
+		response, err := http.DefaultClient.Do(withJWT(request, loginResponse.Token))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("key %d create status = %d", keyIndex, response.StatusCode)
+		}
+	}
+	request, _ := http.NewRequest(http.MethodPost, testServer.URL+"/panel/v1/keys", bytes.NewBufferString(`{"name":"over-limit"}`))
+	response, err := http.DefaultClient.Do(withJWT(request, loginResponse.Token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusConflict || !strings.Contains(string(responseBody), `"error":"API key limit reached"`) {
+		t.Fatalf("limit response status=%d body=%s", response.StatusCode, responseBody)
+	}
+}
+
+func TestCreateKeyUsesConfiguredPerUserLimit(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+	sqliteStore, err := store.OpenSQLite(filepath.Join(temporaryDirectory, "configured-key-limit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+	const jwtSecret = "jwt-secret-must-be-at-least-32-bytes!"
+	if err := sqliteStore.ConfigureAPIKeyEncryption(jwtSecret); err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{
+		Store:             sqliteStore,
+		JWTSecret:         jwtSecret,
+		MaxAPIKeysPerUser: 2,
+		InitialServerSettings: config.ServerSettings{
+			RegistrationMode: store.RegistrationModeFree,
+		},
+		AuthProtector: newTestAuthProtector(),
+	}
+	testServer := httptest.NewServer(NewMux(handler))
+	defer testServer.Close()
+	registerPanelUser(t, testServer, "configured-key-limit-user", "password123")
+	loginResponse := loginPanelUser(t, testServer, "configured-key-limit-user", "password123")
+
+	for keyIndex := 0; keyIndex < 3; keyIndex++ {
+		request, _ := http.NewRequest(
+			http.MethodPost,
+			testServer.URL+"/panel/v1/keys",
+			bytes.NewBufferString(fmt.Sprintf(`{"name":"configured-key-%d"}`, keyIndex)),
+		)
+		response, requestErr := http.DefaultClient.Do(withJWT(request, loginResponse.Token))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		response.Body.Close()
+		expectedStatus := http.StatusCreated
+		if keyIndex == 2 {
+			expectedStatus = http.StatusConflict
+		}
+		if response.StatusCode != expectedStatus {
+			t.Fatalf("configured key %d status = %d, want %d", keyIndex, response.StatusCode, expectedStatus)
+		}
+	}
+}
+
+func postSessionAction(
+	t *testing.T,
+	testServer *httptest.Server,
+	path string,
+	token string,
+	requestBody string,
+) (int, SessionReplacementResponse) {
+	t.Helper()
+	request, _ := http.NewRequest(http.MethodPost, testServer.URL+path, bytes.NewBufferString(requestBody))
+	response, err := http.DefaultClient.Do(withJWT(request, token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var replacementSession SessionReplacementResponse
+	if response.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(response.Body).Decode(&replacementSession); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return response.StatusCode, replacementSession
+}
+
+func requestCurrentUserStatus(t *testing.T, testServer *httptest.Server, token string) int {
+	t.Helper()
+	request, _ := http.NewRequest(http.MethodGet, testServer.URL+"/panel/v1/me", nil)
+	response, err := http.DefaultClient.Do(withJWT(request, token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	return response.StatusCode
 }
 
 func registerPanelUser(t *testing.T, ts *httptest.Server, username string, password string) UserResponse {

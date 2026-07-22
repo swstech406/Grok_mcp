@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const testSecret = "jwt-secret-must-be-at-least-32-bytes!"
@@ -66,7 +67,7 @@ func TestJWTValidTokenAccepted(t *testing.T) {
 	}
 }
 
-func TestJWTRejectsMalformedWrongSecretAndExpiredTokens(t *testing.T) {
+func TestJWTRejectsMalformedAndWrongSecretTokens(t *testing.T) {
 	st, user := jwtTestStore(t)
 	h := guardedHandler(testSecret, st)
 
@@ -82,14 +83,140 @@ func TestJWTRejectsMalformedWrongSecretAndExpiredTokens(t *testing.T) {
 		t.Fatalf("wrong-secret token should be rejected with 401, got %d", code)
 	}
 
-	expiringToken, _, err := IssuePanelToken(testSecret, user, time.Nanosecond)
+}
+
+func TestJWTRejectsAdversarialClaimsBeforeStoreAccess(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	validClaims := jwt.MapClaims{
+		"uid":      "adversarial-user",
+		"sub":      "adversarial-user",
+		"username": "adversarial",
+		"role":     string(store.RoleUser),
+		"tv":       int64(0),
+		"exp":      now.Add(time.Hour).Unix(),
+		"iat":      now.Unix(),
+		"nbf":      now.Unix(),
+		"iss":      jwtIssuer,
+		"aud":      jwtAudience,
+	}
+
+	testCases := []struct {
+		name          string
+		signingMethod jwt.SigningMethod
+		mutateClaims  func(jwt.MapClaims)
+	}{
+		{name: "missing expiration", mutateClaims: func(claims jwt.MapClaims) { delete(claims, "exp") }},
+		{name: "missing issued at", mutateClaims: func(claims jwt.MapClaims) { delete(claims, "iat") }},
+		{name: "missing not before", mutateClaims: func(claims jwt.MapClaims) { delete(claims, "nbf") }},
+		{name: "missing user id", mutateClaims: func(claims jwt.MapClaims) { delete(claims, "uid") }},
+		{name: "empty user id", mutateClaims: func(claims jwt.MapClaims) { claims["uid"] = "  " }},
+		{name: "missing subject", mutateClaims: func(claims jwt.MapClaims) { delete(claims, "sub") }},
+		{name: "contradictory identities", mutateClaims: func(claims jwt.MapClaims) { claims["sub"] = "another-user" }},
+		{name: "negative token version", mutateClaims: func(claims jwt.MapClaims) { claims["tv"] = int64(-1) }},
+		{name: "premature not before", mutateClaims: func(claims jwt.MapClaims) { claims["nbf"] = now.Add(2 * time.Minute).Unix() }},
+		{name: "premature issued at", mutateClaims: func(claims jwt.MapClaims) { claims["iat"] = now.Add(2 * time.Minute).Unix() }},
+		{name: "expired", mutateClaims: func(claims jwt.MapClaims) { claims["exp"] = now.Add(-2 * time.Minute).Unix() }},
+		{name: "missing issuer", mutateClaims: func(claims jwt.MapClaims) { delete(claims, "iss") }},
+		{name: "wrong issuer", mutateClaims: func(claims jwt.MapClaims) { claims["iss"] = "another-service" }},
+		{name: "missing audience", mutateClaims: func(claims jwt.MapClaims) { delete(claims, "aud") }},
+		{name: "wrong audience", mutateClaims: func(claims jwt.MapClaims) { claims["aud"] = "another-client" }},
+		{name: "wrong algorithm", signingMethod: jwt.SigningMethodHS384},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			claims := cloneMapClaims(validClaims)
+			if testCase.mutateClaims != nil {
+				testCase.mutateClaims(claims)
+			}
+			signingMethod := testCase.signingMethod
+			if signingMethod == nil {
+				signingMethod = jwt.SigningMethodHS256
+			}
+			token := signMapClaimsForTest(t, signingMethod, claims)
+			loader := &recordingPanelTokenLoader{}
+			downstreamCallCount := 0
+			handler := JWTMiddleware(testSecret, loader)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				downstreamCallCount++
+			}))
+			request := httptest.NewRequest(http.MethodGet, "/panel/v1/me", nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			responseRecorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(responseRecorder, request)
+
+			if responseRecorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", responseRecorder.Code, http.StatusUnauthorized)
+			}
+			if responseRecorder.Body.String() != "unauthorized\n" {
+				t.Fatalf("response body = %q, want generic unauthorized failure", responseRecorder.Body.String())
+			}
+			if loader.userLoadCount != 0 || loader.tierLoadCount != 0 {
+				t.Fatalf("invalid token caused user/tier loads: %+v", loader)
+			}
+			if downstreamCallCount != 0 {
+				t.Fatalf("invalid token reached downstream %d time(s)", downstreamCallCount)
+			}
+			if _, err := ParsePanelToken(testSecret, token); err == nil {
+				t.Fatal("ParsePanelToken accepted token rejected by middleware contract")
+			}
+		})
+	}
+}
+
+func TestJWTStrictParserPreservesZeroTokenVersion(t *testing.T) {
+	now := time.Now().UTC()
+	token := signMapClaimsForTest(t, jwt.SigningMethodHS256, jwt.MapClaims{
+		"uid":  "zero-version-user",
+		"sub":  "zero-version-user",
+		"role": string(store.RoleUser),
+		"tv":   int64(0),
+		"exp":  now.Add(time.Hour).Unix(),
+		"iat":  now.Unix(),
+		"nbf":  now.Unix(),
+		"iss":  jwtIssuer,
+		"aud":  jwtAudience,
+	})
+
+	claims, err := ParsePanelToken(testSecret, token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Millisecond)
-	if code := do(t, h, expiringToken); code != http.StatusUnauthorized {
-		t.Fatalf("expired token should be rejected with 401, got %d", code)
+	if claims.TokenVersion != 0 {
+		t.Fatalf("token version = %d, want 0", claims.TokenVersion)
 	}
+}
+
+func cloneMapClaims(source jwt.MapClaims) jwt.MapClaims {
+	clonedClaims := make(jwt.MapClaims, len(source))
+	for claimName, claimValue := range source {
+		clonedClaims[claimName] = claimValue
+	}
+	return clonedClaims
+}
+
+func signMapClaimsForTest(t *testing.T, signingMethod jwt.SigningMethod, claims jwt.MapClaims) string {
+	t.Helper()
+	token, err := jwt.NewWithClaims(signingMethod, claims).SignedString([]byte(testSecret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+type recordingPanelTokenLoader struct {
+	userLoadCount int
+	tierLoadCount int
+}
+
+func (loader *recordingPanelTokenLoader) GetUserByID(context.Context, string) (*store.User, error) {
+	loader.userLoadCount++
+	return nil, store.ErrUserNotFound
+}
+
+func (loader *recordingPanelTokenLoader) GetTierByID(context.Context, string) (*store.Tier, error) {
+	loader.tierLoadCount++
+	return nil, store.ErrTierNotFound
 }
 
 // TestJWTRoleDowngradeInvalidatesToken 验证角色降级后，旧 token 因 role + tv 不匹配被拒签。
@@ -231,7 +358,7 @@ func (s jwtTierFailStore) GetTierByName(context.Context, string) (*store.Tier, e
 	return nil, nil
 }
 
-// TestJWTMissingTierReturnsInternalServerError 与 MCP 对齐：tier 缺失返回 500 且 body 含错误信息。
+// TestJWTMissingTierReturnsInternalServerError 与 MCP 对齐：tier 缺失返回 500 且不泄露内部标识。
 func TestJWTMissingTierReturnsInternalServerError(t *testing.T) {
 	user := &store.User{ID: "u1", Username: "u", Role: store.RoleUser, Enabled: true, TierID: "missing"}
 	st := jwtTierFailStore{user: user, err: store.ErrTierNotFound}
@@ -247,8 +374,8 @@ func TestJWTMissingTierReturnsInternalServerError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("missing tier must be 500, got %d body=%q", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "tier") {
-		t.Fatalf("body should describe tier failure, got %q", rec.Body.String())
+	if rec.Body.String() != "authentication failed\n" {
+		t.Fatalf("body should use a generic authentication failure, got %q", rec.Body.String())
 	}
 }
 

@@ -17,6 +17,8 @@ func NewMux(handler *Handler) http.Handler {
 
 	authenticated := http.NewServeMux()
 	authenticated.HandleFunc("GET /panel/v1/me", handler.me)
+	authenticated.HandleFunc("POST /panel/v1/me/change-password", handler.changePassword)
+	authenticated.HandleFunc("POST /panel/v1/me/revoke-sessions", handler.revokeSessions)
 	authenticated.HandleFunc("GET /panel/v1/overview/health", handler.overviewHealth)
 	authenticated.HandleFunc("GET /panel/v1/keys", handler.listKeys)
 	authenticated.HandleFunc("POST /panel/v1/keys", handler.createKey)

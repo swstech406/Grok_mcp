@@ -23,7 +23,7 @@ func (handler *Handler) adminListUsers(writer http.ResponseWriter, request *http
 	}
 	page, err := handler.Store.ListUsersPage(request.Context(), cursor, limit)
 	if err != nil {
-		log.Printf("admin list users failed: %v", err)
+		log.Printf("admin list users failed error_type=%T", err)
 		writeError(writer, http.StatusInternalServerError, "failed to load users")
 		return
 	}
@@ -42,7 +42,7 @@ func (handler *Handler) adminListUsers(writer http.ResponseWriter, request *http
 	}
 	tierByID, err := handler.Store.GetTiersByIDs(request.Context(), tierIDs)
 	if err != nil {
-		log.Printf("load tiers while listing users failed: %v", err)
+		log.Printf("load tiers while listing users failed error_type=%T", err)
 		tierByID = make(map[string]*store.Tier)
 	}
 	response := UsersResponse{
@@ -109,7 +109,7 @@ func (handler *Handler) adminUpdateUser(writer http.ResponseWriter, request *htt
 			writeError(writer, http.StatusBadRequest, "tier_id must reference an existing tier")
 			return
 		}
-		log.Printf("admin update user %s failed: %v", userID, err)
+		log.Printf("admin update user %s failed error_type=%T", userID, err)
 		writeError(writer, http.StatusBadRequest, "failed to update user")
 		return
 	}
@@ -133,7 +133,7 @@ func (handler *Handler) adminDeleteUser(writer http.ResponseWriter, request *htt
 			writeError(writer, http.StatusConflict, "cannot remove last enabled admin")
 			return
 		}
-		log.Printf("admin delete user %s failed: %v", userID, err)
+		log.Printf("admin delete user %s failed error_type=%T", userID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to delete user")
 		return
 	}

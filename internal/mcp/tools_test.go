@@ -376,9 +376,14 @@ func TestRunSearchUsesRuntimeDebugState(t *testing.T) {
 	if err := client.ApplyServerSettings(settings); err != nil {
 		t.Fatalf("enable runtime debug: %v", err)
 	}
-	runSearchForDebugTest("enabled query")
-	if !strings.Contains(logBuffer.String(), `[mcp-test] search start tool=web_search query="enabled query"`) {
-		t.Fatalf("expected retained MCP logger to observe runtime enable, got %q", logBuffer.String())
+	privateQueryMarker := "private-query-marker"
+	runSearchForDebugTest(privateQueryMarker)
+	debugLogOutput := logBuffer.String()
+	if !strings.Contains(debugLogOutput, "[mcp-test] search start tool=web_search") {
+		t.Fatalf("expected retained MCP logger to observe runtime enable, got %q", debugLogOutput)
+	}
+	if strings.Contains(debugLogOutput, privateQueryMarker) {
+		t.Fatalf("debug log disclosed private query marker: %q", debugLogOutput)
 	}
 
 	logBuffer.Reset()

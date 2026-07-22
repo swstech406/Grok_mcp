@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/ratelimit"
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 )
 
@@ -38,6 +39,15 @@ func panelEnv(t *testing.T) {
 	unsetEnv(t, "GROK_USAGE_HOURLY_RETENTION_DAYS")
 	unsetEnv(t, "GROK_USAGE_DAILY_RETENTION_DAYS")
 	unsetEnv(t, "GROK_USAGE_MAINTENANCE_INTERVAL")
+	unsetEnv(t, "GROK_CLIENT_IP_MODE")
+	unsetEnv(t, "GROK_TRUSTED_PROXY_CIDRS")
+	unsetEnv(t, "GROK_INITIAL_REGISTRATION_MODE")
+	unsetEnv(t, "GROK_AUTH_PASSWORD_MAX_CONCURRENT")
+	unsetEnv(t, "GROK_AUTH_KEY_MISS_MAX_CONCURRENT")
+	unsetEnv(t, "GROK_MAX_API_KEYS_PER_USER")
+	unsetEnv(t, "GROK_BOOTSTRAP_CREDENTIALS_PATH")
+	unsetEnv(t, "GROK_AUTH_USER_RPM_MAX_ENTRIES")
+	unsetEnv(t, "GROK_AUTH_USER_RPM_FALLBACK_BUCKETS")
 	unsetEnv(t, "GROK_SEARCH_MCP_DEBUG")
 	unsetEnv(t, "GROK_SEARCH_MCP_IP_RPM")
 	unsetEnv(t, "GROK_SEARCH_MCP_IP_MAX_ENTRIES_PER_SHARD")
@@ -90,6 +100,109 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Debug {
 		t.Fatalf("expected debug disabled by default")
+	}
+	if cfg.ClientIPMode != ratelimit.ClientIPModeDirect || len(cfg.TrustedProxyCIDRs) != 0 {
+		t.Fatalf("unexpected client IP defaults: mode=%q prefixes=%v", cfg.ClientIPMode, cfg.TrustedProxyCIDRs)
+	}
+	if cfg.RegistrationMode != store.RegistrationModeDisabled {
+		t.Fatalf("registration mode = %q, want %q", cfg.RegistrationMode, store.RegistrationModeDisabled)
+	}
+	if cfg.MaxAPIKeysPerUser != 20 {
+		t.Fatalf("maximum API keys per user = %d, want 20", cfg.MaxAPIKeysPerUser)
+	}
+	if cfg.BootstrapCredentialsPath != cfg.DBPath+".bootstrap-admin" {
+		t.Fatalf("bootstrap credentials path = %q", cfg.BootstrapCredentialsPath)
+	}
+}
+
+func TestLoadTrustedProxyNetworkConfiguration(t *testing.T) {
+	panelEnv(t)
+	setEnv(t, "GROK_CLIENT_IP_MODE", " trusted_proxy ")
+	setEnv(t, "GROK_TRUSTED_PROXY_CIDRS", "192.0.2.17/24, 2001:db8:1234::1/48, ::ffff:198.51.100.20/120")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.ClientIPMode != ratelimit.ClientIPModeTrustedProxy {
+		t.Fatalf("client IP mode = %q, want %q", cfg.ClientIPMode, ratelimit.ClientIPModeTrustedProxy)
+	}
+	actualPrefixes := make([]string, 0, len(cfg.TrustedProxyCIDRs))
+	for _, prefix := range cfg.TrustedProxyCIDRs {
+		actualPrefixes = append(actualPrefixes, prefix.String())
+	}
+	expectedPrefixes := []string{"192.0.2.0/24", "2001:db8:1234::/48", "198.51.100.0/24"}
+	if strings.Join(actualPrefixes, ",") != strings.Join(expectedPrefixes, ",") {
+		t.Fatalf("trusted proxy prefixes = %v, want %v", actualPrefixes, expectedPrefixes)
+	}
+}
+
+func TestLoadRejectsInvalidNetworkTrustConfiguration(t *testing.T) {
+	testCases := []struct {
+		name          string
+		mode          string
+		trustedCIDRs  string
+		expectedError string
+	}{
+		{name: "unknown mode", mode: "forwarded", expectedError: "GROK_CLIENT_IP_MODE must be"},
+		{name: "trusted mode requires prefixes", mode: "trusted_proxy", expectedError: "GROK_TRUSTED_PROXY_CIDRS is required"},
+		{name: "malformed prefix in direct mode", mode: "direct", trustedCIDRs: "not-a-prefix", expectedError: "invalid prefix"},
+		{name: "empty list element", mode: "trusted_proxy", trustedCIDRs: "192.0.2.0/24,,2001:db8::/32", expectedError: "empty list elements"},
+		{name: "zoned address", mode: "trusted_proxy", trustedCIDRs: "fe80::1%eth0/64", expectedError: "invalid prefix"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			panelEnv(t)
+			setEnv(t, "GROK_CLIENT_IP_MODE", testCase.mode)
+			setEnv(t, "GROK_TRUSTED_PROXY_CIDRS", testCase.trustedCIDRs)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), testCase.expectedError) {
+				t.Fatalf("expected error containing %q, got %v", testCase.expectedError, err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsExcessiveTrustedProxyPrefixes(t *testing.T) {
+	panelEnv(t)
+	setEnv(t, "GROK_CLIENT_IP_MODE", "trusted_proxy")
+	trustedPrefixes := make([]string, maximumTrustedProxyPrefixes+1)
+	for prefixIndex := range trustedPrefixes {
+		trustedPrefixes[prefixIndex] = "192.0.2.0/24"
+	}
+	setEnv(t, "GROK_TRUSTED_PROXY_CIDRS", strings.Join(trustedPrefixes, ","))
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "at most 256 prefixes") {
+		t.Fatalf("expected excessive-prefix error, got %v", err)
+	}
+}
+
+func TestLoadInitialRegistrationModes(t *testing.T) {
+	for _, expectedMode := range []store.RegistrationMode{
+		store.RegistrationModeDisabled,
+		store.RegistrationModeInvite,
+		store.RegistrationModeFree,
+	} {
+		t.Run(string(expectedMode), func(t *testing.T) {
+			panelEnv(t)
+			setEnv(t, "GROK_INITIAL_REGISTRATION_MODE", string(expectedMode))
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load failed: %v", err)
+			}
+			if cfg.RegistrationMode != expectedMode {
+				t.Fatalf("registration mode = %q, want %q", cfg.RegistrationMode, expectedMode)
+			}
+		})
+	}
+
+	panelEnv(t)
+	setEnv(t, "GROK_INITIAL_REGISTRATION_MODE", "open")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GROK_INITIAL_REGISTRATION_MODE") {
+		t.Fatalf("expected initial registration mode error, got %v", err)
 	}
 }
 
@@ -248,8 +361,65 @@ func TestLoadHTTPDefaults(t *testing.T) {
 		cfg.MCPIPMaxEntriesPerShard != 2048 ||
 		cfg.MCPIPFallbackBucketsPerShard != 16 ||
 		cfg.MCPGlobalSearchConcurrency != 16 ||
-		cfg.MCPUserSearchConcurrency != 4 {
+		cfg.MCPUserSearchConcurrency != 4 ||
+		cfg.AuthPasswordMaxConcurrent != 4 ||
+		cfg.AuthKeyMissMaxConcurrent != 32 ||
+		cfg.UserRPMMaximumEntries != 16384 ||
+		cfg.UserRPMFallbackBuckets != 64 {
 		t.Fatalf("unexpected http defaults: %+v", cfg)
+	}
+}
+
+func TestLoadBoundedAuthenticationWorkConfiguration(t *testing.T) {
+	panelEnv(t)
+	setEnv(t, "GROK_AUTH_PASSWORD_MAX_CONCURRENT", "7")
+	setEnv(t, "GROK_AUTH_KEY_MISS_MAX_CONCURRENT", "41")
+	setEnv(t, "GROK_MAX_API_KEYS_PER_USER", "37")
+	setEnv(t, "GROK_BOOTSTRAP_CREDENTIALS_PATH", " /run/secrets/bootstrap.json ")
+	setEnv(t, "GROK_AUTH_USER_RPM_MAX_ENTRIES", "1234")
+	setEnv(t, "GROK_AUTH_USER_RPM_FALLBACK_BUCKETS", "19")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthPasswordMaxConcurrent != 7 ||
+		cfg.AuthKeyMissMaxConcurrent != 41 ||
+		cfg.MaxAPIKeysPerUser != 37 ||
+		cfg.UserRPMMaximumEntries != 1234 ||
+		cfg.UserRPMFallbackBuckets != 19 {
+		t.Fatalf("authentication work configuration = %+v", cfg)
+	}
+	if cfg.BootstrapCredentialsPath != "/run/secrets/bootstrap.json" {
+		t.Fatalf("bootstrap credentials path = %q", cfg.BootstrapCredentialsPath)
+	}
+}
+
+func TestLoadRejectsInvalidBoundedAuthenticationWorkConfiguration(t *testing.T) {
+	testCases := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "password zero", key: "GROK_AUTH_PASSWORD_MAX_CONCURRENT", value: "0"},
+		{name: "password above maximum", key: "GROK_AUTH_PASSWORD_MAX_CONCURRENT", value: "65"},
+		{name: "key misses negative", key: "GROK_AUTH_KEY_MISS_MAX_CONCURRENT", value: "-1"},
+		{name: "key misses above maximum", key: "GROK_AUTH_KEY_MISS_MAX_CONCURRENT", value: "1025"},
+		{name: "API key limit zero", key: "GROK_MAX_API_KEYS_PER_USER", value: "0"},
+		{name: "API key limit above maximum", key: "GROK_MAX_API_KEYS_PER_USER", value: "1001"},
+		{name: "user entries above maximum", key: "GROK_AUTH_USER_RPM_MAX_ENTRIES", value: "65537"},
+		{name: "fallback buckets above maximum", key: "GROK_AUTH_USER_RPM_FALLBACK_BUCKETS", value: "1025"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			panelEnv(t)
+			setEnv(t, testCase.key, testCase.value)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), testCase.key) {
+				t.Fatalf("expected %s validation error, got %v", testCase.key, err)
+			}
+		})
 	}
 }
 

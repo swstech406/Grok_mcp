@@ -36,6 +36,17 @@ type LoginResponse struct {
 	User      UserResponse `json:"user"`
 }
 
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+type SessionReplacementResponse struct {
+	Token     string       `json:"token"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	User      UserResponse `json:"user"`
+}
+
 type UserResponse struct {
 	ID        string         `json:"id"`
 	Username  string         `json:"username"`
@@ -211,7 +222,6 @@ type UpdateServerSettingsRequest struct {
 
 type InviteCodeResponse struct {
 	ID                string    `json:"id"`
-	Code              string    `json:"code,omitempty"`
 	CodePrefix        string    `json:"code_prefix"`
 	RegistrationLimit int       `json:"registration_limit"`
 	RegistrationCount int       `json:"registration_count"`
@@ -374,7 +384,6 @@ func toServerSettingsResponse(
 func toInviteCodeResponse(inviteCode *store.InviteCode) InviteCodeResponse {
 	return InviteCodeResponse{
 		ID:                inviteCode.ID,
-		Code:              inviteCode.Code,
 		CodePrefix:        inviteCode.CodePrefix,
 		RegistrationLimit: inviteCode.RegistrationLimit,
 		RegistrationCount: inviteCode.RegistrationCount,

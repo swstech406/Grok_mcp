@@ -707,6 +707,24 @@ func TestCaptureAndRestoreRequestBodyCapsDebugCapture(t *testing.T) {
 	}
 }
 
+func TestHeaderSnapshotRedactsSensitiveHeadersCaseInsensitively(t *testing.T) {
+	snapshot := headerSnapshot(http.Header{
+		"Authorization":       {"Bearer private-token"},
+		"x-api-key":           {"private-api-key"},
+		"COOKIE":              {"private-cookie"},
+		"X-Custom-Diagnostic": {"safe-value"},
+	})
+
+	for _, headerName := range []string{"Authorization", "x-api-key", "COOKIE"} {
+		if got := snapshot[headerName][0]; got != "[redacted]" {
+			t.Fatalf("header %s snapshot = %q, want redacted", headerName, got)
+		}
+	}
+	if got := snapshot["X-Custom-Diagnostic"][0]; got != "safe-value" {
+		t.Fatalf("ordinary header snapshot = %q, want original value", got)
+	}
+}
+
 // TestMCPMiddlewareReleasesOnPanic 验证 issue 8 的修复：当 handler panic 时，
 // usage 中间件通过 defer/recover 仍会执行 ReleaseSuccessCall，
 // 避免 success_calls 虚高，然后重新 panic 让上层处理。

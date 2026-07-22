@@ -22,7 +22,7 @@ func (handler *Handler) adminListTiers(writer http.ResponseWriter, request *http
 	}
 	page, err := handler.Store.ListTiersPage(request.Context(), cursor, limit)
 	if err != nil {
-		log.Printf("admin list tiers failed: %v", err)
+		log.Printf("admin list tiers failed error_type=%T", err)
 		writeError(writer, http.StatusInternalServerError, "failed to load tiers")
 		return
 	}
@@ -56,7 +56,7 @@ func (handler *Handler) adminCreateTier(writer http.ResponseWriter, request *htt
 			writeError(writer, http.StatusConflict, "tier name already taken")
 			return
 		}
-		log.Printf("admin create tier failed: %v", err)
+		log.Printf("admin create tier failed error_type=%T", err)
 		writeError(writer, http.StatusBadRequest, "failed to create tier")
 		return
 	}
@@ -85,7 +85,7 @@ func (handler *Handler) adminUpdateTier(writer http.ResponseWriter, request *htt
 			writeError(writer, http.StatusConflict, "tier name already taken")
 			return
 		}
-		log.Printf("admin update tier %s failed: %v", tierID, err)
+		log.Printf("admin update tier %s failed error_type=%T", tierID, err)
 		writeError(writer, http.StatusBadRequest, "failed to update tier")
 		return
 	}
@@ -105,7 +105,7 @@ func (handler *Handler) adminDeleteTier(writer http.ResponseWriter, request *htt
 			writeError(writer, http.StatusConflict, "tier is in use; reassign users first")
 			return
 		}
-		log.Printf("admin delete tier %s failed: %v", tierID, err)
+		log.Printf("admin delete tier %s failed error_type=%T", tierID, err)
 		writeError(writer, http.StatusInternalServerError, "failed to delete tier")
 		return
 	}

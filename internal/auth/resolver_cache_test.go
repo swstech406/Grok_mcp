@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +19,228 @@ type cachedResolverStore struct {
 	getKeyCalls  int
 	getUserCalls int
 	getTierCalls int
+}
+
+type blockingCachedResolverStore struct {
+	store.TestStore
+	key         *store.APIKey
+	user        *store.User
+	tier        *store.Tier
+	loadError   error
+	loadStarted chan string
+	releaseLoad chan struct{}
+	loadCalls   atomic.Int64
+}
+
+func (resolverStore *blockingCachedResolverStore) GetKeyByHash(ctx context.Context, keyHash string) (*store.APIKey, error) {
+	resolverStore.loadCalls.Add(1)
+	resolverStore.loadStarted <- keyHash
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-resolverStore.releaseLoad:
+	}
+	if resolverStore.loadError != nil {
+		return nil, resolverStore.loadError
+	}
+	if resolverStore.key == nil {
+		return nil, nil
+	}
+	keyCopy := *resolverStore.key
+	return &keyCopy, nil
+}
+
+func (resolverStore *blockingCachedResolverStore) GetUserByID(context.Context, string) (*store.User, error) {
+	userCopy := *resolverStore.user
+	return &userCopy, nil
+}
+
+func (resolverStore *blockingCachedResolverStore) GetTierByID(context.Context, string) (*store.Tier, error) {
+	tierCopy := *resolverStore.tier
+	return &tierCopy, nil
+}
+
+func newBlockingCachedResolverStore() *blockingCachedResolverStore {
+	return &blockingCachedResolverStore{
+		key:         &store.APIKey{ID: "key-id", UserID: "user-id", Enabled: true},
+		user:        &store.User{ID: "user-id", TierID: "tier-id", Enabled: true},
+		tier:        &store.Tier{ID: "tier-id", RPM: 10, SuccessLimit: 20},
+		loadStarted: make(chan string, 128),
+		releaseLoad: make(chan struct{}),
+	}
+}
+
+func TestCachedAPIKeyResolverCoalescesSameHashMisses(t *testing.T) {
+	resolverStore := newBlockingCachedResolverStore()
+	resolver := NewCachedAPIKeyResolverWithConfig(resolverStore, APIKeyCacheConfig{
+		MissMaxConcurrent: 2,
+	})
+	t.Cleanup(resolver.Close)
+
+	type resolveResult struct {
+		key *store.APIKey
+		err error
+	}
+	results := make(chan resolveResult, 32)
+	go func() {
+		key, _, err := resolver.Resolve(context.Background(), "shared-hash")
+		results <- resolveResult{key: key, err: err}
+	}()
+	if startedHash := <-resolverStore.loadStarted; startedHash != "shared-hash" {
+		t.Fatalf("started hash = %q", startedHash)
+	}
+	for followerIndex := 0; followerIndex < 31; followerIndex++ {
+		go func() {
+			key, _, err := resolver.Resolve(context.Background(), "shared-hash")
+			results <- resolveResult{key: key, err: err}
+		}()
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(resolverStore.releaseLoad)
+
+	for resultIndex := 0; resultIndex < 32; resultIndex++ {
+		result := <-results
+		if result.err != nil || result.key == nil || result.key.ID != "key-id" {
+			t.Fatalf("resolve result = key:%+v err:%v", result.key, result.err)
+		}
+		result.key.Enabled = false
+	}
+	if loadCalls := resolverStore.loadCalls.Load(); loadCalls != 1 {
+		t.Fatalf("store load calls = %d, want 1", loadCalls)
+	}
+}
+
+func TestCachedAPIKeyResolverRejectsDistinctHashWhenMissAdmissionIsFull(t *testing.T) {
+	resolverStore := newBlockingCachedResolverStore()
+	resolver := NewCachedAPIKeyResolverWithConfig(resolverStore, APIKeyCacheConfig{MissMaxConcurrent: 1})
+	t.Cleanup(resolver.Close)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, err := resolver.Resolve(context.Background(), "first-hash")
+		firstDone <- err
+	}()
+	<-resolverStore.loadStarted
+
+	_, _, err := resolver.Resolve(context.Background(), "second-hash")
+	if !errors.Is(err, ErrAPIKeyResolverSaturated) {
+		t.Fatalf("second miss error = %v, want saturation", err)
+	}
+	if loadCalls := resolverStore.loadCalls.Load(); loadCalls != 1 {
+		t.Fatalf("store load calls before release = %d, want 1", loadCalls)
+	}
+	close(resolverStore.releaseLoad)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first resolve failed: %v", err)
+	}
+}
+
+func TestCachedAPIKeyResolverFollowerHonorsContextCancellation(t *testing.T) {
+	resolverStore := newBlockingCachedResolverStore()
+	resolver := NewCachedAPIKeyResolverWithConfig(resolverStore, APIKeyCacheConfig{MissMaxConcurrent: 1})
+	t.Cleanup(resolver.Close)
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, _, err := resolver.Resolve(context.Background(), "shared-hash")
+		leaderDone <- err
+	}()
+	<-resolverStore.loadStarted
+
+	followerContext, cancelFollower := context.WithCancel(context.Background())
+	cancelFollower()
+	_, _, err := resolver.Resolve(followerContext, "shared-hash")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("follower error = %v, want context cancellation", err)
+	}
+	close(resolverStore.releaseLoad)
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader resolve failed: %v", err)
+	}
+}
+
+func TestCachedAPIKeyResolverSharesLeaderFailure(t *testing.T) {
+	resolverStore := newBlockingCachedResolverStore()
+	resolverStore.loadError = errors.New("store unavailable")
+	resolver := NewCachedAPIKeyResolverWithConfig(resolverStore, APIKeyCacheConfig{MissMaxConcurrent: 1})
+	t.Cleanup(resolver.Close)
+
+	results := make(chan error, 2)
+	go func() {
+		_, _, err := resolver.Resolve(context.Background(), "shared-hash")
+		results <- err
+	}()
+	<-resolverStore.loadStarted
+	go func() {
+		_, _, err := resolver.Resolve(context.Background(), "shared-hash")
+		results <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	close(resolverStore.releaseLoad)
+
+	for resultIndex := 0; resultIndex < 2; resultIndex++ {
+		if err := <-results; err == nil || err.Error() != "store unavailable" {
+			t.Fatalf("shared leader error = %v", err)
+		}
+	}
+	if loadCalls := resolverStore.loadCalls.Load(); loadCalls != 1 {
+		t.Fatalf("store load calls = %d, want 1", loadCalls)
+	}
+}
+
+func TestCachedAPIKeyResolverDoesNotCacheLoadInvalidatedInFlight(t *testing.T) {
+	resolverStore := newBlockingCachedResolverStore()
+	resolver := NewCachedAPIKeyResolverWithConfig(resolverStore, APIKeyCacheConfig{MissMaxConcurrent: 1})
+	t.Cleanup(resolver.Close)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, err := resolver.Resolve(context.Background(), "shared-hash")
+		firstDone <- err
+	}()
+	<-resolverStore.loadStarted
+	resolver.InvalidateAll()
+	close(resolverStore.releaseLoad)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := resolver.Resolve(context.Background(), "shared-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if loadCalls := resolverStore.loadCalls.Load(); loadCalls != 2 {
+		t.Fatalf("store load calls = %d, want 2 after in-flight invalidation", loadCalls)
+	}
+}
+
+func TestCachedAPIKeyResolverCloseReleasesFollowersAndPreventsNewWork(t *testing.T) {
+	resolverStore := newBlockingCachedResolverStore()
+	resolver := NewCachedAPIKeyResolverWithConfig(resolverStore, APIKeyCacheConfig{MissMaxConcurrent: 1})
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, _, err := resolver.Resolve(context.Background(), "shared-hash")
+		leaderDone <- err
+	}()
+	<-resolverStore.loadStarted
+	followerDone := make(chan error, 1)
+	go func() {
+		_, _, err := resolver.Resolve(context.Background(), "shared-hash")
+		followerDone <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	resolver.Close()
+
+	if err := <-followerDone; !errors.Is(err, ErrAPIKeyResolverClosed) {
+		t.Fatalf("follower error after close = %v", err)
+	}
+	if _, _, err := resolver.Resolve(context.Background(), "new-hash"); !errors.Is(err, ErrAPIKeyResolverClosed) {
+		t.Fatalf("new resolve error after close = %v", err)
+	}
+	close(resolverStore.releaseLoad)
+	if err := <-leaderDone; !errors.Is(err, ErrAPIKeyResolverClosed) {
+		t.Fatalf("leader error after close = %v", err)
+	}
 }
 
 func (s *cachedResolverStore) GetKeyByHash(_ context.Context, keyHash string) (*store.APIKey, error) {

@@ -313,7 +313,7 @@ func BenchmarkSQLiteMixedAuthenticationReadsAndWrites(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	apiKey, rawAPIKey, err := sqliteStore.CreateKey(ctx, user.ID, "benchmark-key")
+	apiKey, rawAPIKey, err := sqliteStore.CreateKey(ctx, user.ID, "benchmark-key", 20)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestCreateAndGetKeyByHash(t *testing.T) {
 	ctx := context.Background()
 	uid := testUserID(t, s)
 
-	k, raw, err := s.CreateKey(ctx, uid, "test-key")
+	k, raw, err := s.CreateKey(ctx, uid, "test-key", 20)
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestRecordUsageUpdatesKeyAccountingWithoutRegressingLastUsedAt(t *testing.T
 	sqliteStore := openTestDB(t)
 	ctx := context.Background()
 	userID := testUserID(t, sqliteStore)
-	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "usage-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "usage-key", 20)
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestRecordUsageRollsBackLogWhenKeyAccountingFails(t *testing.T) {
 	sqliteStore := openTestDB(t)
 	ctx := context.Background()
 	userID := testUserID(t, sqliteStore)
-	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "rollback-key")
+	apiKey, _, err := sqliteStore.CreateKey(ctx, userID, "rollback-key", 20)
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestServerSettingsAPIKeyEncryptedAtRestAndReadableAfterReopen(t *testing.T)
 		t.Fatal(err)
 	}
 	userID := testUserID(t, sqliteStore)
-	apiKey, rawAPIKey, err := sqliteStore.CreateKey(ctx, userID, "compatibility-key")
+	apiKey, rawAPIKey, err := sqliteStore.CreateKey(ctx, userID, "compatibility-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,10 +678,145 @@ func TestServerSettingsRevisionMigrationBackfillsExistingRow(t *testing.T) {
 	}
 }
 
+func TestInviteCodePlaintextMigrationClearsLegacyValueAndPreservesRedemption(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "invite-plaintext-migration.db")
+	requestContext := context.Background()
+
+	legacyStore, err := OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator, err := legacyStore.CreateUser(requestContext, "legacy-invite-admin", "hash", RoleAdmin)
+	if err != nil {
+		_ = legacyStore.Close()
+		t.Fatal(err)
+	}
+	inviteCode, rawInviteCode, err := legacyStore.CreateInviteCode(requestContext, creator.ID, 3)
+	if err != nil {
+		_ = legacyStore.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacyStore.RegisterUserWithInviteCode(requestContext, "legacy-first-redemption", "hash", rawInviteCode); err != nil {
+		_ = legacyStore.Close()
+		t.Fatal(err)
+	}
+
+	type inviteCodePersistenceSnapshot struct {
+		CodeHash          string
+		CodePrefix        string
+		RegistrationLimit int
+		RegistrationCount int
+		Enabled           int
+		CreatedByUserID   string
+		CreatedAt         string
+		UpdatedAt         string
+	}
+	readSnapshot := func(database *sql.DB) (string, inviteCodePersistenceSnapshot) {
+		t.Helper()
+		var legacyCode string
+		var snapshot inviteCodePersistenceSnapshot
+		if err := database.QueryRowContext(requestContext, `
+			SELECT code, code_hash, code_prefix, registration_limit, registration_count,
+			       enabled, created_by_user_id, created_at, updated_at
+			FROM invite_codes WHERE id = ?`, inviteCode.ID,
+		).Scan(
+			&legacyCode,
+			&snapshot.CodeHash,
+			&snapshot.CodePrefix,
+			&snapshot.RegistrationLimit,
+			&snapshot.RegistrationCount,
+			&snapshot.Enabled,
+			&snapshot.CreatedByUserID,
+			&snapshot.CreatedAt,
+			&snapshot.UpdatedAt,
+		); err != nil {
+			t.Fatal(err)
+		}
+		return legacyCode, snapshot
+	}
+
+	newInsertCode, preservedSnapshot := readSnapshot(legacyStore.db)
+	if newInsertCode != "" {
+		_ = legacyStore.Close()
+		t.Fatalf("new invite stored legacy plaintext %q", newInsertCode)
+	}
+	if preservedSnapshot.CodeHash != keyhash.HashAPIKey(rawInviteCode) {
+		_ = legacyStore.Close()
+		t.Fatalf("stored invite hash = %q, want hash of raw invite", preservedSnapshot.CodeHash)
+	}
+
+	redemptionsBeforeMigration, err := legacyStore.ListInviteCodeRedemptionsPage(requestContext, inviteCode.ID, nil, 50)
+	if err != nil {
+		_ = legacyStore.Close()
+		t.Fatal(err)
+	}
+	if len(redemptionsBeforeMigration.Redemptions) != 1 {
+		_ = legacyStore.Close()
+		t.Fatalf("redemptions before migration = %d, want 1", len(redemptionsBeforeMigration.Redemptions))
+	}
+	firstRedemptionID := redemptionsBeforeMigration.Redemptions[0].ID
+
+	// Recreate the pre-009 state: a legacy binary retained the raw value and
+	// the plaintext-clearing migration has not yet been recorded.
+	if _, err := legacyStore.db.ExecContext(requestContext,
+		`UPDATE invite_codes SET code = ? WHERE id = ?`, rawInviteCode, inviteCode.ID,
+	); err != nil {
+		_ = legacyStore.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacyStore.db.ExecContext(requestContext,
+		`DELETE FROM schema_migrations WHERE version = '009_clear_invite_code_plaintext'`,
+	); err != nil {
+		_ = legacyStore.Close()
+		t.Fatal(err)
+	}
+	if err := legacyStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migratedStore, err := OpenSQLite(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migratedStore.Close()
+
+	clearedCode, migratedSnapshot := readSnapshot(migratedStore.db)
+	if clearedCode != "" {
+		t.Fatalf("migrated invite plaintext = %q, want empty", clearedCode)
+	}
+	if migratedSnapshot != preservedSnapshot {
+		t.Fatalf("invite metadata changed during plaintext migration:\n got %+v\nwant %+v", migratedSnapshot, preservedSnapshot)
+	}
+
+	redemptionsAfterMigration, err := migratedStore.ListInviteCodeRedemptionsPage(requestContext, inviteCode.ID, nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(redemptionsAfterMigration.Redemptions) != 1 || redemptionsAfterMigration.Redemptions[0].ID != firstRedemptionID {
+		t.Fatalf("redemption audit changed during migration: %+v", redemptionsAfterMigration.Redemptions)
+	}
+
+	if _, err := migratedStore.RegisterUserWithInviteCode(
+		requestContext,
+		"legacy-second-redemption",
+		"hash",
+		rawInviteCode,
+	); err != nil {
+		t.Fatalf("redeem original raw invite after plaintext clearing: %v", err)
+	}
+	migratedInviteCode, err := migratedStore.getInviteCodeByID(requestContext, inviteCode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migratedInviteCode.RegistrationCount != 2 {
+		t.Fatalf("registration count after post-migration redemption = %d, want 2", migratedInviteCode.RegistrationCount)
+	}
+}
+
 func TestCreateKeyRequiresName(t *testing.T) {
 	s := openTestDB(t)
 	uid := testUserID(t, s)
-	_, _, err := s.CreateKey(context.Background(), uid, "  ")
+	_, _, err := s.CreateKey(context.Background(), uid, "  ", 20)
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -692,7 +827,7 @@ func TestListUpdateDeleteKey(t *testing.T) {
 	ctx := context.Background()
 	uid := testUserID(t, s)
 
-	k, _, err := s.CreateKey(ctx, uid, "one")
+	k, _, err := s.CreateKey(ctx, uid, "one", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,12 +859,76 @@ func TestListUpdateDeleteKey(t *testing.T) {
 	}
 }
 
+func TestCreateKeyEnforcesConcurrentPerUserLimitAndDeletionFreesCapacity(t *testing.T) {
+	sqliteStore := openTestDB(t)
+	requestContext := context.Background()
+	userID := testUserID(t, sqliteStore)
+	const maximumKeys = 5
+	const concurrentAttempts = 20
+
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(concurrentAttempts)
+	resultErrors := make(chan error, concurrentAttempts)
+	for attemptIndex := 0; attemptIndex < concurrentAttempts; attemptIndex++ {
+		attemptIndex := attemptIndex
+		go func() {
+			defer waitGroup.Done()
+			_, _, createErr := sqliteStore.CreateKey(
+				requestContext,
+				userID,
+				fmt.Sprintf("concurrent-key-%d", attemptIndex),
+				maximumKeys,
+			)
+			resultErrors <- createErr
+		}()
+	}
+	waitGroup.Wait()
+	close(resultErrors)
+
+	successCount := 0
+	limitRejectionCount := 0
+	for createErr := range resultErrors {
+		switch {
+		case createErr == nil:
+			successCount++
+		case errors.Is(createErr, ErrAPIKeyLimit):
+			limitRejectionCount++
+		default:
+			t.Fatalf("unexpected concurrent CreateKey error: %v", createErr)
+		}
+	}
+	if successCount != maximumKeys || limitRejectionCount != concurrentAttempts-maximumKeys {
+		t.Fatalf("successes=%d limit_rejections=%d, want %d and %d", successCount, limitRejectionCount, maximumKeys, concurrentAttempts-maximumKeys)
+	}
+
+	keyPage, err := sqliteStore.ListKeysByUserPage(requestContext, userID, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyPage.TotalCount != maximumKeys {
+		t.Fatalf("stored key count = %d, want %d", keyPage.TotalCount, maximumKeys)
+	}
+	disableKey := false
+	if _, err := sqliteStore.UpdateKey(requestContext, keyPage.Keys[0].ID, KeyUpdates{Enabled: &disableKey}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sqliteStore.CreateKey(requestContext, userID, "disabled-still-counts", maximumKeys); !errors.Is(err, ErrAPIKeyLimit) {
+		t.Fatalf("disabled key should still consume capacity, got %v", err)
+	}
+	if err := sqliteStore.DeleteKey(requestContext, keyPage.Keys[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sqliteStore.CreateKey(requestContext, userID, "replacement-key", maximumKeys); err != nil {
+		t.Fatalf("deletion should free key capacity: %v", err)
+	}
+}
+
 func TestDeleteKeySucceedsWhenDebugCleanupFails(t *testing.T) {
 	store := openTestDB(t)
 	ctx := context.Background()
 	userID := testUserID(t, store)
 
-	key, _, err := store.CreateKey(ctx, userID, "debug-cleanup-failure")
+	key, _, err := store.CreateKey(ctx, userID, "debug-cleanup-failure", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +948,7 @@ func TestUsageStats(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 
-	k, _, err := s.CreateKey(ctx, testUserID(t, s), "usage")
+	k, _, err := s.CreateKey(ctx, testUserID(t, s), "usage", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +984,7 @@ func TestUsageDebugBodiesPersistInSeparateDatabaseWithBoundedBlobs(t *testing.T)
 	ctx := context.Background()
 
 	userID := testUserID(t, store)
-	key, _, err := store.CreateKey(ctx, userID, "debug-capture")
+	key, _, err := store.CreateKey(ctx, userID, "debug-capture", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -888,7 +1087,7 @@ func TestGetUsageRecordDetailEnforcesUserScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, _, err := store.CreateKey(ctx, owner.ID, "owned-key")
+	key, _, err := store.CreateKey(ctx, owner.ID, "owned-key", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -918,7 +1117,7 @@ func TestGetUsageRecordDetailEnforcesUserScope(t *testing.T) {
 func TestUsageDebugBodyPersistenceFailurePreservesPrimaryUsage(t *testing.T) {
 	store := openTestDB(t)
 	ctx := context.Background()
-	key, _, err := store.CreateKey(ctx, testUserID(t, store), "debug-rollback")
+	key, _, err := store.CreateKey(ctx, testUserID(t, store), "debug-rollback", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -964,11 +1163,11 @@ func TestUsageStatsSinceFilterAndUserScope(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	firstKey, _, err := s.CreateKey(ctx, firstUserID, "first")
+	firstKey, _, err := s.CreateKey(ctx, firstUserID, "first", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondKey, _, err := s.CreateKey(ctx, secondUser.ID, "second")
+	secondKey, _, err := s.CreateKey(ctx, secondUser.ID, "second", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1010,7 +1209,7 @@ func TestUsageStatsAggregatesTrafficAndRPMBeyondRecordLimit(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
 	userID := testUserID(t, s)
-	key, _, err := s.CreateKey(ctx, userID, "high-volume")
+	key, _, err := s.CreateKey(ctx, userID, "high-volume", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1084,7 +1283,7 @@ func TestUsageStatsAggregatesTrafficAndRPMBeyondRecordLimit(t *testing.T) {
 func TestAsyncUsageWriterCloseFlushesUsageAndKeyAccounting(t *testing.T) {
 	s := openTestDB(t)
 	ctx := context.Background()
-	key, _, err := s.CreateKey(ctx, testUserID(t, s), "async")
+	key, _, err := s.CreateKey(ctx, testUserID(t, s), "async", 20)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,11 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -17,6 +21,14 @@ import (
 	"github.com/MapleMapleCat/Grok_Search_Mcp/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
+
+type failingBootstrapCreationStore struct {
+	store.TestStore
+}
+
+func (failingBootstrapCreationStore) CreateUser(context.Context, string, string, store.UserRole) (*store.User, error) {
+	return nil, errors.New("simulated database failure")
+}
 
 type recordingRuntimeSettingsApplier struct {
 	appliedSettings config.ServerSettings
@@ -73,14 +85,16 @@ func TestRuntimeServerSettingsApplierUpdatesSearchConcurrency(t *testing.T) {
 }
 
 func TestEnsureBootstrapAdminCreatesAdminForEmptyStore(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "bootstrap.db")
+	temporaryDirectory := t.TempDir()
+	storePath := filepath.Join(temporaryDirectory, "bootstrap.db")
+	credentialPath := filepath.Join(temporaryDirectory, "bootstrap-admin.json")
 	sqliteStore, err := store.OpenSQLite(storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sqliteStore.Close()
 
-	credentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore)
+	credentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore, credentialPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +106,13 @@ func TestEnsureBootstrapAdminCreatesAdminForEmptyStore(t *testing.T) {
 	}
 	if len(credentials.Password) != 12 {
 		t.Fatalf("bootstrap password length = %d, want 12", len(credentials.Password))
+	}
+	credentialInfo, err := os.Stat(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentialInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("bootstrap credential permissions = %#o, want 0600", credentialInfo.Mode().Perm())
 	}
 
 	adminUser, err := sqliteStore.GetUserByUsername(context.Background(), bootstrapAdminUsername)
@@ -105,7 +126,7 @@ func TestEnsureBootstrapAdminCreatesAdminForEmptyStore(t *testing.T) {
 		t.Fatalf("bootstrap password does not match stored hash: %v", err)
 	}
 
-	secondCredentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore)
+	secondCredentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore, credentialPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +136,9 @@ func TestEnsureBootstrapAdminCreatesAdminForEmptyStore(t *testing.T) {
 }
 
 func TestEnsureBootstrapAdminCreatesAdminWhenOnlyRegularUsersExist(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "bootstrap-non-empty.db")
+	temporaryDirectory := t.TempDir()
+	storePath := filepath.Join(temporaryDirectory, "bootstrap-non-empty.db")
+	credentialPath := filepath.Join(temporaryDirectory, "bootstrap-admin.json")
 	sqliteStore, err := store.OpenSQLite(storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +149,7 @@ func TestEnsureBootstrapAdminCreatesAdminWhenOnlyRegularUsersExist(t *testing.T)
 		t.Fatal(err)
 	}
 
-	credentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore)
+	credentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore, credentialPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +163,157 @@ func TestEnsureBootstrapAdminCreatesAdminWhenOnlyRegularUsersExist(t *testing.T)
 	}
 	if adminUser == nil || adminUser.Role != store.RoleAdmin || !adminUser.Enabled {
 		t.Fatalf("expected enabled bootstrap admin user, got %+v", adminUser)
+	}
+}
+
+func TestEnsureBootstrapAdminDoesNotCreateCredentialFileForExistingAdmin(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+	credentialPath := filepath.Join(temporaryDirectory, "bootstrap-admin.json")
+	sqliteStore, err := store.OpenSQLite(filepath.Join(temporaryDirectory, "existing-admin.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+	if _, err := sqliteStore.CreateUser(context.Background(), "existing-admin", "hash", store.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+
+	credentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore, credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentials != nil {
+		t.Fatalf("unexpected bootstrap credentials: %+v", credentials)
+	}
+	if _, err := os.Stat(credentialPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("credential path should remain absent, got %v", err)
+	}
+}
+
+func TestEnsureBootstrapAdminReusesCredentialFileAfterDatabaseFailure(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+	credentialPath := filepath.Join(temporaryDirectory, "bootstrap-admin.json")
+
+	if _, err := EnsureBootstrapAdmin(context.Background(), failingBootstrapCreationStore{}, credentialPath); err == nil {
+		t.Fatal("expected simulated database failure")
+	}
+	credentialJSON, err := os.ReadFile(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedCredentials BootstrapAdminCredentials
+	if err := json.Unmarshal(credentialJSON, &persistedCredentials); err != nil {
+		t.Fatal(err)
+	}
+
+	sqliteStore, err := store.OpenSQLite(filepath.Join(temporaryDirectory, "recovery.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqliteStore.Close()
+	recoveredCredentials, err := EnsureBootstrapAdmin(context.Background(), sqliteStore, credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredCredentials.Password != persistedCredentials.Password {
+		t.Fatal("bootstrap recovery generated a different password")
+	}
+}
+
+func TestBootstrapCredentialFileRejectsUnsafeExistingPaths(t *testing.T) {
+	credentialJSON := []byte(`{"username":"admin","password":"safe-password-marker"}`)
+
+	t.Run("insecure permissions", func(t *testing.T) {
+		credentialPath := filepath.Join(t.TempDir(), "credentials.json")
+		if err := os.WriteFile(credentialPath, credentialJSON, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadOrCreateBootstrapCredentials(credentialPath); err == nil || !strings.Contains(err.Error(), "permissions") {
+			t.Fatalf("expected permission rejection, got %v", err)
+		}
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		temporaryDirectory := t.TempDir()
+		targetPath := filepath.Join(temporaryDirectory, "target.json")
+		credentialPath := filepath.Join(temporaryDirectory, "credentials.json")
+		if err := os.WriteFile(targetPath, credentialJSON, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(targetPath, credentialPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadOrCreateBootstrapCredentials(credentialPath); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("expected symlink rejection, got %v", err)
+		}
+	})
+
+	t.Run("directory", func(t *testing.T) {
+		if _, err := loadOrCreateBootstrapCredentials(t.TempDir()); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("expected directory rejection, got %v", err)
+		}
+	})
+}
+
+func TestBootstrapCredentialFileRejectsMalformedAndOversizedJSON(t *testing.T) {
+	testCases := []struct {
+		name    string
+		content []byte
+	}{
+		{name: "malformed", content: []byte(`{"username":"admin"`)},
+		{name: "unknown field", content: []byte(`{"username":"admin","password":"safe-password","extra":true}`)},
+		{name: "oversized", content: bytes.Repeat([]byte("x"), maximumBootstrapFileBytes+1)},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			credentialPath := filepath.Join(t.TempDir(), "credentials.json")
+			if err := os.WriteFile(credentialPath, testCase.content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadOrCreateBootstrapCredentials(credentialPath); err == nil {
+				t.Fatal("expected unsafe credential content to be rejected")
+			}
+		})
+	}
+}
+
+func TestBootstrapCredentialWriteFailureRemovesIncompleteFile(t *testing.T) {
+	credentialPath := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentialPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readOnlyFile, err := os.Open(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeNewBootstrapCredentials(credentialPath, readOnlyFile); err == nil {
+		t.Fatal("expected write through read-only file descriptor to fail")
+	}
+	if _, err := os.Stat(credentialPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("incomplete credential file was not removed: %v", err)
+	}
+}
+
+func TestBootstrapCredentialLogContainsPathButNotPassword(t *testing.T) {
+	const credentialPath = "/secure/bootstrap-admin.json"
+	const passwordMarker = "bootstrap-password-must-never-appear"
+	var logBuffer bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logBuffer)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+
+	logBootstrapCredentialsAvailable(credentialPath)
+	logOutput := logBuffer.String()
+	if !strings.Contains(logOutput, credentialPath) {
+		t.Fatalf("bootstrap log does not contain credential path: %q", logOutput)
+	}
+	if strings.Contains(logOutput, passwordMarker) || strings.Contains(logOutput, "password=") {
+		t.Fatalf("bootstrap log contains password material: %q", logOutput)
 	}
 }
 
@@ -235,6 +409,44 @@ func TestInitializeServerSettingsUsesEnvironmentDefaultsWithoutMutatingConfig(t 
 	}
 }
 
+func TestInitializeServerSettingsUsesInitialRegistrationModeOnlyForNewSettings(t *testing.T) {
+	for _, initialRegistrationMode := range []store.RegistrationMode{
+		store.RegistrationModeDisabled,
+		store.RegistrationModeInvite,
+		store.RegistrationModeFree,
+	} {
+		t.Run(string(initialRegistrationMode), func(t *testing.T) {
+			sqliteStore, err := store.OpenSQLite(filepath.Join(t.TempDir(), "initial-registration.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sqliteStore.Close()
+			if err := sqliteStore.ConfigureAPIKeyEncryption("app-test-settings-encryption-secret-at-least-32-bytes"); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := &config.Config{
+				CPABaseURL:                 "http://127.0.0.1:8317",
+				CPAAPIKey:                  "environment-key",
+				UpstreamProtocol:           config.UpstreamProtocolResponses,
+				Model:                      "grok-4.3",
+				Timeout:                    30 * time.Second,
+				MCPGlobalSearchConcurrency: 16,
+				MCPUserSearchConcurrency:   4,
+				RegistrationMode:           initialRegistrationMode,
+			}
+
+			storedSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if storedSettings.RegistrationMode != initialRegistrationMode {
+				t.Fatalf("persisted registration mode = %q, want %q", storedSettings.RegistrationMode, initialRegistrationMode)
+			}
+		})
+	}
+}
+
 func TestInitializeServerSettingsPrefersDatabaseAndSuppliesMissingEnvironmentKey(t *testing.T) {
 	sqliteStore, err := store.OpenSQLite(filepath.Join(t.TempDir(), "database-settings.db"))
 	if err != nil {
@@ -268,6 +480,7 @@ func TestInitializeServerSettingsPrefersDatabaseAndSuppliesMissingEnvironmentKey
 		Timeout:                    30 * time.Second,
 		MCPGlobalSearchConcurrency: 16,
 		MCPUserSearchConcurrency:   4,
+		RegistrationMode:           store.RegistrationModeDisabled,
 	}
 	storedSettings, err := InitializeServerSettings(context.Background(), sqliteStore, cfg)
 	if err != nil {
