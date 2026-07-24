@@ -617,17 +617,22 @@ docker compose up -d --build
 直接运行已发布镜像、避免重新构建本地源码：
 
 ```bash
-docker pull maplemaplecat/grok-search-mcp:v0.2.2
+docker pull maplemaplecat/grok-search-mcp:latest
 docker run -d \
   --name grok-search-mcp \
   --restart unless-stopped \
+  --pull always \
   --env-file advanced.env \
   --env-file .env \
   --add-host host.docker.internal:host-gateway \
   -p 127.0.0.1:8080:8080 \
   -v grok-search-mcp-data:/app/data \
-  maplemaplecat/grok-search-mcp:v0.2.2
+  maplemaplecat/grok-search-mcp:latest
 ```
+
+每次发布 GitHub Release 时，流水线会同时更新不可变的版本标签和可变的
+`latest` 标签。需要固定到确切版本的生产部署仍应使用版本标签。仅更新
+`latest` 不会替换已经运行的容器；要应用新镜像，仍需通过部署自动化重新创建容器。
 
 直接运行发布镜像时，请在基础 `.env` 中填写容器可访问的 CPA 地址。CPA 运行在
 Docker 宿主机上时使用：

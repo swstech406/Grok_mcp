@@ -128,6 +128,25 @@ func TestDeploymentContractWorkflowRunsForRepositoryChanges(t *testing.T) {
 	}
 }
 
+func TestDockerReleasePublishesVersionAndLatestTags(t *testing.T) {
+	repositoryRoot := locateRepositoryRoot(t)
+	workflowContents := readRepositoryFile(
+		t,
+		repositoryRoot,
+		filepath.Join(".github", "workflows", "docker-publish.yml"),
+	)
+
+	requiredTagLines := []string{
+		`type=raw,value=${{ env.RELEASE_TAG }}`,
+		"type=raw,value=latest",
+	}
+	for _, requiredTagLine := range requiredTagLines {
+		if !containsActiveYAMLLine(workflowContents, requiredTagLine) {
+			t.Fatalf("Docker release workflow must publish tag line %q", requiredTagLine)
+		}
+	}
+}
+
 func TestContainsActiveYAMLLineIgnoresCommentedMappings(t *testing.T) {
 	composeContents := strings.Join([]string{
 		"ports:",

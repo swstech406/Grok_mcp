@@ -121,6 +121,7 @@ jobs:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }}
+            type=raw,value=latest
 
       - name: Prepare release version
         id: release

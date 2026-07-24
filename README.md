@@ -662,17 +662,24 @@ docker compose up -d --build
 To run the published release image without rebuilding local source:
 
 ```bash
-docker pull maplemaplecat/grok-search-mcp:v0.2.2
+docker pull maplemaplecat/grok-search-mcp:latest
 docker run -d \
   --name grok-search-mcp \
   --restart unless-stopped \
+  --pull always \
   --env-file advanced.env \
   --env-file .env \
   --add-host host.docker.internal:host-gateway \
   -p 127.0.0.1:8080:8080 \
   -v grok-search-mcp-data:/app/data \
-  maplemaplecat/grok-search-mcp:v0.2.2
+  maplemaplecat/grok-search-mcp:latest
 ```
+
+Each published GitHub Release updates both its immutable version tag and the
+mutable `latest` tag. Use a version tag instead when deployments must remain
+pinned to an exact release. An already-running container is not replaced merely
+because `latest` changes; recreate it through your deployment automation to
+apply the new image.
 
 For a direct published-image deployment, set the container-reachable CPA URL in
 the basic `.env`. If CPA runs on the Docker host, use:
